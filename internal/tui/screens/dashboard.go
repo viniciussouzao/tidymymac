@@ -235,7 +235,7 @@ func (m DashboardModel) View() string {
 
 		desc := dimStyle.Render(cat.Desc)
 
-		line := fmt.Sprintf("%s %s %s-22s %s  %s%s", cursor, checkbox, name, sizeText, desc, sudoTag)
+		line := fmt.Sprintf("%s %s %-22s %s  %s%s", cursor, checkbox, name, sizeText, desc, sudoTag)
 		b.WriteString(line)
 		b.WriteString("\n")
 	}

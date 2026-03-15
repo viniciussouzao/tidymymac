@@ -101,3 +101,46 @@ func (c *TempCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 	result.Duration = time.Since(start)
 	return result, nil
 }
+
+func (c *TempCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
+	start := time.Now()
+	result := &CleanResult{
+		Category: CategoryTemp,
+		DryRun:   dryRun,
+	}
+
+	for i, entry := range entries {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+
+		if entry.IsDir {
+			continue // skip directories for now
+		}
+
+		if !dryRun {
+			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+				result.Errors = append(result.Errors, err)
+				continue
+			}
+		}
+
+		result.FilesDeleted++
+		result.BytesFreed += entry.Size
+
+		// Update progress every 50 files or on the last file
+		if progress != nil && (i%50 == 0 || i == len(entries)-1) {
+			progress(CleanProgress{
+				Category:     CategoryTemp,
+				FilesDeleted: result.FilesDeleted,
+				FilesTotal:   len(entries),
+				BytesDeleted: result.BytesFreed,
+				BytesTotal:   totalSize(entries),
+				CurrentFile:  entry.Path,
+			})
+		}
+	}
+
+	result.Duration = time.Since(start)
+	return result, nil
+}

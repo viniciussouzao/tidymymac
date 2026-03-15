@@ -297,3 +297,8 @@ func (m DashboardModel) View() string {
 
 	return b.String()
 }
+
+func (m DashboardModel) SetSize(w, d int) {
+	m.Width = w
+	m.Height = d
+}

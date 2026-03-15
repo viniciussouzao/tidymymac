@@ -1,12 +1,7 @@
 package main
 
-import (
-	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
-)
+import "github.com/viniciussouzao/tidymymac/cmd"
 
 func main() {
-	//cmd.Execute()
-
-	dashboard := screens.NewDashboard()
-	dashboard.View()
+	cmd.Execute()
 }

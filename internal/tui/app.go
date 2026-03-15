@@ -167,12 +167,24 @@ func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) View() string {
+	// Global header with ASCII logo and tagline
+	header := Logo() + "\n" + TagLine() + "\n\n"
+
+	var banner string
+	if !a.executeMode {
+		banner = dryRunBannerStyle.Render("DRY RUN MODE - No files will be deleted. Start the app with --execute to clean.") + "\n"
+	}
+
+	var content string
 	switch a.currentScreen {
 	case screenDashboard:
-		return a.dashboard.View()
-	default:
-		return "Not implemented yet"
+		content = a.dashboard.View()
+		if a.scanning {
+			content += "\n" + dimStyle.Render(" "+a.spinner.View()+" scanning filesystem...")
+		}
 	}
+
+	return header + banner + content
 }
 
 func (a App) Model() tea.Model {

@@ -106,7 +106,7 @@ func (m DashboardModel) HandleKey(keyStr, keyType string) (DashboardModel, inter
 }
 
 // SetCategoryScanning marks a category as currently being scanned, which the UI can use to show a "Scanning..." status
-func (m DashboardModel) SetCategoryScanning(id string) {
+func (m *DashboardModel) SetCategoryScanning(id string) {
 	for i := range m.Categories {
 		if m.Categories[i].ID == id {
 			m.Categories[i].Size = -1 // reset size so the UI shows "Scanning..."
@@ -115,8 +115,19 @@ func (m DashboardModel) SetCategoryScanning(id string) {
 	}
 }
 
+// UpdateCategorySize updates the scanned size for a category.
+func (m *DashboardModel) UpdateCategorySize(id string, size int64) {
+	for i := range m.Categories {
+		if m.Categories[i].ID == id {
+			m.Categories[i].Size = size
+			m.Categories[i].Scanning = false
+			return
+		}
+	}
+}
+
 // SelectedCount returns the number of selected categories
-func (m DashboardModel) SelectedCount() int {
+func (m *DashboardModel) SelectedCount() int {
 	n := 0
 	for _, c := range m.Categories {
 		if c.Selected {
@@ -164,14 +175,14 @@ func (m DashboardModel) View() string {
 
 	sizeRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
 
-	// Header
-	b.WriteString(lipgloss.NewStyle().Bold(true).Underline(true).Render("TidyMyMac - Dashboard"))
+	// Menu title
+	b.WriteString(lipgloss.NewStyle().Bold(true).Underline(true).Render("Review and select categories to clean"))
 	b.WriteString("\n\n")
 
 	// Disk usage summary bar
 	if m.DiskTotal > 0 {
 		pct := int(math.Round(float64(m.DiskUsed) / float64(m.DiskTotal) * 100))
-		const barWidth = 28
+		const barWidth = 35
 		filled := int(math.Round(float64(pct) / 100 * barWidth))
 		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
 
@@ -192,6 +203,7 @@ func (m DashboardModel) View() string {
 		))
 	}
 
+	// Category list
 	visible := m.visibleIndices()
 	for visIdx, catIdx := range visible {
 		cat := m.Categories[catIdx]
@@ -298,7 +310,7 @@ func (m DashboardModel) View() string {
 	return b.String()
 }
 
-func (m DashboardModel) SetSize(w, d int) {
+func (m *DashboardModel) SetSize(w, d int) {
 	m.Width = w
 	m.Height = d
 }

@@ -39,7 +39,8 @@ type App struct {
 	width         int
 	height        int
 
-	dashboard screens.DashboardModel
+	dashboard   screens.DashboardModel
+	scanningScr screens.ScanningModel
 
 	registry    *cleaner.Registry
 	scanResults map[cleaner.Category]*cleaner.ScanResult
@@ -131,6 +132,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch a.currentScreen {
 		case screenDashboard:
 			return a.updateDashboard(msg)
+
+		}
+	case scanCompleteMsg:
+		return a.handleScanComplete(msg)
+	}
+
+	return a, nil
+}
+
+func (a App) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
+	if msg.result != nil {
+		a.scanResults[msg.category] = msg.result
+		a.dashboard.UpdateCategorySize(string(msg.category), msg.result.TotalSize)
+	} else {
+		a.dashboard.UpdateCategorySize(string(msg.category), 0)
+	}
+
+	if a.currentScreen == screenScanning {
+		a.scanningScr.UpdateScanResult(msg.category, msg.result, msg.err)
+	}
+
+	a.scanning = false
+	for _, cat := range a.dashboard.Categories {
+		if cat.Scanning {
+			a.scanning = true
+			break
 		}
 	}
 

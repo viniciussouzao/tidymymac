@@ -4,7 +4,7 @@ import "context"
 
 type Cleaner interface {
 	// Category returns the cleaner's category identifier.
-	Categor() Category
+	Category() Category
 
 	// Name returns the cleaner's name.
 	Name() string
@@ -38,7 +38,7 @@ func NewRegistry() *Registry {
 // Register adds a new cleaner to the registry.
 func (r *Registry) Register(c Cleaner) {
 	r.cleaners = append(r.cleaners, c)
-	r.byID[c.Categor()] = c
+	r.byID[c.Category()] = c
 }
 
 // Get retrieves a cleaner by its category identifier. It returns the cleaner and a boolean indicating whether it was found.
@@ -54,6 +54,6 @@ func (r *Registry) All() []Cleaner {
 
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
-
+	r.Register(NewTempCleaner())
 	return r
 }

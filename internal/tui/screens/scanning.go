@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
@@ -97,6 +98,17 @@ func (m ScanningModel) Results() map[cleaner.Category]*cleaner.ScanResult {
 func (m *ScanningModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
+}
+
+func (m ScanningModel) Update(msg tea.Msg) (ScanningModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.Spinner, cmd = m.Spinner.Update(msg)
+		return m, cmd
+	default:
+		return m, nil
+	}
 }
 
 func (m ScanningModel) View() string {

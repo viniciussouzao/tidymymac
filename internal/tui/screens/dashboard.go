@@ -11,10 +11,10 @@ import (
 
 // CategoryItem represents a cleanup category in the main dashboard
 type CategoryItem struct {
-	ID        string
-	Name      string
-	Desc      string
-	Icon      string
+	ID   string
+	Name string
+	Desc string
+	//Icon      string // for future use, maybe we can add emojis or something to make it more visually appealing
 	Selected  bool
 	Size      int64 // in bytes, -1 means not scanned yet
 	Scanning  bool
@@ -36,7 +36,7 @@ type DashboardModel struct {
 func NewDashboard() DashboardModel {
 	m := DashboardModel{
 		Categories: []CategoryItem{
-			{ID: "temp", Name: "Temp Files", Desc: "System and user temporary files", Icon: "🗑️", Size: -1, NeedsSudo: true},
+			{ID: "temp", Name: "Temp Files", Desc: "System and user temporary files", Size: -1, NeedsSudo: true},
 		},
 	}
 
@@ -175,10 +175,6 @@ func (m DashboardModel) View() string {
 
 	sizeRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
 
-	// Menu title
-	b.WriteString(lipgloss.NewStyle().Bold(true).Underline(true).Render("Review and select categories to clean"))
-	b.WriteString("\n\n")
-
 	// Disk usage summary bar
 	if m.DiskTotal > 0 {
 		pct := int(math.Round(float64(m.DiskUsed) / float64(m.DiskTotal) * 100))
@@ -202,6 +198,10 @@ func (m DashboardModel) View() string {
 			storageStyle.Render(fmt.Sprintf("%s used of %s (%d%%)", utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct)),
 		))
 	}
+
+	// Title and instructions
+	b.WriteString(lipgloss.NewStyle().Bold(true).Underline(true).Render("Review and select categories to clean"))
+	b.WriteString("\n\n")
 
 	// Category list
 	visible := m.visibleIndices()

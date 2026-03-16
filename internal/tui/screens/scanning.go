@@ -156,7 +156,7 @@ func (m ScanningModel) View() string {
 	b.WriteString("\n")
 
 	if m.AllDone() {
-		b.WriteString(helpStyle.Render("  Press enter to revew  |  q to quit"))
+		b.WriteString(helpStyle.Render("  Press enter to review  |  q to quit"))
 	} else {
 		b.WriteString(helpStyle.Render("  Scanning in progress...  |  q to quit"))
 	}

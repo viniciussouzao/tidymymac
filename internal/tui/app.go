@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -105,6 +106,11 @@ func scanCategoryCmd(ctx context.Context, c cleaner.Cleaner) tea.Cmd {
 
 func cleanCategoryCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.FileEntry, dryRun bool) tea.Cmd {
 	return func() tea.Msg {
+		if dryRun {
+			// For dry run, we sleep for a short time to simulate the cleaning process
+			time.Sleep(1500 * time.Millisecond)
+		}
+
 		result, err := c.Clean(ctx, entries, dryRun, nil)
 		return cleanCompleteMsg{
 			category: c.Category(),
@@ -134,6 +140,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanCompleteMsg:
 		return a.handleScanComplete(msg)
 
+	case cleanCompleteMsg:
+		return a.handleCleanComplete(msg)
+
 	case tea.KeyMsg:
 		if key.Matches(msg, keys.Quit) {
 			a.cancel() // cancel any ongoing scans or cleans
@@ -149,6 +158,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a.updateReview(msg)
 		case screenCleaning:
 			return a.updateCleaning(msg)
+		case screenSummary:
+			return a.updateSummary(msg)
 
 		}
 	}
@@ -177,6 +188,16 @@ func (a App) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, nil
+}
+
+func (a App) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
+	a.cleaningScr.UpdateCleanResult(msg.category, msg.result, msg.err)
+
+	if a.cleaningScr.Done {
+		return a, nil
+	}
+
+	return a.startNextClean()
 }
 
 func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -249,11 +270,11 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.reviewScr.TotalSize == 0 {
 			return a, nil
 		}
-		// results := a.scanningScr.Results()
-		// a.cleaningScr = screens.NewCleaning(results, !a.executeMode)
-		// a.cleaningScr.SetSize(a.width, a.height)
-		// a.currentScreen = screenCleaning
-		// return a.startNextClean()
+		results := a.scanningScr.Results()
+		a.cleaningScr = screens.NewCleaningModel(results, !a.executeMode)
+		a.cleaningScr.SetSize(a.width, a.height)
+		a.currentScreen = screenCleaning
+		return a.startNextClean()
 
 	case key.Matches(msg, keys.Back):
 		a.currentScreen = screenScanning
@@ -307,6 +328,21 @@ func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+func (a App) startNextClean() (tea.Model, tea.Cmd) {
+	next := a.cleaningScr.NextCategory()
+	if next == nil {
+		return a, nil
+	}
+
+	c, ok := a.registry.Get(next.Category)
+	if !ok {
+		return a, nil
+	}
+
+	dryRun := !a.executeMode
+	return a, cleanCategoryCmd(a.ctx, c, next.Entries, dryRun)
+}
+
 func (a App) View() string {
 	// Global header with ASCII logo and tagline
 	header := Logo() + "\n" + TagLine() + "\n\n"
@@ -329,6 +365,11 @@ func (a App) View() string {
 
 	case screenReview:
 		content = a.reviewScr.View()
+
+	case screenCleaning:
+		content = a.cleaningScr.View()
+	case screenSummary:
+		content = a.summaryScr.View()
 	}
 
 	return header + banner + content

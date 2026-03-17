@@ -41,7 +41,7 @@ type App struct {
 
 	dashboard   screens.DashboardModel
 	scanningScr screens.ScanningModel
-
+	reviewScr   screens.ReviewModel
 	registry    *cleaner.Registry
 	scanResults map[cleaner.Category]*cleaner.ScanResult
 	spinner     spinner.Model
@@ -116,12 +116,18 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.width = msg.Width
 		a.height = msg.Height
 		a.dashboard.SetSize(msg.Width, msg.Height)
+		a.scanningScr.SetSize(msg.Width, msg.Height)
+		a.reviewScr.SetSize(msg.Width, msg.Height)
 		return a, nil
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		a.spinner, cmd = a.spinner.Update(msg)
+		a.scanningScr.Spinner, _ = a.scanningScr.Spinner.Update(msg) // update scanning screen spinner as well
 		return a, cmd
+
+	case scanCompleteMsg:
+		return a.handleScanComplete(msg)
 
 	case tea.KeyMsg:
 		if key.Matches(msg, keys.Quit) {
@@ -132,10 +138,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch a.currentScreen {
 		case screenDashboard:
 			return a.updateDashboard(msg)
+		case screenScanning:
+			return a.updateScanning(msg)
+		case screenReview:
+			return a.updateReview(msg)
 
 		}
-	case scanCompleteMsg:
-		return a.handleScanComplete(msg)
 	}
 
 	return a, nil
@@ -185,9 +193,75 @@ func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if action != nil {
 		if dmsg, ok := action.(screens.DashboardMsg); ok {
-			_ = dmsg
-			// to-do: transition to review screen with selected categories
+			a.scanningScr = screens.NewScanning(dmsg.Selected, a.registry)
+			a.scanningScr.SetSize(a.width, a.height)
+			a.currentScreen = screenScanning
+
+			cmds := []tea.Cmd{a.scanningScr.Spinner.Tick}
+			for _, id := range dmsg.Selected {
+				c, ok := a.registry.Get(cleaner.Category(id))
+				if !ok {
+					continue
+				}
+
+				if result, exists := a.scanResults[cleaner.Category(id)]; exists {
+					a.scanningScr.UpdateScanResult(cleaner.Category(id), result, nil)
+				} else {
+					cmds = append(cmds, scanCategoryCmd(a.ctx, c))
+				}
+			}
+			return a, tea.Batch(cmds...)
 		}
+	}
+
+	return a, nil
+}
+
+func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.scanningScr.AllDone() {
+		if key.Matches(msg, keys.Confirm) {
+			results := a.scanningScr.Results()
+			a.reviewScr = screens.NewReview(results, a.executeMode)
+			a.reviewScr.SetSize(a.width, a.height)
+			a.currentScreen = screenReview
+			return a, nil
+		}
+	}
+
+	if key.Matches(msg, keys.Back) {
+		a.currentScreen = screenDashboard
+		return a, nil
+	}
+
+	return a, nil
+}
+
+func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Confirm):
+		if a.reviewScr.TotalSize == 0 {
+			return a, nil
+		}
+		// results := a.scanningScr.Results()
+		// a.cleaningScr = screens.NewCleaning(results, !a.executeMode)
+		// a.cleaningScr.SetSize(a.width, a.height)
+		// a.currentScreen = screenCleaning
+		// return a.startNextClean()
+
+	case key.Matches(msg, keys.Back):
+		a.currentScreen = screenScanning
+		return a, nil
+
+	case key.Matches(msg, keys.Up):
+		a.reviewScr.ScrollUp()
+	case key.Matches(msg, keys.Down):
+		a.reviewScr.ScrollDown()
+	case key.Matches(msg, keys.SelectAll):
+		a.reviewScr.ToggleShowAll()
+	case key.Matches(msg, keys.FullPath):
+		a.reviewScr.ToggleFullPath()
+	case key.Matches(msg, keys.NextList):
+		a.reviewScr.NextCategory()
 	}
 
 	return a, nil
@@ -209,6 +283,12 @@ func (a App) View() string {
 		if a.scanning {
 			content += "\n" + dimStyle.Render(" "+a.spinner.View()+" scanning filesystem...")
 		}
+
+	case screenScanning:
+		content = a.scanningScr.View()
+
+	case screenReview:
+		content = a.reviewScr.View()
 	}
 
 	return header + banner + content

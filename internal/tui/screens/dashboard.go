@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -34,10 +35,17 @@ type DashboardModel struct {
 
 // NewDashboard initializes the dashboard with all categories and default values
 func NewDashboard() DashboardModel {
-	m := DashboardModel{
-		Categories: []CategoryItem{
-			{ID: "temp", Name: "Temp Files", Desc: "System and user temporary files", Size: -1, NeedsSudo: true},
-		},
+	m := DashboardModel{}
+
+	for _, c := range cleaner.DefaultRegistry().All() {
+		m.Categories = append(m.Categories, CategoryItem{
+			ID:        string(c.Category()),
+			Name:      c.Name(),
+			Desc:      c.Description(),
+			Size:      -1,
+			Scanning:  true, // Já começa como scanning
+			NeedsSudo: c.RequiresSudo(),
+		})
 	}
 
 	if total, used, _, err := utils.DiskUsage("/"); err == nil {

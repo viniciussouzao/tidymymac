@@ -48,6 +48,7 @@ func NewDashboard() DashboardModel {
 	return m
 }
 
+// DashboardMsg handles messages from the dashboard, such as when the user presses enter to start scanning selected categories
 type DashboardMsg struct {
 	Selected []string
 }
@@ -176,6 +177,8 @@ func (m DashboardModel) View() string {
 	sizeRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
 
 	// Disk usage summary bar
+	b.WriteString(lipgloss.NewStyle().Italic(true).Underline(true).Render("Storage status:"))
+	b.WriteString("\n\n")
 	if m.DiskTotal > 0 {
 		pct := int(math.Round(float64(m.DiskUsed) / float64(m.DiskTotal) * 100))
 		const barWidth = 35
@@ -193,14 +196,14 @@ func (m DashboardModel) View() string {
 		}
 
 		storageStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#AAAAAA"))
-		b.WriteString(fmt.Sprintf("  %s  %s\n\n",
+		b.WriteString(fmt.Sprintf(" %s  %s\n\n",
 			barStyle.Render(bar),
-			storageStyle.Render(fmt.Sprintf("%s used of %s (%d%%)", utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct)),
-		))
+			storageStyle.Render(fmt.Sprintf("%s used of %s (%d%%) | %s free",
+				utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct, utils.FormatBytes(m.DiskTotal-m.DiskUsed)))))
 	}
 
 	// Title and instructions
-	b.WriteString(lipgloss.NewStyle().Bold(true).Underline(true).Render("Review and select categories to clean"))
+	b.WriteString(lipgloss.NewStyle().Bold(false).Underline(false).Render("Review and select categories to clean"))
 	b.WriteString("\n\n")
 
 	// Category list

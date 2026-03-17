@@ -39,9 +39,13 @@ type App struct {
 	width         int
 	height        int
 
+	// Screens
 	dashboard   screens.DashboardModel
 	scanningScr screens.ScanningModel
+	cleaningScr screens.CleaningModel
+	summaryScr  screens.SummaryModel
 	reviewScr   screens.ReviewModel
+
 	registry    *cleaner.Registry
 	scanResults map[cleaner.Category]*cleaner.ScanResult
 	spinner     spinner.Model
@@ -143,6 +147,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a.updateScanning(msg)
 		case screenReview:
 			return a.updateReview(msg)
+		case screenCleaning:
+			return a.updateCleaning(msg)
 
 		}
 	}
@@ -265,6 +271,39 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.reviewScr.NextCategory()
 	}
 
+	return a, nil
+}
+
+func (a App) updateCleaning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.cleaningScr.Done {
+		if key.Matches(msg, keys.Confirm) {
+			results := a.cleaningScr.Results()
+			a.summaryScr = screens.NewSummary(results, !a.executeMode)
+			a.summaryScr.SetSize(a.width, a.height)
+			a.currentScreen = screenSummary
+			return a, nil
+		}
+	}
+	return a, nil
+}
+
+func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.Matches(msg, keys.Confirm) {
+		// Reset and return to dashboard for re-run
+		a.scanResults = make(map[cleaner.Category]*cleaner.ScanResult)
+		a.dashboard = screens.NewDashboard()
+		a.dashboard.SetSize(a.width, a.height)
+		a.currentScreen = screenDashboard
+
+		// Re-scan all categories
+		cmds := []tea.Cmd{a.spinner.Tick}
+		for _, c := range a.registry.All() {
+			a.dashboard.SetCategoryScanning(string(c.Category()))
+			cmds = append(cmds, scanCategoryCmd(a.ctx, c))
+		}
+		a.scanning = true
+		return a, tea.Batch(cmds...)
+	}
 	return a, nil
 }
 

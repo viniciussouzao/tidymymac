@@ -2,12 +2,6 @@ package cleaner
 
 import "time"
 
-type Category string
-
-const (
-	CategoryTemp Category = "temp"
-)
-
 // FileEntry represents a single file or directory found during the scanning
 type FileEntry struct {
 	Path     string

@@ -122,9 +122,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
+		var scanCmd tea.Cmd
 		a.spinner, cmd = a.spinner.Update(msg)
-		a.scanningScr.Spinner, _ = a.scanningScr.Spinner.Update(msg) // update scanning screen spinner as well
-		return a, cmd
+		a.scanningScr.Spinner, scanCmd = a.scanningScr.Spinner.Update(msg) // update scanning screen spinner as well
+		return a, tea.Batch(cmd, scanCmd)
 
 	case scanCompleteMsg:
 		return a.handleScanComplete(msg)

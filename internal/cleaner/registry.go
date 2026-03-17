@@ -55,5 +55,6 @@ func (r *Registry) All() []Cleaner {
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
 	r.Register(NewTempCleaner())
+	r.Register(NewHomebrewCleaner())
 	return r
 }

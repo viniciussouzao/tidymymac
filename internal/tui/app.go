@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -55,7 +54,7 @@ type App struct {
 	cancel      context.CancelFunc
 
 	// to-do: i want to use this for the generate script only feature
-	scriptMessage string
+	//scriptMessage string
 }
 
 // NewApp initializes the TUI application with default values and a spinner
@@ -106,10 +105,10 @@ func scanCategoryCmd(ctx context.Context, c cleaner.Cleaner) tea.Cmd {
 
 func cleanCategoryCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.FileEntry, dryRun bool) tea.Cmd {
 	return func() tea.Msg {
-		if dryRun {
-			// For dry run, we sleep for a short time to simulate the cleaning process
-			time.Sleep(1500 * time.Millisecond)
-		}
+		//if dryRun {
+		// For dry run, we simulate the clean taking some time
+		// but I need to figure out a way to do this without blocking the bubbletea event loop
+		//}
 
 		result, err := c.Clean(ctx, entries, dryRun, nil)
 		return cleanCompleteMsg{
@@ -128,6 +127,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dashboard.SetSize(msg.Width, msg.Height)
 		a.scanningScr.SetSize(msg.Width, msg.Height)
 		a.reviewScr.SetSize(msg.Width, msg.Height)
+		a.cleaningScr.SetSize(msg.Width, msg.Height)
+		a.summaryScr.SetSize(msg.Width, msg.Height)
 		return a, nil
 
 	case spinner.TickMsg:
@@ -309,6 +310,11 @@ func (a App) updateCleaning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// if context is done, quit immediately on any key press
+	if a.ctx.Err() != nil {
+		return a, tea.Quit
+	}
+
 	if key.Matches(msg, keys.Confirm) {
 		// Reset and return to dashboard for re-run
 		a.scanResults = make(map[cleaner.Category]*cleaner.ScanResult)

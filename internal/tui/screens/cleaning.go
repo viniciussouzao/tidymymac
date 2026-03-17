@@ -115,6 +115,11 @@ func (m CleaningModel) Results() []*cleaner.CleanResult {
 	for _, c := range m.Categories {
 		if c.Result != nil {
 			results = append(results, c.Result)
+		} else {
+			results = append(results, &cleaner.CleanResult{
+				Category: c.Category,
+				Errors:   []error{c.Error},
+			})
 		}
 	}
 	return results
@@ -153,7 +158,7 @@ func (m CleaningModel) View() string {
 		switch cat.Status {
 		case "waiting":
 			icon = dimStyle.Render("○")
-			detail = dimStyle.Render("waiting...")
+			detail = dimStyle.Render("pending...")
 		case "cleaning":
 			icon = "⟳"
 			pct := float64(0)

@@ -17,6 +17,7 @@ type fileSummary struct {
 	IsDir bool
 }
 
+// ReviewCategory represents a category of files to review, with its total size, file count, and lists of files.
 type ReviewCategory struct {
 	Name     string
 	Size     int64
@@ -25,6 +26,7 @@ type ReviewCategory struct {
 	AllFiles []fileSummary // to show all files in the review screen
 }
 
+// ReviewModel is the model for the review screen, containing all categories and their files, as well as UI state for scrolling and toggling views.
 type ReviewModel struct {
 	Categories   []ReviewCategory
 	TotalSize    int64
@@ -39,6 +41,7 @@ type ReviewModel struct {
 	ShowFull     bool
 }
 
+// NewReview constructs a ReviewModel from the scan results
 func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode bool) ReviewModel {
 	m := ReviewModel{ExecuteMode: executeMode}
 

@@ -77,7 +77,7 @@ func (m SummaryModel) View() string {
 
 	for _, r := range m.Results {
 		line := fmt.Sprintf("  %-22s %12s %10d",
-			string(r.Category),
+			r.Category.DisplayName(),
 			utils.FormatBytes(r.BytesFreed),
 			r.FilesDeleted,
 		)

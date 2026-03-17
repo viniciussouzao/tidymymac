@@ -40,7 +40,7 @@ func NewDashboard() DashboardModel {
 	for _, c := range cleaner.DefaultRegistry().All() {
 		m.Categories = append(m.Categories, CategoryItem{
 			ID:        string(c.Category()),
-			Name:      c.Name(),
+			Name:      c.Category().DisplayName(),
 			Desc:      c.Description(),
 			Size:      -1,
 			Scanning:  true, // Já começa como scanning

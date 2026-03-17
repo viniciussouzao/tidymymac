@@ -156,7 +156,7 @@ func (m CleaningModel) View() string {
 		var icon, detail string
 
 		switch cat.Status {
-		case "waiting":
+		case "pending":
 			icon = dimStyle.Render("○")
 			detail = dimStyle.Render("pending...")
 		case "cleaning":

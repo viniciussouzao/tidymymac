@@ -10,6 +10,7 @@ import (
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
+// CleaningCategory represents the state of a single category during the cleaning process
 type CleaningCategory struct {
 	Name         string
 	Category     cleaner.Category
@@ -23,6 +24,7 @@ type CleaningCategory struct {
 	Entries      []cleaner.FileEntry
 }
 
+// CleaningModel is the screen shown during the cleaning process, showing progress for each category and overall.
 type CleaningModel struct {
 	Categories  []CleaningCategory
 	OverallBar  progress.Model

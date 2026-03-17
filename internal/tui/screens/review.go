@@ -432,7 +432,7 @@ func (m ReviewModel) View() string {
 
 	fullHintTxt := "f: show full paths"
 	if m.ShowFull {
-		fullHintTxt = "f: show shot paths"
+		fullHintTxt = "f: show short paths"
 	}
 
 	switchListHintTxt := "tab: switch category"

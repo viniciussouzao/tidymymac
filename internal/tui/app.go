@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
@@ -110,7 +111,11 @@ func cleanCategoryCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.
 		// but I need to figure out a way to do this without blocking the bubbletea event loop
 		//}
 
-		result, err := c.Clean(ctx, entries, dryRun, nil)
+		progressFunc := func(p cleaner.CleanProgress) {
+			progress.New(progress.WithDefaultGradient())
+		}
+
+		result, err := c.Clean(ctx, entries, dryRun, progressFunc)
 		return cleanCompleteMsg{
 			category: c.Category(),
 			result:   result,

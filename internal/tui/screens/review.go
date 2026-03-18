@@ -467,40 +467,40 @@ func displayPath(category string, f fileSummary, showFull bool) string {
 		return "docker " + rest
 	}
 
-	// Special formatting for caches: ~/Library/Caches/<APP>/<...>/<name>
-	// if category == string(cleaner.CategoryCaches) {
-	// 	p := path
-	// 	// Ensure we have a consistent base prefix with ~ if under home
-	// 	if strings.HasPrefix(p, "~/") || strings.HasPrefix(p, "~/") {
-	// 		// ok
-	// 	}
+	//Special formatting for caches: ~/Library/Caches/<APP>/<...>/<name>
+	if category == string(cleaner.CategoryCaches) {
+		p := path
+		// Ensure we have a consistent base prefix with ~ if under home
+		if strings.HasPrefix(p, "~/") {
+			// ok
+		}
 
-	// 	// Split on '/'
-	// 	parts := strings.Split(p, "/")
-	// 	// Expect: ["~","Library","Caches", app, ...]
-	// 	if len(parts) >= 4 && parts[0] == "~" && parts[1] == "Library" && parts[2] == "Caches" {
-	// 		app := parts[3]
-	// 		// Determine last element name (file or dir)
-	// 		name := ""
-	// 		if len(parts) > 4 {
-	// 			name = parts[len(parts)-1]
-	// 		} else {
-	// 			// Path ends at app level
-	// 			name = app
-	// 		}
-	// 		// If there are more than one segment between app and last name, elide middle
-	// 		if len(parts) > 5 {
-	// 			return fmt.Sprintf("~/Library/Caches/%s/<...>/%s", app, name)
-	// 		}
-	// 		// If exactly one extra segment beyond app, show it directly
-	// 		if len(parts) == 5 {
-	// 			return fmt.Sprintf("~/Library/Caches/%s/%s", app, name)
-	// 		}
-	// 		// Only up to the app folder
-	// 		return fmt.Sprintf("~/Library/Caches/%s", app)
-	// 	}
-	// 	// If not matching the expected pattern, fall back to general shortening below
-	// }
+		// Split on '/'
+		parts := strings.Split(p, "/")
+		// Expect: ["~","Library","Caches", app, ...]
+		if len(parts) >= 4 && parts[0] == "~" && parts[1] == "Library" && parts[2] == "Caches" {
+			app := parts[3]
+			// Determine last element name (file or dir)
+			name := ""
+			if len(parts) > 4 {
+				name = parts[len(parts)-1]
+			} else {
+				// Path ends at app level
+				name = app
+			}
+			// If there are more than one segment between app and last name, elide middle
+			if len(parts) > 5 {
+				return fmt.Sprintf("~/Library/Caches/%s/<...>/%s", app, name)
+			}
+			// If exactly one extra segment beyond app, show it directly
+			if len(parts) == 5 {
+				return fmt.Sprintf("~/Library/Caches/%s/%s", app, name)
+			}
+			// Only up to the app folder
+			return fmt.Sprintf("~/Library/Caches/%s", app)
+		}
+		// If not matching the expected pattern, fall back to general shortening below
+	}
 
 	// General shortening: keep tail for very long paths
 	if len(path) > 50 {

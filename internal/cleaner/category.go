@@ -5,6 +5,7 @@ type Category string
 const (
 	CategoryTemp     Category = "temp"
 	CategoryHomebrew Category = "homebrew"
+	CategoryCaches   Category = "caches"
 )
 
 func (c Category) DisplayName() string {
@@ -13,6 +14,8 @@ func (c Category) DisplayName() string {
 		return "Temporary Files"
 	case CategoryHomebrew:
 		return "Homebrew Cache"
+	case CategoryCaches:
+		return "Application Caches"
 	default:
 		return string(c)
 	}

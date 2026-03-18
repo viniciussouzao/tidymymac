@@ -6,6 +6,7 @@ const (
 	CategoryTemp     Category = "temp"
 	CategoryHomebrew Category = "homebrew"
 	CategoryCaches   Category = "caches"
+	CategoryLogs     Category = "logs"
 )
 
 func (c Category) DisplayName() string {
@@ -16,6 +17,8 @@ func (c Category) DisplayName() string {
 		return "Homebrew Cache"
 	case CategoryCaches:
 		return "Application Caches"
+	case CategoryLogs:
+		return "System Logs"
 	default:
 		return string(c)
 	}

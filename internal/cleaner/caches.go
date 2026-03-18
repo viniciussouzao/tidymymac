@@ -8,14 +8,16 @@ import (
 	"time"
 )
 
+// CachesCleaner scans and cleans application cache files located in the user's Library/Caches directory.
 type CachesCleaner struct {
 	homeDir string
 }
 
+// NewCachesCleaner creates a CachesCleaner using the current user's home directory.
 func NewCachesCleaner() *CachesCleaner {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		home = "" // fallback to empty string if we can't get the home directory
+		home = ""
 	}
 	return &CachesCleaner{homeDir: home}
 }
@@ -28,7 +30,12 @@ func (c *CachesCleaner) Description() string { return "Browser and application c
 
 func (c *CachesCleaner) RequiresSudo() bool { return false }
 
+// Scan walks through the user's Library/Caches directory and collects information about cache files.
 func (c *CachesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
+	if c.homeDir == "" {
+		return &ScanResult{Category: CategoryCaches}, nil
+	}
+
 	start := time.Now()
 	result := &ScanResult{Category: CategoryCaches}
 
@@ -66,7 +73,7 @@ func (c *CachesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		result.TotalSize += info.Size()
 		result.TotalFiles++
 
-		if progress != nil && result.TotalFiles%200 == 0 {
+		if progress != nil && result.TotalFiles%100 == 0 {
 			progress(ScanProgress{
 				Category:   CategoryCaches,
 				FilesFound: result.TotalFiles,
@@ -91,6 +98,7 @@ func (c *CachesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	return result, nil
 }
 
+// Clean deletes the specified cache files and updates the result with the number of files deleted and bytes freed.
 func (c *CachesCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{

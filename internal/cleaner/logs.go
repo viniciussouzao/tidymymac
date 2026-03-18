@@ -15,7 +15,10 @@ type LogsCleaner struct {
 
 // NewLogsCleaner creates a LogsCleaner using the current user's home directory.
 func NewLogsCleaner() *LogsCleaner {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
 	return &LogsCleaner{homeDir: home}
 }
 
@@ -24,7 +27,12 @@ func (c *LogsCleaner) Name() string        { return "System Logs" }
 func (c *LogsCleaner) Description() string { return "Application and system log files" }
 func (c *LogsCleaner) RequiresSudo() bool  { return true }
 
+// Scan walks through common log directories and collects information about log files.
 func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
+	if c.homeDir == "" {
+		return &ScanResult{Category: CategoryLogs}, nil
+	}
+
 	start := time.Now()
 	result := &ScanResult{Category: CategoryLogs}
 
@@ -97,6 +105,7 @@ func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 	return result, nil
 }
 
+// Clean deletes the specified log files and updates the result with the number of files deleted and bytes freed.
 func (c *LogsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{

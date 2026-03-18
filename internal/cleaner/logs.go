@@ -84,7 +84,7 @@ func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 					Category:   CategoryLogs,
 					FilesFound: result.TotalFiles,
 					BytesFound: result.TotalSize,
-					CurrentDir: root,
+					CurrentDir: filepath.Dir(path),
 				})
 			}
 
@@ -126,15 +126,15 @@ func (c *LogsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 			if err := os.Remove(entry.Path); err != nil {
 				if !os.IsNotExist(err) {
 					result.Errors = append(result.Errors, err)
+					continue
 				}
-				continue
 			}
 		}
 
 		result.FilesDeleted++
 		result.BytesFreed += entry.Size
 
-		if progress != nil && (i%50 == 0 || i == len(entries)-1) {
+		if progress != nil && (i%100 == 0 || i == len(entries)-1) {
 			progress(CleanProgress{
 				Category:     CategoryLogs,
 				FilesDeleted: result.FilesDeleted,

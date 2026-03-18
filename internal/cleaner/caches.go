@@ -119,8 +119,8 @@ func (c *CachesCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun b
 			if err := os.Remove(entry.Path); err != nil {
 				if !os.IsNotExist(err) {
 					result.Errors = append(result.Errors, err)
+					continue
 				}
-				continue
 			}
 		}
 

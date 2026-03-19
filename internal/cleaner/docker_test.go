@@ -43,3 +43,23 @@ func TestParseStoppedContainerInspectLineRejectsInvalidInput(t *testing.T) {
 		t.Fatalf("expected malformed inspect output to be rejected")
 	}
 }
+
+func TestParseDockerSize(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected int64
+	}{
+		{"1.2GB", 1288490188},
+		{"500MB", 524288000},
+		{"0B", 0},
+		{"2TB", 2199023255552},
+		{"100kB", 102400},
+	}
+
+	for _, test := range tests {
+		result := parseDockerSize(test.input)
+		if result != test.expected {
+			t.Errorf("parseDockerSize(%q) = %d; expected %d", test.input, result, test.expected)
+		}
+	}
+}

@@ -248,6 +248,7 @@ func findStoppedContainers(ctx context.Context) ([]containerInfo, error) {
 	}
 
 	var containers []containerInfo
+	var inspectErrs []string
 	now := time.Now()
 
 	for _, id := range ids {
@@ -261,12 +262,17 @@ func findStoppedContainers(ctx context.Context) ([]containerInfo, error) {
 			"--format", dockerStoppedContainerInspectFormat,
 			"--size", id).Output()
 		if err != nil {
-			continue // skip if we can't inspect for some reason
+			inspectErrs = append(inspectErrs, fmt.Sprintf("docker inspect %s: %s", id, err))
+			continue // skip this container but keep going
 		}
 
 		container, ok := parseStoppedContainerInspectLine(strings.TrimSpace(string(inspectOut)), now)
 		if !ok {
 			continue
+		}
+
+		if len(inspectErrs) > 0 {
+			return containers, fmt.Errorf("docker inspect failed for some containers: %s", strings.Join(inspectErrs, "; "))
 		}
 
 		containers = append(containers, container)

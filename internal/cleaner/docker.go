@@ -300,7 +300,11 @@ func parseStoppedContainerInspectLine(line string, now time.Time) (containerInfo
 		return containerInfo{}, false
 	}
 
-	size, _ := strconv.ParseInt(fields[4], 10, 64)
+	size, err := strconv.ParseInt(fields[4], 10, 64)
+	if err != nil {
+		return containerInfo{}, false
+	}
+
 	if size < 0 {
 		size = 0
 	}

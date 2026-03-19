@@ -155,6 +155,8 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		result.Errors = append(result.Errors, fmt.Errorf("finding orphaned volumes: %w", err))
 	}
 
+	var orphanedCount int64
+
 	for _, vol := range orphanedVolumes {
 		entry := FileEntry{
 			Path:     fmt.Sprintf("docker://volume/%s", vol),
@@ -163,6 +165,11 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		}
 		result.Entries = append(result.Entries, entry)
 		result.TotalFiles++
+		orphanedCount++
+	}
+
+	if orphanedCount > 0 && result.TotalSize == 0 {
+		result.TotalSize = orphanedCount
 	}
 
 	if err := ctx.Err(); err != nil {

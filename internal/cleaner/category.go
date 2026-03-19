@@ -7,6 +7,7 @@ const (
 	CategoryHomebrew Category = "homebrew"
 	CategoryCaches   Category = "caches"
 	CategoryLogs     Category = "logs"
+	CategoryDocker   Category = "docker"
 )
 
 func (c Category) DisplayName() string {
@@ -19,6 +20,8 @@ func (c Category) DisplayName() string {
 		return "Application Caches"
 	case CategoryLogs:
 		return "System Logs"
+	case CategoryDocker:
+		return "Docker"
 	default:
 		return string(c)
 	}

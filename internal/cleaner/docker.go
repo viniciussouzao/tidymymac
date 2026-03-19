@@ -53,7 +53,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	}
 
 	// Check if daemon is running
-	if err := exec.Command("docker", "info").Run(); err != nil {
+	if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("docker daemon not running"))
 		result.Duration = time.Since(start)
 		return result, nil

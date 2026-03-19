@@ -155,8 +155,6 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		result.Errors = append(result.Errors, fmt.Errorf("finding orphaned volumes: %w", err))
 	}
 
-	var orphanedCount int64
-
 	for _, vol := range orphanedVolumes {
 		entry := FileEntry{
 			Path:     fmt.Sprintf("docker://volume/%s", vol),
@@ -165,11 +163,6 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		}
 		result.Entries = append(result.Entries, entry)
 		result.TotalFiles++
-		orphanedCount++
-	}
-
-	if orphanedCount > 0 && result.TotalSize == 0 {
-		result.TotalSize = orphanedCount
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -203,10 +196,9 @@ func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun b
 		// parts[0] = "docker:", parts[1] = "", parts[2] = type, parts[3] = id/...
 		resourcePath := strings.TrimPrefix(e.Path, "docker://")
 		segments := strings.SplitN(resourcePath, "/", 3) // type/id/name
-		if len(segments) < 3 {
-			if !strings.HasPrefix(e.Path, "docker://") {
-				result.Errors = append(result.Errors, fmt.Errorf("invalid docker entry path: %s", e.Path))
-			}
+		if len(segments) < 2 {
+			result.Errors = append(result.Errors, fmt.Errorf("invalid docker entry path: %s", e.Path))
+			continue
 		}
 
 		resourceType := segments[0]

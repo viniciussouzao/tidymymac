@@ -63,3 +63,27 @@ func TestParseDockerSize(t *testing.T) {
 		}
 	}
 }
+
+func TestFindImagesForStoppedContainers(t *testing.T) {
+	tests := []struct {
+		name     string
+		imageIds map[string]bool
+	}{
+		{"test-image:latest", map[string]bool{"sha256:7f5bbdafebde7c42e42e33396d01c0eda3eb753da8dae99071a30e350568a0a4": true}},
+		{"another-image:1.0", map[string]bool{"sha256:f226345927d7e348497136874b6d207e0b32cc52154ad8323129352923a3142f": true}},
+	}
+
+	for _, test := range tests {
+		result, err := findImagesForStoppedContainers(t.Context(), test.imageIds)
+		if err != nil {
+			t.Errorf("findImagesForStoppedContainers returned error: %v", err)
+			continue
+		}
+
+		if len(result) != len(test.imageIds) {
+			t.Errorf("findImagesForStoppedContainers(%v) = %d; expected %d", test.imageIds, len(result), len(test.imageIds))
+		}
+
+	}
+
+}

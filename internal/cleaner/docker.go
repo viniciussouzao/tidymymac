@@ -200,16 +200,13 @@ func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun b
 			return result, err
 		}
 
-		parts := strings.SplitN(e.Path, "/", 4) // docker://type/id/name
-		if len(parts) < 3 {
-			continue
-		}
-
 		// parts[0] = "docker:", parts[1] = "", parts[2] = type, parts[3] = id/...
 		resourcePath := strings.TrimPrefix(e.Path, "docker://")
 		segments := strings.SplitN(resourcePath, "/", 3) // type/id/name
-		if len(segments) < 2 {
-			continue
+		if len(segments) < 3 {
+			if !strings.HasPrefix(e.Path, "docker://") {
+				result.Errors = append(result.Errors, fmt.Errorf("invalid docker entry path: %s", e.Path))
+			}
 		}
 
 		resourceType := segments[0]

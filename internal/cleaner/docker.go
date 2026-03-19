@@ -29,8 +29,10 @@ type imageInfo struct {
 	Size int64
 }
 
+// DockerCleaner scans for unused Docker resources like stopped containers and untagged images.
 type DockerCleaner struct{}
 
+// NewDockerCleaner creates a new instance of DockerCleaner.
 func NewDockerCleaner() *DockerCleaner {
 	return &DockerCleaner{}
 }
@@ -80,6 +82,11 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		result.Duration = time.Since(start)
+		return result, err
+	}
+
 	// 2. find untagged images
 	untaggedImages, err := findImagesWithoutTags(ctx)
 	if err != nil {
@@ -100,6 +107,11 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		result.Entries = append(result.Entries, entry)
 		result.TotalSize += img.Size
 		result.TotalFiles++
+	}
+
+	if err := ctx.Err(); err != nil {
+		result.Duration = time.Since(start)
+		return result, err
 	}
 
 	// 3. find images used by stopped containers
@@ -124,6 +136,11 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		result.TotalFiles++
 	}
 
+	if err := ctx.Err(); err != nil {
+		result.Duration = time.Since(start)
+		return result, err
+	}
+
 	// 4. find orphaned volumes
 	orphanedVolumes, err := findOrphanedVolumes(ctx)
 	if err != nil {
@@ -138,6 +155,11 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 		}
 		result.Entries = append(result.Entries, entry)
 		result.TotalFiles++
+	}
+
+	if err := ctx.Err(); err != nil {
+		result.Duration = time.Since(start)
+		return result, err
 	}
 
 	result.Duration = time.Since(start)

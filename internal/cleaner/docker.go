@@ -195,6 +195,11 @@ func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun b
 	}
 
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			result.Duration = time.Since(start)
+			return result, err
+		}
+
 		parts := strings.SplitN(e.Path, "/", 4) // docker://type/id/name
 		if len(parts) < 3 {
 			continue

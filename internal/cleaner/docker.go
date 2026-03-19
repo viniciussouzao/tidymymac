@@ -271,11 +271,11 @@ func findStoppedContainers(ctx context.Context) ([]containerInfo, error) {
 			continue
 		}
 
-		if len(inspectErrs) > 0 {
-			return containers, fmt.Errorf("docker inspect failed for some containers: %s", strings.Join(inspectErrs, "; "))
-		}
-
 		containers = append(containers, container)
+	}
+
+	if len(inspectErrs) > 0 {
+		return containers, fmt.Errorf("docker inspect failed for some containers: %s", strings.Join(inspectErrs, "; "))
 	}
 
 	return containers, nil

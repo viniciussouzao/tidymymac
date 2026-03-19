@@ -53,10 +53,16 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	}
 
 	// Check if daemon is running
-	if err := exec.CommandContext(ctx, "docker", "info").Run(); err != nil {
-		result.Errors = append(result.Errors, fmt.Errorf("docker daemon not running"))
-		result.Duration = time.Since(start)
-		return result, nil
+	cmdOut, err := exec.CommandContext(ctx, "docker", "info").CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(cmdOut))
+		if msg != "" {
+			result.Errors = append(result.Errors, fmt.Errorf("docker info: %s", msg))
+			return result, nil // Docker not running, return empty result with error
+		} else {
+			result.Errors = append(result.Errors, fmt.Errorf("docker info: %w", err))
+			return result, nil
+		}
 	}
 
 	// 1. find stopped containers > 7 days
@@ -119,6 +125,8 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Errorf("finding images for stopped containers: %w", err))
 	}
+
+	imagesForStoppedContainers = excludeImagesUsedByStoppedContainers(imagesForStoppedContainers, stoppedImageIDs)
 
 	for _, img := range imagesForStoppedContainers {
 		tag := "<none>"
@@ -411,4 +419,16 @@ func findOrphanedVolumes(ctx context.Context) ([]string, error) {
 	}
 
 	return volumes, nil
+}
+
+func excludeImagesUsedByStoppedContainers(images []imageInfo, stoppedImageIDs map[string]bool) []imageInfo {
+	var filtered []imageInfo
+	for _, img := range images {
+		if stoppedImageIDs[img.ID] || stoppedImageIDs["sha256:"+img.ID] {
+			continue
+		}
+		filtered = append(filtered, img)
+	}
+
+	return filtered
 }

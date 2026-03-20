@@ -1,8 +1,13 @@
-# 🧹 TidyMyMac
+<p align="center">
+  <img src="docs/images/logo.png" width="700"/>
+</p>
 
-An open-source macOS storage cleanup utility for developers. Scan, review, and reclaim disk space — safely, transparently, and from the terminal.
+<h1 align="center">🧹 TidyMyMac</h1>
 
-> Inspired by CleanMyMac, but open-source and built for developers who want to know exactly what gets deleted.
+<p align="center">
+  An open-source macOS storage cleanup utility for developers.<br/>
+  Scan, review, and reclaim disk space — safely, transparently, and from the terminal.
+</p>
 
 ## ✨ Features
 

@@ -33,7 +33,12 @@ func (c *IOSBackupsCleaner) Description() string { return "Old iPhone/iPad backu
 
 func (c *IOSBackupsCleaner) RequiresSudo() bool { return false }
 
+// Scan identifies iOS backup files and directories, calculating their total size and count.
 func (c *IOSBackupsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
+	if c.homeDir == "" {
+		return &ScanResult{Category: CategoryIOSBackups}, nil
+	}
+
 	start := time.Now()
 	result := &ScanResult{Category: CategoryIOSBackups}
 
@@ -42,6 +47,10 @@ func (c *IOSBackupsCleaner) Scan(ctx context.Context, progress func(ScanProgress
 	}
 
 	for _, root := range roots {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if os.IsPermission(err) {
@@ -49,10 +58,6 @@ func (c *IOSBackupsCleaner) Scan(ctx context.Context, progress func(ScanProgress
 					return fs.SkipDir
 				}
 				return nil
-			}
-
-			if ctx.Err() != nil {
-				return fs.SkipAll
 			}
 
 			if d.IsDir() {
@@ -80,7 +85,7 @@ func (c *IOSBackupsCleaner) Scan(ctx context.Context, progress func(ScanProgress
 					Category:   CategoryIOSBackups,
 					FilesFound: result.TotalFiles,
 					BytesFound: result.TotalSize,
-					CurrentDir: root,
+					CurrentDir: path,
 				})
 			}
 			return nil
@@ -91,6 +96,7 @@ func (c *IOSBackupsCleaner) Scan(ctx context.Context, progress func(ScanProgress
 	return result, nil
 }
 
+// Clean removes the identified iOS backup files, tracking the number of files deleted and total bytes freed.
 func (c *IOSBackupsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{Category: CategoryIOSBackups, DryRun: dryRun}
@@ -111,7 +117,7 @@ func (c *IOSBackupsCleaner) Clean(ctx context.Context, entries []FileEntry, dryR
 		result.FilesDeleted++
 		result.BytesFreed += entry.Size
 
-		if progress != nil && (i%50 == 0 || i == len(entries)-1) {
+		if progress != nil && (i%100 == 0 || i == len(entries)-1) {
 			progress(CleanProgress{
 				Category:     CategoryIOSBackups,
 				FilesDeleted: result.FilesDeleted,

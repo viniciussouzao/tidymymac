@@ -33,7 +33,9 @@ func (c *IOSBackupsCleaner) Description() string { return "Old iPhone/iPad backu
 
 func (c *IOSBackupsCleaner) RequiresSudo() bool { return false }
 
-// Scan identifies iOS backup files and directories, calculating their total size and count.
+// Scan identifies top-level iOS backup directories, calculating each one's total size.
+// Each backup is represented as a single FileEntry with IsDir=true so that Clean
+// can remove the entire directory at once instead of individual files.
 func (c *IOSBackupsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if c.homeDir == "" {
 		return &ScanResult{Category: CategoryIOSBackups}, nil
@@ -42,74 +44,94 @@ func (c *IOSBackupsCleaner) Scan(ctx context.Context, progress func(ScanProgress
 	start := time.Now()
 	result := &ScanResult{Category: CategoryIOSBackups}
 
-	roots := []string{
-		filepath.Join(c.homeDir, "Library", "Application Support", "MobileSync", "Backup"),
+	backupRoot := filepath.Join(c.homeDir, "Library", "Application Support", "MobileSync", "Backup")
+
+	dirEntries, err := os.ReadDir(backupRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			result.Duration = time.Since(start)
+			return result, nil
+		}
+		result.Errors = append(result.Errors, err)
+		result.Duration = time.Since(start)
+		return result, nil
 	}
 
-	for _, root := range roots {
-		if err := ctx.Err(); err != nil {
-			return result, err
+	for _, dirEntry := range dirEntries {
+		if !dirEntry.IsDir() {
+			continue
+		}
+		if ctx.Err() != nil {
+			break
 		}
 
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		info, err := dirEntry.Info()
+		if err != nil {
+			result.Errors = append(result.Errors, err)
+			continue
+		}
+
+		backupDir := filepath.Join(backupRoot, dirEntry.Name())
+
+		var dirSize int64
+		_ = filepath.WalkDir(backupDir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if os.IsPermission(err) {
-					result.Errors = append(result.Errors, err)
 					return fs.SkipDir
 				}
 				return nil
 			}
-
+			if ctx.Err() != nil {
+				return fs.SkipAll
+			}
 			if d.IsDir() {
 				return nil
 			}
-
-			info, err := d.Info()
+			fi, err := d.Info()
 			if err != nil {
-				result.Errors = append(result.Errors, err)
 				return nil
 			}
-
-			result.Entries = append(result.Entries, FileEntry{
-				Path:     path,
-				Size:     info.Size(),
-				ModTime:  info.ModTime(),
-				Category: CategoryIOSBackups,
-			})
-
-			result.TotalSize += info.Size()
-			result.TotalFiles++
-
-			if progress != nil && result.TotalFiles%100 == 0 {
-				progress(ScanProgress{
-					Category:   CategoryIOSBackups,
-					FilesFound: result.TotalFiles,
-					BytesFound: result.TotalSize,
-					CurrentDir: path,
-				})
-			}
+			dirSize += fi.Size()
 			return nil
 		})
+
+		result.Entries = append(result.Entries, FileEntry{
+			Path:     backupDir,
+			Size:     dirSize,
+			IsDir:    true,
+			ModTime:  info.ModTime(),
+			Category: CategoryIOSBackups,
+		})
+		result.TotalSize += dirSize
+		result.TotalFiles++
+
+		if progress != nil {
+			progress(ScanProgress{
+				Category:   CategoryIOSBackups,
+				FilesFound: result.TotalFiles,
+				BytesFound: result.TotalSize,
+				CurrentDir: backupRoot,
+			})
+		}
 	}
 
 	result.Duration = time.Since(start)
 	return result, nil
 }
 
-// Clean removes the identified iOS backup files, tracking the number of files deleted and total bytes freed.
+// Clean removes each iOS backup directory entirely. Each entry produced by Scan has
+// IsDir=true, so os.RemoveAll is used to delete the whole backup folder at once.
 func (c *IOSBackupsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{Category: CategoryIOSBackups, DryRun: dryRun}
+	total := totalSize(entries)
 
-	for i, entry := range entries {
+	for _, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
-		if entry.IsDir {
-			continue
-		}
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := os.RemoveAll(entry.Path); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}
@@ -117,13 +139,13 @@ func (c *IOSBackupsCleaner) Clean(ctx context.Context, entries []FileEntry, dryR
 		result.FilesDeleted++
 		result.BytesFreed += entry.Size
 
-		if progress != nil && (i%100 == 0 || i == len(entries)-1) {
+		if progress != nil {
 			progress(CleanProgress{
 				Category:     CategoryIOSBackups,
 				FilesDeleted: result.FilesDeleted,
 				FilesTotal:   len(entries),
 				BytesDeleted: result.BytesFreed,
-				BytesTotal:   totalSize(entries),
+				BytesTotal:   total,
 				CurrentFile:  entry.Path,
 			})
 		}

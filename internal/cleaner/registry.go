@@ -60,5 +60,6 @@ func DefaultRegistry() *Registry {
 	r.Register(NewLogsCleaner())
 	r.Register(NewDockerCleaner())
 	r.Register(NewIOSBackupsCleaner())
+	r.Register(NewUpdatesCleaner())
 	return r
 }

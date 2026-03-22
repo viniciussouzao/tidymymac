@@ -8,10 +8,12 @@ import (
 	"time"
 )
 
+// UpdatesCleaner is a cleaner that targets old macOS update residues and installers.
 type UpdatesCleaner struct {
 	homeDir string
 }
 
+// NewUpdatesCleaner creates a new instance of UpdatesCleaner with the user's home directory.
 func NewUpdatesCleaner() *UpdatesCleaner {
 	home, err := os.UserHomeDir()
 	if err != nil {

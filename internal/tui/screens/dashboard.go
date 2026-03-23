@@ -162,6 +162,10 @@ func (m DashboardModel) visibleIndices() []int {
 		if category.Size != 0 { // show if not yet scanned (-1) or has content (>0)
 			indices = append(indices, i)
 		}
+
+		if category.ID == string(cleaner.CategoryTrashBin) { // always show Trash category
+			indices = append(indices, i)
+		}
 	}
 	return indices
 }

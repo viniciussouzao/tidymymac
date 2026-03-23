@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -140,43 +141,20 @@ func (c *TrashCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*
 }
 
 func (c *TrashCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	start := time.Now()
 	result := &CleanResult{Category: CategoryTrashBin, DryRun: dryRun}
 
-	total := len(entries)
-	totalBytes := totalSize(entries)
-
-	for i, entry := range entries {
-		if ctx.Err() != nil {
-			return result, ctx.Err()
-		}
-
-		var err error
-		if !dryRun {
-			if entry.IsDir {
-				err = os.RemoveAll(entry.Path)
-			} else {
-				err = os.Remove(entry.Path)
-			}
-			if err != nil && !os.IsNotExist(err) {
-				result.Errors = append(result.Errors, err)
-				// Continue with others
-				continue
-			}
-		}
-
-		result.FilesDeleted++
-		result.BytesFreed += entry.Size
-
-		if progress != nil && (i%25 == 0 || i == total-1) {
-			progress(CleanProgress{
-				Category:     CategoryTrashBin,
-				FilesDeleted: result.FilesDeleted,
-				FilesTotal:   total,
-				BytesDeleted: result.BytesFreed,
-				BytesTotal:   totalBytes,
-				CurrentFile:  entry.Path,
-			})
+	var err error
+	if !dryRun {
+		osascript := `tell application "Finder" to empty the trash`
+		cmd := exec.Command("osascript", "-e", osascript)
+		err = cmd.Run()
+		if err != nil {
+			result.Errors = append(result.Errors, err)
 		}
 	}
 

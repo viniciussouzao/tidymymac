@@ -12,10 +12,13 @@ import (
 
 type goEnvFunc func(ctx context.Context, key string) (string, error)
 
+type goCleanFunc func(ctx context.Context, args ...string) error
+
 // DevelopmentArtifactsCleaner scans removable development caches and build artifacts.
 type DevelopmentArtifactsCleaner struct {
 	homeDir string
 	goEnv   goEnvFunc
+	goClean goCleanFunc
 }
 
 // NewDevelopmentArtifactsCleaner creates a cleaner for development caches and artifacts.
@@ -28,6 +31,7 @@ func NewDevelopmentArtifactsCleaner() *DevelopmentArtifactsCleaner {
 	return &DevelopmentArtifactsCleaner{
 		homeDir: home,
 		goEnv:   lookupGoEnv,
+		goClean: runGoClean,
 	}
 }
 
@@ -143,7 +147,12 @@ func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileE
 	// first try to clean Go cache using "go clean" command, which is more efficient and handles all edge cases
 	var err error
 	if !dryRun {
-		if err = cleanupGoCacheUsingGoClean(ctx); err != nil {
+		if err = c.goClean(ctx, "-cache"); err != nil {
+			// if it fails, fall back to manual file deletion
+			result.Errors = append(result.Errors, err)
+		}
+
+		if err = c.goClean(ctx, "-modcache"); err != nil {
 			// if it fails, fall back to manual file deletion
 			result.Errors = append(result.Errors, err)
 		}
@@ -171,7 +180,10 @@ func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileE
 		}
 
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := os.Remove(entry.Path); err != nil {
+				if os.IsNotExist(err) {
+					continue // may have already been deleted by "go clean", ignore not found errors
+				}
 				result.Errors = append(result.Errors, err)
 				continue
 			}
@@ -197,14 +209,17 @@ func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileE
 	return result, nil
 }
 
+func runGoClean(ctx context.Context, args ...string) error {
+	_, err := exec.CommandContext(ctx, "go", append([]string{"clean"}, args...)...).Output()
+	return err
+}
+
 func cleanupGoCacheUsingGoClean(ctx context.Context) (err error) {
-	_, err = exec.CommandContext(ctx, "go", "clean", "-cache").Output()
-	if err != nil {
+	if err = runGoClean(ctx, "-cache"); err != nil {
 		return err
 	}
 
-	_, err = exec.CommandContext(ctx, "go", "clean", "-modcache").Output()
-	if err != nil {
+	if err = runGoClean(ctx, "-modcache"); err != nil {
 		return err
 	}
 

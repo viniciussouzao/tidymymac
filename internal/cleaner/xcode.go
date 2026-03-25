@@ -32,6 +32,10 @@ func (c *XcodeCleaner) RequiresSudo() bool { return false }
 
 // Scan looks for Xcode-related files in common locations and calculates their total size.
 func (c *XcodeCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
+	if c.homeDir == "" {
+		return &ScanResult{Category: CategoryXcode}, nil
+	}
+
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -86,12 +90,12 @@ func (c *XcodeCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*
 			result.TotalSize += info.Size()
 			result.TotalFiles++
 
-			if progress != nil && result.TotalFiles%500 == 0 {
+			if progress != nil && result.TotalFiles%100 == 0 {
 				progress(ScanProgress{
 					Category:   CategoryXcode,
 					FilesFound: result.TotalFiles,
 					BytesFound: result.TotalSize,
-					CurrentDir: root,
+					CurrentDir: filepath.Dir(path),
 				})
 			}
 

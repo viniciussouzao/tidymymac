@@ -139,35 +139,40 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 	return result, nil
 }
 
-// Clean removes scanned files and updates the result with the total bytes freed
+// Clean attempts to remove Go caches via "go clean" and falls back to manual
+// file-by-file deletion if that fails. In dry-run mode it only simulates deletion.
 func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{Category: CategoryDevelopmentArtifacts, DryRun: dryRun}
 
-	// first try to clean Go cache using "go clean" command, which is more efficient and handles all edge cases
-	var err error
 	if !dryRun {
-		if err = c.goClean(ctx, "-cache"); err != nil {
-			// if it fails, fall back to manual file deletion
-			result.Errors = append(result.Errors, err)
+		cacheErr := c.goClean(ctx, "-cache")
+		modErr := c.goClean(ctx, "-modcache")
+
+		if cacheErr == nil && modErr == nil {
+			for _, entry := range entries {
+				result.FilesDeleted++
+				result.BytesFreed += entry.Size
+			}
+			if progress != nil {
+				progress(CleanProgress{
+					Category:     CategoryDevelopmentArtifacts,
+					FilesDeleted: result.FilesDeleted,
+					FilesTotal:   len(entries),
+					BytesDeleted: result.BytesFreed,
+					BytesTotal:   totalSize(entries),
+				})
+			}
+			result.Duration = time.Since(start)
+			return result, nil
 		}
 
-		if err = c.goClean(ctx, "-modcache"); err != nil {
-			// if it fails, fall back to manual file deletion
-			result.Errors = append(result.Errors, err)
+		if cacheErr != nil {
+			result.Errors = append(result.Errors, cacheErr)
 		}
-
-		progress(CleanProgress{
-			Category:     CategoryDevelopmentArtifacts,
-			FilesDeleted: result.FilesDeleted,
-			FilesTotal:   len(entries),
-			BytesDeleted: result.BytesFreed,
-			BytesTotal:   totalSize(entries),
-		})
-
-		result.FilesDeleted++
-		result.Duration = time.Since(start)
-		return result, nil
+		if modErr != nil {
+			result.Errors = append(result.Errors, modErr)
+		}
 	}
 
 	for i, entry := range entries {
@@ -180,10 +185,7 @@ func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileE
 		}
 
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil {
-				if os.IsNotExist(err) {
-					continue // may have already been deleted by "go clean", ignore not found errors
-				}
+			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}
@@ -192,7 +194,6 @@ func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileE
 		result.FilesDeleted++
 		result.BytesFreed += entry.Size
 
-		// Update progress every 50 files or on the last file
 		if progress != nil && (i%50 == 0 || i == len(entries)-1) {
 			progress(CleanProgress{
 				Category:     CategoryDevelopmentArtifacts,
@@ -212,18 +213,6 @@ func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileE
 func runGoClean(ctx context.Context, args ...string) error {
 	_, err := exec.CommandContext(ctx, "go", append([]string{"clean"}, args...)...).Output()
 	return err
-}
-
-func cleanupGoCacheUsingGoClean(ctx context.Context) (err error) {
-	if err = runGoClean(ctx, "-cache"); err != nil {
-		return err
-	}
-
-	if err = runGoClean(ctx, "-modcache"); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // normalizeGoEnvPath cleans up the output from "go env" to get a usable path.

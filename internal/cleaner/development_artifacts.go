@@ -54,8 +54,8 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 	start := time.Now()
 	result := &ScanResult{Category: CategoryDevelopmentArtifacts}
 
-	goCachePath, _ := lookupGoEnv(ctx, "GOCACHE")
-	goPath, _ := lookupGoEnv(ctx, "GOPATH")
+	goCachePath, _ := c.goEnv(ctx, "GOCACHE")
+	goPath, _ := c.goEnv(ctx, "GOPATH")
 
 	// If GOCACHE or GOPATH are not set, use defaults.
 	if goCachePath == "" {

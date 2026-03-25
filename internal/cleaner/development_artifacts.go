@@ -135,7 +135,7 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 	return result, nil
 }
 
-// Clean removes scanned directories after explicit confirmation.
+// Clean removes scanned files and updates the result with the total bytes freed
 func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{Category: CategoryDevelopmentArtifacts, DryRun: dryRun}

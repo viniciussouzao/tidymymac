@@ -57,6 +57,7 @@ func DefaultRegistry() *Registry {
 	r.Register(NewTempCleaner())
 	r.Register(NewHomebrewCleaner())
 	r.Register(NewCachesCleaner())
+	r.Register(NewDevelopmentArtifactsCleaner())
 	r.Register(NewLogsCleaner())
 	r.Register(NewDockerCleaner())
 	r.Register(NewIOSBackupsCleaner())

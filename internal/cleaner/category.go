@@ -3,15 +3,16 @@ package cleaner
 type Category string
 
 const (
-	CategoryTemp       Category = "temp"
-	CategoryHomebrew   Category = "homebrew"
-	CategoryCaches     Category = "caches"
-	CategoryLogs       Category = "logs"
-	CategoryDocker     Category = "docker"
-	CategoryIOSBackups Category = "ios_backups"
-	CategoryUpdates    Category = "macos_updates"
-	CategoryTrashBin   Category = "trash_files"
-	CategoryXcode      Category = "xcode"
+	CategoryTemp                 Category = "temp"
+	CategoryHomebrew             Category = "homebrew"
+	CategoryCaches               Category = "caches"
+	CategoryLogs                 Category = "logs"
+	CategoryDocker               Category = "docker"
+	CategoryIOSBackups           Category = "ios_backups"
+	CategoryUpdates              Category = "macos_updates"
+	CategoryTrashBin             Category = "trash_files"
+	CategoryXcode                Category = "xcode"
+	CategoryDevelopmentArtifacts Category = "development_artifacts"
 )
 
 func (c Category) DisplayName() string {
@@ -34,6 +35,8 @@ func (c Category) DisplayName() string {
 		return "Trash Files"
 	case CategoryXcode:
 		return "Xcode"
+	case CategoryDevelopmentArtifacts:
+		return "Development Artifacts"
 	default:
 		return string(c)
 	}

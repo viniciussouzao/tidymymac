@@ -10,11 +10,13 @@ func TestCategoryDisplayName(t *testing.T) {
 		{CategoryTemp, "Temporary Files"},
 		{CategoryHomebrew, "Homebrew Cache"},
 		{CategoryCaches, "Application Caches"},
+		{CategoryDevelopmentArtifacts, "Development Artifacts"},
 		{CategoryLogs, "System Logs"},
 		{CategoryDocker, "Docker"},
 		{CategoryIOSBackups, "iOS Backups"},
 		{CategoryUpdates, "macOS Updates"},
 		{CategoryTrashBin, "Trash Files"},
+		{CategoryXcode, "Xcode"},
 	}
 
 	for _, tt := range tests {

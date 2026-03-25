@@ -2,7 +2,6 @@ package cleaner
 
 import (
 	"context"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,24 +86,12 @@ func (c *TrashCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*
 			if isDir {
 				// Compute directory size to present accurate savings.
 				var dirSize int64
-				_ = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
-					if err != nil {
-						// Skip subtrees on permission issues.
-						if os.IsPermission(err) {
-							return fs.SkipDir
-						}
-						return nil
-					}
-					if d.IsDir() {
-						return nil
-					}
-					fi, err := d.Info()
-					if err != nil {
-						return nil
-					}
-					dirSize += fi.Size()
-					return nil
-				})
+				dirSize, err := getPathSize(path, ctx)
+				if err != nil {
+					result.Errors = append(result.Errors, err)
+					continue
+				}
+
 				size = dirSize
 			}
 
@@ -148,13 +135,47 @@ func (c *TrashCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bo
 	start := time.Now()
 	result := &CleanResult{Category: CategoryTrashBin, DryRun: dryRun}
 
-	var err error
-	if !dryRun {
-		osascript := `tell application "Finder" to empty the trash`
-		cmd := exec.Command("osascript", "-e", osascript)
-		err = cmd.Run()
+	if dryRun {
+		return result, nil
+	}
+
+	hasAccess := checkFullDiskAccess(c.homeDir)
+	if !hasAccess.FullDiskAccess {
+		// If we don't have Full Disk Access, we use osascript to empty the Trash as a fallback.
+		// In tradeoff, we won't be able to report progress or handle individual entry errors, but at least we can attempt to free up space.
+		cmd := exec.CommandContext(ctx, "osascript", "-e", `tell application "Finder" to empty the trash`)
+		err := cmd.Run()
 		if err != nil {
 			result.Errors = append(result.Errors, err)
+		}
+
+		result.Duration = time.Since(start)
+		return result, nil
+	}
+
+	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return result, ctx.Err()
+		}
+
+		err := os.RemoveAll(entry.Path)
+		if err != nil {
+			result.Errors = append(result.Errors, err)
+			continue
+		}
+
+		result.FilesDeleted++
+		result.BytesFreed += entry.Size
+
+		if progress != nil && result.FilesDeleted%100 == 0 {
+			progress(CleanProgress{
+				Category:     CategoryTrashBin,
+				FilesDeleted: result.FilesDeleted,
+				FilesTotal:   len(entries),
+				BytesDeleted: result.BytesFreed,
+				BytesTotal:   totalSize(entries),
+				CurrentFile:  entry.Path,
+			})
 		}
 	}
 

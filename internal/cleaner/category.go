@@ -10,7 +10,7 @@ const (
 	CategoryDocker     Category = "docker"
 	CategoryIOSBackups Category = "ios_backups"
 	CategoryUpdates    Category = "macos_updates"
-	CategoryTrashBin   Category = "empty_trash"
+	CategoryTrashBin   Category = "empty"
 )
 
 func (c Category) DisplayName() string {

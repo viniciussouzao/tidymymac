@@ -51,6 +51,10 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 		return &ScanResult{Category: CategoryDevelopmentArtifacts}, nil
 	}
 
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	start := time.Now()
 	result := &ScanResult{Category: CategoryDevelopmentArtifacts}
 
@@ -78,6 +82,10 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 	for _, root := range paths {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
+		}
+
+		if _, err := os.Stat(root); os.IsNotExist(err) {
+			continue
 		}
 
 		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -119,7 +127,7 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 					Category:   CategoryDevelopmentArtifacts,
 					FilesFound: result.TotalFiles,
 					BytesFound: result.TotalSize,
-					CurrentDir: root,
+					CurrentDir: filepath.Dir(path),
 				})
 			}
 			return nil
@@ -142,6 +150,10 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 // Clean attempts to remove Go caches via "go clean" and falls back to manual
 // file-by-file deletion if that fails. In dry-run mode it only simulates deletion.
 func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
 	start := time.Now()
 	result := &CleanResult{Category: CategoryDevelopmentArtifacts, DryRun: dryRun}
 

@@ -134,8 +134,25 @@ func (c *TrashCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bo
 
 	start := time.Now()
 	result := &CleanResult{Category: CategoryTrashBin, DryRun: dryRun}
+	total := totalSize(entries)
 
 	if dryRun {
+		for i, entry := range entries {
+			result.FilesDeleted++
+			result.BytesFreed += entry.Size
+
+			if progress != nil && (i%10 == 0 || i == len(entries)-1) {
+				progress(CleanProgress{
+					Category:     CategoryTrashBin,
+					FilesDeleted: result.FilesDeleted,
+					FilesTotal:   len(entries),
+					BytesDeleted: result.BytesFreed,
+					BytesTotal:   total,
+					CurrentFile:  entry.Path,
+				})
+			}
+		}
+		result.Duration = time.Since(start)
 		return result, nil
 	}
 
@@ -153,7 +170,7 @@ func (c *TrashCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bo
 		return result, nil
 	}
 
-	for _, entry := range entries {
+	for i, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
@@ -167,13 +184,13 @@ func (c *TrashCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bo
 		result.FilesDeleted++
 		result.BytesFreed += entry.Size
 
-		if progress != nil && result.FilesDeleted%100 == 0 {
+		if progress != nil && (i%10 == 0 || i == len(entries)-1) {
 			progress(CleanProgress{
 				Category:     CategoryTrashBin,
 				FilesDeleted: result.FilesDeleted,
 				FilesTotal:   len(entries),
 				BytesDeleted: result.BytesFreed,
-				BytesTotal:   totalSize(entries),
+				BytesTotal:   total,
 				CurrentFile:  entry.Path,
 			})
 		}

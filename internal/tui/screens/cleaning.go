@@ -94,12 +94,11 @@ func (m *CleaningModel) UpdateCleanResult(category cleaner.Category, result *cle
 				m.Categories[i].BytesDeleted = result.BytesFreed
 				m.Categories[i].FilesDeleted = result.FilesDeleted
 			}
-			if result != nil {
-				m.TotalFreed += result.BytesFreed
-			}
 			break
 		}
 	}
+
+	m.TotalFreed = m.totalFreed()
 
 	//check if all categories are done
 	m.Done = true
@@ -109,6 +108,30 @@ func (m *CleaningModel) UpdateCleanResult(category cleaner.Category, result *cle
 			break
 		}
 	}
+}
+
+// UpdateCleanProgress updates the currently running category with partial progress.
+func (m *CleaningModel) UpdateCleanProgress(progress cleaner.CleanProgress) {
+	for i := range m.Categories {
+		if m.Categories[i].Category != progress.Category {
+			continue
+		}
+
+		if m.Categories[i].Status == "pending" {
+			m.Categories[i].Status = "cleaning"
+		}
+		if progress.FilesTotal > 0 {
+			m.Categories[i].FilesTotal = progress.FilesTotal
+		}
+		if progress.BytesTotal > 0 {
+			m.Categories[i].BytesTotal = progress.BytesTotal
+		}
+		m.Categories[i].FilesDeleted = progress.FilesDeleted
+		m.Categories[i].BytesDeleted = progress.BytesDeleted
+		break
+	}
+
+	m.TotalFreed = m.totalFreed()
 }
 
 // Results returns the clean results
@@ -131,6 +154,14 @@ func (m CleaningModel) Results() []*cleaner.CleanResult {
 func (m *CleaningModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
+}
+
+func (m CleaningModel) totalFreed() int64 {
+	var total int64
+	for _, cat := range m.Categories {
+		total += cat.BytesDeleted
+	}
+	return total
 }
 
 // View renders the cleaning screen

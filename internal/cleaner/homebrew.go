@@ -92,20 +92,24 @@ func (c *HomebrewCleaner) Scan(ctx context.Context, progress func(ScanProgress))
 func (c *HomebrewCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{Category: CategoryHomebrew, DryRun: dryRun}
+	total := totalSize(entries)
 
 	if dryRun {
-		// Report what brew cleanup would do.
-		out, err := exec.CommandContext(ctx, "brew", "cleanup", "-n").Output()
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Errorf("brew cleanup -n: %w", err))
-		}
-		// Count lines as approximate files.
-		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		for _, entry := range entries {
+		for i, entry := range entries {
 			result.FilesDeleted++
 			result.BytesFreed += entry.Size
+
+			if progress != nil && (i%25 == 0 || i == len(entries)-1) {
+				progress(CleanProgress{
+					Category:     CategoryHomebrew,
+					FilesDeleted: result.FilesDeleted,
+					FilesTotal:   len(entries),
+					BytesDeleted: result.BytesFreed,
+					BytesTotal:   total,
+					CurrentFile:  entry.Path,
+				})
+			}
 		}
-		_ = lines
 		result.Duration = time.Since(start)
 		return result, nil
 	}
@@ -122,6 +126,16 @@ func (c *HomebrewCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun
 			result.FilesDeleted++
 			result.BytesFreed += entry.Size
 		}
+	}
+
+	if progress != nil {
+		progress(CleanProgress{
+			Category:     CategoryHomebrew,
+			FilesDeleted: result.FilesDeleted,
+			FilesTotal:   len(entries),
+			BytesDeleted: result.BytesFreed,
+			BytesTotal:   total,
+		})
 	}
 
 	result.Duration = time.Since(start)

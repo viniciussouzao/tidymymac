@@ -208,11 +208,6 @@ func cleanupGoCacheUsingGoClean(ctx context.Context) (err error) {
 		return err
 	}
 
-	_, err = exec.CommandContext(ctx, "go", "clean", "-testcache").Output()
-	if err != nil {
-		return err
-	}
-
 	return nil
 }
 

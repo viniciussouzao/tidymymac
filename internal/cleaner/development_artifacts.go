@@ -12,10 +12,6 @@ import (
 
 type goEnvFunc func(ctx context.Context, key string) (string, error)
 
-type developmentTarget struct {
-	path string
-}
-
 // DevelopmentArtifactsCleaner scans removable development caches and build artifacts.
 type DevelopmentArtifactsCleaner struct {
 	homeDir string
@@ -143,15 +139,18 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{Category: CategoryDevelopmentArtifacts, DryRun: dryRun}
-	total := totalSize(entries)
 
-	for _, entry := range entries {
+	for i, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
 
+		if entry.IsDir {
+			continue
+		}
+
 		if !dryRun {
-			if err := os.RemoveAll(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}
@@ -160,17 +159,17 @@ func (c *DevelopmentArtifactsCleaner) Clean(ctx context.Context, entries []FileE
 		result.FilesDeleted++
 		result.BytesFreed += entry.Size
 
-		if progress != nil {
+		// Update progress every 50 files or on the last file
+		if progress != nil && (i%50 == 0 || i == len(entries)-1) {
 			progress(CleanProgress{
 				Category:     CategoryDevelopmentArtifacts,
 				FilesDeleted: result.FilesDeleted,
 				FilesTotal:   len(entries),
 				BytesDeleted: result.BytesFreed,
-				BytesTotal:   total,
+				BytesTotal:   totalSize(entries),
 				CurrentFile:  entry.Path,
 			})
 		}
-
 	}
 
 	result.Duration = time.Since(start)

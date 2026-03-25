@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
@@ -33,6 +32,10 @@ type cleanCompleteMsg struct {
 	err      error
 }
 
+type cleanProgressMsg struct {
+	progress cleaner.CleanProgress
+}
+
 // App is the root bubbletea model that manages screens transitions
 type App struct {
 	currentScreen screen
@@ -53,6 +56,7 @@ type App struct {
 	scanning    bool
 	ctx         context.Context
 	cancel      context.CancelFunc
+	cleanMsgCh  <-chan tea.Msg
 
 	// to-do: i want to use this for the generate script only feature
 	//scriptMessage string
@@ -104,26 +108,6 @@ func scanCategoryCmd(ctx context.Context, c cleaner.Cleaner) tea.Cmd {
 	}
 }
 
-func cleanCategoryCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.FileEntry, dryRun bool) tea.Cmd {
-	return func() tea.Msg {
-		//if dryRun {
-		// For dry run, we simulate the clean taking some time
-		// but I need to figure out a way to do this without blocking the bubbletea event loop
-		//}
-
-		progressFunc := func(p cleaner.CleanProgress) {
-			progress.New(progress.WithDefaultGradient())
-		}
-
-		result, err := c.Clean(ctx, entries, dryRun, progressFunc)
-		return cleanCompleteMsg{
-			category: c.Category(),
-			result:   result,
-			err:      err,
-		}
-	}
-}
-
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -148,6 +132,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case cleanCompleteMsg:
 		return a.handleCleanComplete(msg)
+
+	case cleanProgressMsg:
+		a.cleaningScr.UpdateCleanProgress(msg.progress)
+		if a.cleanMsgCh != nil {
+			return a, waitForCleanMsgCmd(a.cleanMsgCh)
+		}
+		return a, nil
 
 	case tea.KeyMsg:
 		if key.Matches(msg, keys.Quit) {
@@ -197,6 +188,7 @@ func (a App) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
+	a.cleanMsgCh = nil
 	a.cleaningScr.UpdateCleanResult(msg.category, msg.result, msg.err)
 
 	if a.cleaningScr.Done {
@@ -351,7 +343,49 @@ func (a App) startNextClean() (tea.Model, tea.Cmd) {
 	}
 
 	dryRun := !a.executeMode
-	return a, cleanCategoryCmd(a.ctx, c, next.Entries, dryRun)
+	cmd, msgCh := cleanCategoryStreamCmd(a.ctx, c, next.Entries, dryRun)
+	a.cleanMsgCh = msgCh
+	return a, cmd
+}
+
+func cleanCategoryStreamCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.FileEntry, dryRun bool) (tea.Cmd, <-chan tea.Msg) {
+	msgCh := make(chan tea.Msg)
+
+	go func() {
+		defer close(msgCh)
+
+		progressFunc := func(p cleaner.CleanProgress) {
+			select {
+			case <-ctx.Done():
+				return
+			case msgCh <- cleanProgressMsg{progress: p}:
+			}
+		}
+
+		result, err := c.Clean(ctx, entries, dryRun, progressFunc)
+
+		select {
+		case <-ctx.Done():
+			return
+		case msgCh <- cleanCompleteMsg{
+			category: c.Category(),
+			result:   result,
+			err:      err,
+		}:
+		}
+	}()
+
+	return waitForCleanMsgCmd(msgCh), msgCh
+}
+
+func waitForCleanMsgCmd(msgCh <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-msgCh
+		if !ok {
+			return nil
+		}
+		return msg
+	}
 }
 
 func (a App) View() string {

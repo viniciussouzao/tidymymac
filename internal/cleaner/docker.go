@@ -177,17 +177,29 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
 	start := time.Now()
 	result := &CleanResult{Category: CategoryDocker, DryRun: dryRun}
+	total := totalSize(entries)
 
 	if dryRun {
-		for _, e := range entries {
+		for i, e := range entries {
 			result.FilesDeleted++
 			result.BytesFreed += e.Size
+
+			if progress != nil && (i%10 == 0 || i == len(entries)-1) {
+				progress(CleanProgress{
+					Category:     CategoryDocker,
+					FilesDeleted: result.FilesDeleted,
+					FilesTotal:   len(entries),
+					BytesDeleted: result.BytesFreed,
+					BytesTotal:   total,
+					CurrentFile:  e.Path,
+				})
+			}
 		}
 		result.Duration = time.Since(start)
 		return result, nil
 	}
 
-	for _, e := range entries {
+	for i, e := range entries {
 		if err := ctx.Err(); err != nil {
 			result.Duration = time.Since(start)
 			return result, err
@@ -221,6 +233,17 @@ func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun b
 		} else {
 			result.FilesDeleted++
 			result.BytesFreed += e.Size
+
+			if progress != nil && (i%10 == 0 || i == len(entries)-1) {
+				progress(CleanProgress{
+					Category:     CategoryDocker,
+					FilesDeleted: result.FilesDeleted,
+					FilesTotal:   len(entries),
+					BytesDeleted: result.BytesFreed,
+					BytesTotal:   total,
+					CurrentFile:  e.Path,
+				})
+			}
 		}
 	}
 

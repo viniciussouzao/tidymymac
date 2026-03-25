@@ -35,3 +35,4 @@ bin/
 .vscode/
 .github/agents/
 .DS_Store
+.claude/*

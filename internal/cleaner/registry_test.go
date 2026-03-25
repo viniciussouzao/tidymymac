@@ -79,11 +79,13 @@ func TestDefaultRegistryHasAllCleaners(t *testing.T) {
 		CategoryTemp,
 		CategoryHomebrew,
 		CategoryCaches,
+		CategoryDevelopmentArtifacts,
 		CategoryLogs,
 		CategoryDocker,
 		CategoryIOSBackups,
 		CategoryUpdates,
 		CategoryTrashBin,
+		CategoryXcode,
 	}
 
 	all := r.All()

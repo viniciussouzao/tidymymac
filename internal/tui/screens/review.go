@@ -435,11 +435,23 @@ func (m ReviewModel) View() string {
 		fullHintTxt = "f: show short paths"
 	}
 
-	switchListHintTxt := "tab: switch category"
+	var switchListHintTxt string
+	if len(m.Categories) > 1 {
+		switchListHintTxt = "tab: switch category"
+	}
+
 	if m.ExecuteMode {
-		b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+		if switchListHintTxt != "" {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+		} else {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+		}
 	} else {
-		b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+		if switchListHintTxt != "" {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+		} else {
+			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+		}
 	}
 
 	return b.String()

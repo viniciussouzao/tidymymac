@@ -4,6 +4,9 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/commands"
+	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
 // scanCmd represents the scan command
@@ -20,11 +23,31 @@ $ tidymymac scan
 # Scan the system data and provide a summary of the findings
 $ tidymymac scan system-data
 
-# Scan the docker storage and provide a summary of the findings
-$ tidymymac scan docker
+# Scan multiple categories at once (e.g., caches and Docker-related files)
+$ tidymymac scan docker caches
 `,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("scan called")
+	RunE: func(cmd *cobra.Command, args []string) error {
+		result, err := commands.RunScan(cmd.Context(), cleaner.DefaultRegistry(), args)
+		if err != nil {
+			return err
+		}
+
+		for _, cat := range result.Categories {
+			if cat.Err != nil {
+				fmt.Fprintf(cmd.OutOrStderr(), "%s: error scanning category: %v\n", cat.Name, cat.Err)
+				continue
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "%-24s %8d files %12s\n", cat.Name, cat.TotalFiles, utils.FormatBytes(cat.TotalSize))
+		}
+
+		fmt.Fprintf(cmd.OutOrStdout(), "\n%-24s %8d files %12s\n",
+			"Total",
+			result.TotalFiles,
+			utils.FormatBytes(result.TotalSize),
+		)
+
+		return nil
 	},
 }
 

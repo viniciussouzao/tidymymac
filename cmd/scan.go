@@ -65,7 +65,7 @@ var (
 			Foreground(lipgloss.Color("#EF4444"))
 
 	scanDimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#555555"))
+			Foreground(lipgloss.Color("#717171"))
 
 	scanHelpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262")).
@@ -148,6 +148,13 @@ func (m scanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+const (
+	colCategory = 24
+	colFiles    = 8
+	colSize     = 12
+	tableWidth  = colCategory + colFiles + colSize + 6
+)
+
 func (m scanModel) View() string {
 	var b strings.Builder
 
@@ -162,43 +169,51 @@ func (m scanModel) View() string {
 	}
 
 	if m.err != nil {
-		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("❌ error scanning: %v", m.err)))
+		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("  ✗ error scanning: %v", m.err)))
 		return b.String()
 	}
 
+	boldStyle := lipgloss.NewStyle().Bold(true)
+	sep := scanDimStyle.Render("  " + strings.Repeat("─", tableWidth))
+
+	// header — pad plain text first, then apply style
+	b.WriteString(fmt.Sprintf("\n  %s  %s  %s\n",
+		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Category")),
+		boldStyle.Render(fmt.Sprintf("%*s", colFiles, "Files")),
+		boldStyle.Render(fmt.Sprintf("%*s", colSize, "Freeable")),
+	))
+	b.WriteString(sep)
+	b.WriteString("\n")
+
+	// rows — pad plain text first, then apply style
 	for _, cat := range m.result.Categories {
-		var icon, sizeText string
+		var filesText, sizeText string
 
 		if cat.Err != nil {
-			icon = scanErrorStyle.Render("✗")
-			sizeText = scanErrorStyle.Render("error: " + cat.Err.Error())
+			filesText = scanErrorStyle.Render(fmt.Sprintf("%*s", colFiles, "─"))
+			sizeText = scanErrorStyle.Render(fmt.Sprintf("%*s", colSize, "error"))
 		} else {
-			icon = scanDoneStyle.Render("✓")
-			formatted := utils.FormatBytes(cat.TotalSize)
-			sizeText = styledSize(cat.TotalSize, formatted)
-			if cat.TotalFiles > 0 {
-				sizeText += scanDimStyle.Render(fmt.Sprintf(" (%d files)", cat.TotalFiles))
-			}
+			filesText = scanDimStyle.Render(fmt.Sprintf("%*d", colFiles, cat.TotalFiles))
+			sizeText = styledSize(cat.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(cat.TotalSize)))
 		}
 
-		b.WriteString(fmt.Sprintf("  %s %-22s %s\n", icon, cat.Name, sizeText))
+		b.WriteString(fmt.Sprintf("  %-*s  %s  %s\n",
+			colCategory, cat.Name,
+			filesText,
+			sizeText,
+		))
 	}
 
+	// total
+	b.WriteString(sep)
 	b.WriteString("\n")
-	b.WriteString(scanDimStyle.Render("  " + strings.Repeat("─", 42)))
-	b.WriteString("\n")
+	b.WriteString(fmt.Sprintf("  %s  %s  %s\n",
+		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Total")),
+		scanDimStyle.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
+		styledSize(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
+	))
 
-	totalFormatted := utils.FormatBytes(m.result.TotalSize)
-	totalLine := fmt.Sprintf(
-		"  %-24s %s",
-		lipgloss.NewStyle().Bold(true).Render("Total"),
-		styledSize(m.result.TotalSize, totalFormatted)+
-			scanDimStyle.Render(fmt.Sprintf(" (%d files)", m.result.TotalFiles)),
-	)
-	b.WriteString(totalLine)
-	b.WriteString("\n")
-
-	b.WriteString(scanHelpStyle.Render("\n  Run 'tidymymac clean' to remove junk files."))
+	b.WriteString(scanHelpStyle.Render("\n  Run 'tidymymac clean' to remove these files | Run 'tidymymac clean <category>' to remove specific categories"))
 
 	return b.String()
 }

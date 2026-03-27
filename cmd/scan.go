@@ -18,7 +18,7 @@ import (
 var scanCmd = &cobra.Command{
 	Use:   "scan",
 	Short: "Scans the system for junk files and other unnecessary data without entering the TUI",
-	Long: `Scans the system for junk files and other unnecessary data. 
+	Long: `Scans the system for junk files and other unnecessary data.
 This command helps users identify files that can be safely removed to free up disk space.
 
 Example usage:
@@ -40,10 +40,22 @@ $ tidymymac scan docker caches
 			return err
 		}
 
-		if finalModel, ok := final.(scanModel); ok && finalModel.err != nil {
-			return finalModel.err
+		finalModel, ok := final.(scanModel)
+		if !ok {
+			return nil
 		}
-		return nil
+
+		if finalModel.result != nil && finalModel.result.HasErrors {
+			var failed []string
+			for _, cat := range finalModel.result.Categories {
+				if cat.Err != nil {
+					failed = append(failed, cat.Name)
+				}
+			}
+			return fmt.Errorf("scan completed with errors in: %s", strings.Join(failed, ", "))
+		}
+
+		return finalModel.err
 	},
 }
 
@@ -94,13 +106,26 @@ type scanDoneMsg struct {
 	err    error
 }
 
+type scanEventMsg struct {
+	event  commands.ScanEvent
+	closed bool
+}
+
+type scanCategoryProgress struct {
+	name string
+	done bool
+	err  bool
+}
+
 type scanModel struct {
-	ctx      context.Context
-	args     []string
-	spinner  spinner.Model
-	result   *commands.ScanResult
-	err      error
-	scanning bool
+	ctx        context.Context
+	args       []string
+	spinner    spinner.Model
+	result     *commands.ScanResult
+	err        error
+	scanning   bool
+	categories []scanCategoryProgress
+	eventCh    chan commands.ScanEvent
 }
 
 func newScanModel(ctx context.Context, args []string) scanModel {
@@ -113,6 +138,7 @@ func newScanModel(ctx context.Context, args []string) scanModel {
 		args:     args,
 		spinner:  s,
 		scanning: true,
+		eventCh:  make(chan commands.ScanEvent, 50),
 	}
 }
 
@@ -120,10 +146,24 @@ func (m scanModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args)
+			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, func(event commands.ScanEvent) {
+				m.eventCh <- event
+			})
+			close(m.eventCh)
 			return scanDoneMsg{result: result, err: err}
 		},
+		m.listenEvents(),
 	)
+}
+
+func (m scanModel) listenEvents() tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-m.eventCh
+		if !ok {
+			return scanEventMsg{closed: true}
+		}
+		return scanEventMsg{event: event}
+	}
 }
 
 func (m scanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -136,6 +176,23 @@ func (m scanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+	case scanEventMsg:
+		if msg.closed {
+			return m, nil
+		}
+		switch msg.event.Type {
+		case commands.ScanEventStarted:
+			m.categories = append(m.categories, scanCategoryProgress{name: msg.event.Name})
+		case commands.ScanEventDone:
+			for i, cat := range m.categories {
+				if cat.name == msg.event.Name {
+					m.categories[i].done = true
+					m.categories[i].err = msg.event.Err != nil
+					break
+				}
+			}
+		}
+		return m, m.listenEvents()
 	case scanDoneMsg:
 		m.scanning = false
 		m.err = msg.err
@@ -164,6 +221,16 @@ func (m scanModel) View() string {
 	if m.scanning {
 		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), scanDimStyle.Render("looking for things that you may not need anymore...")))
 		b.WriteString("\n\n")
+		for _, cat := range m.categories {
+			if cat.err {
+				b.WriteString(fmt.Sprintf("  %s %s\n", scanErrorStyle.Render("✗"), scanDimStyle.Render(cat.name)))
+			} else if cat.done {
+				b.WriteString(fmt.Sprintf("  %s %s\n", scanDoneStyle.Render("✓"), scanDimStyle.Render(cat.name)))
+			} else {
+				b.WriteString(fmt.Sprintf("  %s %s\n", scanDimStyle.Render("·"), scanDimStyle.Render(cat.name)))
+			}
+		}
+		b.WriteString("\n")
 		b.WriteString(scanHelpStyle.Render(" q to quit"))
 		return b.String()
 	}

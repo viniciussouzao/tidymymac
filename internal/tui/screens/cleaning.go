@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -168,21 +168,11 @@ func (m CleaningModel) totalFreed() int64 {
 func (m CleaningModel) View() string {
 	var b strings.Builder
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF6B6B")).MarginBottom(1)
-
-	doneStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
-
-	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
-
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
-
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).MarginTop(1)
-
 	action := "Cleaning"
 	if m.DryRun {
 		action = "Simulating cleanup (dry run)"
 	}
-	b.WriteString(titleStyle.Render(action + "..."))
+	b.WriteString(styles.Title.Render(action + "..."))
 	b.WriteString("\n\n")
 
 	for _, cat := range m.Categories {
@@ -190,8 +180,8 @@ func (m CleaningModel) View() string {
 
 		switch cat.Status {
 		case "pending":
-			icon = dimStyle.Render("○")
-			detail = dimStyle.Render("pending...")
+			icon = styles.Dim.Render("○")
+			detail = styles.Dim.Render("pending...")
 		case "cleaning":
 			icon = "⟳"
 			pct := float64(0)
@@ -204,14 +194,14 @@ func (m CleaningModel) View() string {
 				pct,
 			)
 		case "done":
-			icon = doneStyle.Render("✓")
-			detail = doneStyle.Render(fmt.Sprintf("%s freed (%d files)",
+			icon = styles.Success.Render("✓")
+			detail = styles.Success.Render(fmt.Sprintf("%s freed (%d files)",
 				utils.FormatBytes(cat.BytesDeleted),
 				cat.FilesDeleted,
 			))
 		case "error":
-			icon = errorStyle.Render("✗")
-			detail = errorStyle.Render("error")
+			icon = styles.Error.Render("✗")
+			detail = styles.Error.Render("error")
 		}
 
 		line := fmt.Sprintf("  %s  %-22s %s", icon, cat.Name, detail)
@@ -236,9 +226,9 @@ func (m CleaningModel) View() string {
 	b.WriteString("\n")
 
 	if m.Done {
-		b.WriteString(helpStyle.Render("  Press enter to see summary  |  q to quit"))
+		b.WriteString(styles.Help.Render("  Press enter to see summary  |  q to quit"))
 	} else {
-		b.WriteString(helpStyle.Render("  Cleaning in progress... please wait"))
+		b.WriteString(styles.Help.Render("  Cleaning in progress... please wait"))
 	}
 
 	return b.String()

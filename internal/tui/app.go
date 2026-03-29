@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
 
 type screen int
@@ -390,11 +391,11 @@ func waitForCleanMsgCmd(msgCh <-chan tea.Msg) tea.Cmd {
 
 func (a App) View() string {
 	// Global header with ASCII logo and tagline
-	header := Logo() + "\n" + TagLine() + "\n\n"
+	header := styles.RenderLogo() + "\n" + styles.RenderTagLine() + "\n\n"
 
 	var banner string
 	if !a.executeMode {
-		banner = dryRunBannerStyle.Render("DRY RUN MODE - No files will be deleted. Start the app with --execute to clean.") + "\n"
+		banner = styles.DryRunBanner.Render("DRY RUN MODE - No files will be deleted. Start the app with --execute to clean.") + "\n"
 	}
 
 	var content string
@@ -402,7 +403,7 @@ func (a App) View() string {
 	case screenDashboard:
 		content = a.dashboard.View()
 		if a.scanning {
-			content += "\n" + dimStyle.Render(" "+a.spinner.View()+" scanning filesystem...")
+			content += "\n" + styles.Dim.Render(" "+a.spinner.View()+" scanning filesystem...")
 		}
 
 	case screenScanning:

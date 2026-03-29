@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -170,22 +171,8 @@ func (m DashboardModel) visibleIndices() []int {
 func (m DashboardModel) View() string {
 	var b strings.Builder
 
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).Margin(1)
-
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
-
-	selectedColorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#7C3AED")).Bold(true)
-
-	cursorColorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
-
-	sizeGreenStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
-
-	sizeYellowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
-
-	sizeRedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
-
 	// Disk usage summary bar
-	b.WriteString(lipgloss.NewStyle().Italic(true).Underline(true).Render("Storage status:"))
+	b.WriteString(styles.StorageLabel.Render("Storage status:"))
 	b.WriteString("\n\n")
 	if m.DiskTotal > 0 {
 		pct := int(math.Round(float64(m.DiskUsed) / float64(m.DiskTotal) * 100))
@@ -196,22 +183,21 @@ func (m DashboardModel) View() string {
 		var barStyle lipgloss.Style
 		switch {
 		case pct >= 85:
-			barStyle = sizeRedStyle
+			barStyle = styles.SizeLarge
 		case pct >= 70:
-			barStyle = sizeYellowStyle
+			barStyle = styles.SizeMedium
 		default:
-			barStyle = sizeGreenStyle
+			barStyle = styles.Size
 		}
 
-		storageStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#AAAAAA"))
 		b.WriteString(fmt.Sprintf(" %s  %s\n\n",
 			barStyle.Render(bar),
-			storageStyle.Render(fmt.Sprintf("%s used of %s (%d%%) | %s free",
+			styles.Muted.Render(fmt.Sprintf("%s used of %s (%d%%) | %s free",
 				utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct, utils.FormatBytes(m.DiskTotal-m.DiskUsed)))))
 	}
 
 	// Title and instructions
-	b.WriteString(lipgloss.NewStyle().Bold(false).Underline(false).Render("Review and select categories to clean"))
+	b.WriteString(styles.Plain.Render("Review and select categories to clean"))
 	b.WriteString("\n\n")
 
 	// Category list
@@ -221,42 +207,35 @@ func (m DashboardModel) View() string {
 
 		cursor := "  "
 		if visIdx == m.Cursor {
-			cursor = cursorColorStyle.Render("> ")
+			cursor = styles.Cursor.Render("> ")
 		}
 
 		checkbox := "[ ]"
 		if cat.Selected {
-			checkbox = selectedColorStyle.Render("[x]")
+			checkbox = styles.Selected.Render("[x]")
 		}
 
 		name := cat.Name
 		if visIdx == m.Cursor {
-			name = cursorColorStyle.Render(name)
+			name = styles.Cursor.Render(name)
 		}
 
-		sizeText := dimStyle.Render("scanning...")
+		sizeText := styles.Dim.Render("scanning...")
 		if cat.Size >= 0 {
 			formmated := utils.FormatBytes(cat.Size)
-			switch {
-			case cat.Size >= 1<<30: // 1GB
-				sizeText = sizeRedStyle.Render(formmated)
-			case cat.Size >= 100<<20: // 100MB
-				sizeText = sizeYellowStyle.Render(formmated)
-			default:
-				sizeText = sizeGreenStyle.Render(formmated)
-			}
+			sizeText = styles.SizeStyled(cat.Size, formmated)
 		} else if cat.Scanning {
-			sizeText = dimStyle.Render("scanning...")
+			sizeText = styles.Dim.Render("scanning...")
 		} else {
-			sizeText = dimStyle.Render("-")
+			sizeText = styles.Dim.Render("-")
 		}
 
 		sudoTag := ""
 		if cat.NeedsSudo {
-			sudoTag = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render(" [sudo]")
+			sudoTag = styles.Warning.Render(" [sudo]")
 		}
 
-		desc := dimStyle.Render(cat.Desc)
+		desc := styles.Dim.Render(cat.Desc)
 
 		line := fmt.Sprintf("%s %s %-22s %s  %s%s", cursor, checkbox, name, sizeText, desc, sudoTag)
 		b.WriteString(line)
@@ -284,20 +263,19 @@ func (m DashboardModel) View() string {
 		}
 	}
 
-	freeableStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#10B981"))
 	scanNote := ""
 	if stillScanning {
 		scanNote = " (scanning...)"
 	}
 
-	b.WriteString(fmt.Sprintf("  Total freeable: %s%s\n", freeableStyle.Render(utils.FormatBytes(totalFreelable)), dimStyle.Render(scanNote)))
+	b.WriteString(fmt.Sprintf("  Total freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(totalFreelable)), styles.Dim.Render(scanNote)))
 
 	selectedScanNote := ""
 	if stillScanningSelected {
 		selectedScanNote = " (scanning...)"
 	}
 
-	b.WriteString(fmt.Sprintf("  Selected freeable: %s%s\n", freeableStyle.Render(utils.FormatBytes(selectedFreelable)), dimStyle.Render(selectedScanNote)))
+	b.WriteString(fmt.Sprintf("  Selected freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(selectedFreelable)), styles.Dim.Render(selectedScanNote)))
 	b.WriteString("\n")
 
 	viewToggleLabel := "v: show all"
@@ -307,12 +285,12 @@ func (m DashboardModel) View() string {
 
 	selectedCount := m.SelectedCount()
 	if selectedCount > 0 {
-		b.WriteString(helpStyle.Render(fmt.Sprintf(
+		b.WriteString(styles.HelpBlock.Render(fmt.Sprintf(
 			"  space: toggle  a: select all  %s  r: re-run  enter: scan %d selected  q: quit",
 			viewToggleLabel, selectedCount,
 		)))
 	} else {
-		b.WriteString(helpStyle.Render(fmt.Sprintf(
+		b.WriteString(styles.HelpBlock.Render(fmt.Sprintf(
 			"  space: toggle  a: select all  %s  r: re-run  q: quit",
 			viewToggleLabel,
 		)))

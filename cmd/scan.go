@@ -3,7 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,52 +24,145 @@ var scanCmd = &cobra.Command{
 This command helps users identify files that can be safely removed to free up disk space.
 
 Example usage:
-# Scan the system for junk files
+# Scan the system for junk files (interactive table)
 $ tidymymac scan
 
-# Scan the system data and provide a summary of the findings
-$ tidymymac scan system-data
+# Output results as JSON to stdout
+$ tidymymac scan --output json
 
-# Scan multiple categories at once (e.g., caches and Docker-related files)
+# Output as CSV and save to a file in the current directory
+$ tidymymac scan --output csv --save
+
+# Include individual file paths in the output
+$ tidymymac scan --output json --detailed
+
+# Scan specific categories
 $ tidymymac scan docker caches
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		m := newScanModel(cmd.Context(), args)
-		p := tea.NewProgram(m)
+		output, _ := cmd.Flags().GetString("output")
+		detailed, _ := cmd.Flags().GetBool("detailed")
+		save, _ := cmd.Flags().GetBool("save")
+		quiet, _ := cmd.Flags().GetBool("quiet")
 
-		final, err := p.Run()
-		if err != nil {
-			return err
+		if output != "" && output != "json" && output != "csv" {
+			return fmt.Errorf("invalid --output value %q: must be json or csv", output)
 		}
 
-		finalModel, ok := final.(scanModel)
-		if !ok {
-			return nil
+		if output != "" {
+			return runScanNonInteractive(cmd.Context(), args, output, detailed, save, quiet)
 		}
 
-		if finalModel.result != nil && finalModel.result.HasErrors {
-			var failed []string
-			for _, cat := range finalModel.result.Categories {
-				if cat.Err != nil {
-					failed = append(failed, cat.Name)
-				}
-			}
-			return fmt.Errorf("scan completed with errors in: %s", strings.Join(failed, ", "))
-		}
-
-		return finalModel.err
+		return runScanInteractive(cmd, args)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(scanCmd)
+	scanCmd.Flags().StringP("output", "o", "", "output format: json or csv (omit for interactive table)")
+	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
+	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout")
+	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
+}
 
+// runScanNonInteractive runs the scan without BubbleTea, prints progress to
+// stderr, and writes the result in the requested format to stdout (or a file).
+func runScanNonInteractive(ctx context.Context, args []string, format string, detailed bool, save bool, quiet bool) error {
+	stderr := func(format string, a ...any) {
+		if !quiet {
+			fmt.Fprintf(os.Stderr, format, a...)
+		}
+	}
+
+	stderr("🔎 scanning your mac...\n")
+
+	result, err := commands.RunScan(
+		ctx,
+		cleaner.DefaultRegistry(),
+		args,
+		commands.ScanOptions{Detailed: detailed},
+		func(event commands.ScanEvent) {
+			switch event.Type {
+			case commands.ScanEventStarted:
+				stderr("  · %s\n", event.Name)
+			case commands.ScanEventDone:
+				if event.Err != nil {
+					stderr("  ✗ %s\n", event.Name)
+				} else {
+					stderr("  ✓ %s\n", event.Name)
+				}
+			}
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	out := os.Stdout
+	if save {
+		filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02"), format)
+		f, createErr := os.Create(filename)
+		if createErr != nil {
+			return fmt.Errorf("creating output file: %w", createErr)
+		}
+		defer f.Close()
+		out = f
+		stderr("\n  saved to ./%s\n", filename)
+	}
+
+	if writeErr := commands.WriteOutput(out, result, format, detailed); writeErr != nil {
+		return writeErr
+	}
+
+	if result.HasErrors {
+		var failed []string
+		for _, cat := range result.Categories {
+			if cat.Err != nil {
+				failed = append(failed, cat.Name)
+			}
+		}
+		return fmt.Errorf("scan completed with errors in: %s", strings.Join(failed, ", "))
+	}
+
+	return nil
+}
+
+// runScanInteractive runs the scan using the BubbleTea model (default mode).
+func runScanInteractive(cmd *cobra.Command, args []string) error {
+	m := newScanModel(cmd.Context(), args)
+	p := tea.NewProgram(m)
+
+	final, err := p.Run()
+	if err != nil {
+		return err
+	}
+
+	finalModel, ok := final.(scanModel)
+	if !ok {
+		return nil
+	}
+
+	if finalModel.result != nil && finalModel.result.HasErrors {
+		var failed []string
+		for _, cat := range finalModel.result.Categories {
+			if cat.Err != nil {
+				failed = append(failed, cat.Name)
+			}
+		}
+		return fmt.Errorf("scan completed with errors in: %s", strings.Join(failed, ", "))
+	}
+
+	if finalModel.err == nil && finalModel.result != nil {
+		fmt.Println(scanHelpStyle.Render("  Run 'tidymymac clean' to remove these files | Run 'tidymymac clean <category>' to remove specific categories"))
+	}
+
+	return finalModel.err
 }
 
 var (
 	scanTitleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#ffb56b")).
+			Bold(false).
+			Foreground(lipgloss.Color("#717171")).
 			MarginBottom(1)
 
 	scanDoneStyle = lipgloss.NewStyle().
@@ -146,7 +241,7 @@ func (m scanModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, func(event commands.ScanEvent) {
+			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{}, func(event commands.ScanEvent) {
 				m.eventCh <- event
 			})
 			close(m.eventCh)
@@ -279,8 +374,6 @@ func (m scanModel) View() string {
 		scanDimStyle.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
 		styledSize(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
 	))
-
-	b.WriteString(scanHelpStyle.Render("\n  Run 'tidymymac clean' to remove these files | Run 'tidymymac clean <category>' to remove specific categories"))
 
 	return b.String()
 }

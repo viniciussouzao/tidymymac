@@ -21,7 +21,27 @@ var cleanCmd = &cobra.Command{
 	Short: "delete the junk files without opening the TUI",
 	Long: `Cleans junk files without opening the TUI.
 By default this command runs in dry-run mode and only simulates the cleanup.
-Pass --execute to actually delete files.`,
+Pass --execute to actually delete files.
+
+Example usage:
+# Preview what would be cleaned across all categories
+$ tidymymac clean
+
+# Actually delete files
+$ tidymymac clean --execute
+
+# Clean only specific categories
+$ tidymymac clean docker caches --execute
+
+# Use a previous detailed JSON scan and revalidate entries before cleaning
+$ tidymymac clean --from-file scan.json
+
+# Output the cleanup result as JSON
+$ tidymymac clean --output json
+
+# Use a previous scan file and output the cleanup result as JSON
+$ tidymymac clean --from-file scan.json --output json
+`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		detailed, _ := cmd.Flags().GetBool("detailed")
 		fromFile, _ := cmd.Flags().GetString("from-file")

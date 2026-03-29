@@ -320,7 +320,7 @@ func (m ReviewModel) View() string {
 
 	globalFileIdx := 0
 	for ci, cat := range m.Categories {
-		hdr := styles.CategoryHeader.Render(fmt.Sprintf("  %s(%s, %d files)", cat.Name, utils.FormatBytes(cat.Size), cat.Files))
+		hdr := styles.CategoryHeader.Render(fmt.Sprintf("  %s (%s, %d files)", cat.Name, utils.FormatBytes(cat.Size), cat.Files))
 
 		sections = append(sections, section{
 			headerStr: hdr,

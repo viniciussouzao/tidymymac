@@ -6,8 +6,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -114,17 +114,7 @@ func (m ScanningModel) Update(msg tea.Msg) (ScanningModel, tea.Cmd) {
 func (m ScanningModel) View() string {
 	var b strings.Builder
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF6B6B")).MarginBottom(1)
-
-	doneStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
-
-	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
-
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
-
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).MarginTop(1)
-
-	b.WriteString(titleStyle.Render("Scanning selected categories..."))
+	b.WriteString(styles.Title.Render("Scanning selected categories..."))
 	b.WriteString("\n\n")
 
 	for _, cat := range m.Categories {
@@ -132,20 +122,20 @@ func (m ScanningModel) View() string {
 		switch cat.Status {
 		case "scanning":
 			icon = m.Spinner.View()
-			sizeText = dimStyle.Render("scanning...")
+			sizeText = styles.Dim.Render("scanning...")
 		case "done":
-			icon = doneStyle.Render("✓")
+			icon = styles.Success.Render("✓")
 			sizeText = utils.FormatBytes(cat.Bytes)
 			if cat.Files > 0 {
 				sizeText = fmt.Sprintf("%s (%d files)", sizeText, cat.Files)
 			}
-			sizeText = doneStyle.Render(sizeText)
+			sizeText = styles.Success.Render(sizeText)
 		case "error":
-			icon = errorStyle.Render("✗")
-			sizeText = errorStyle.Render("error")
+			icon = styles.Error.Render("✗")
+			sizeText = styles.Error.Render("error")
 		case "skipped":
-			icon = dimStyle.Render("-")
-			sizeText = dimStyle.Render("skipped")
+			icon = styles.Dim.Render("-")
+			sizeText = styles.Dim.Render("skipped")
 		}
 
 		line := fmt.Sprintf("  %s %-22s %s", icon, cat.Name, sizeText)
@@ -156,9 +146,9 @@ func (m ScanningModel) View() string {
 	b.WriteString("\n")
 
 	if m.AllDone() {
-		b.WriteString(helpStyle.Render("  Press enter to review  |  q to quit"))
+		b.WriteString(styles.Help.Render("  Press enter to review  |  q to quit"))
 	} else {
-		b.WriteString(helpStyle.Render("  Scanning in progress...  |  q to quit"))
+		b.WriteString(styles.Help.Render("  Scanning in progress...  |  q to quit"))
 	}
 
 	return b.String()

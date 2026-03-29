@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -295,18 +295,7 @@ func (m ReviewModel) cursorCatFile() (int, int) {
 func (m ReviewModel) View() string {
 	var b strings.Builder
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FF6B6B")).MarginBottom(1)
-
-	catHeaderStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7C3AED"))
-
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
-	moreStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Italic(true)
-
-	highlightStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00B881")).Bold(true)
-
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).MarginTop(1)
-
-	b.WriteString(titleStyle.Render(fmt.Sprintf(
+	b.WriteString(styles.Title.Render(fmt.Sprintf(
 		"Review: %s across %d files",
 		utils.FormatBytes(m.TotalSize),
 		m.TotalFiles,
@@ -317,7 +306,7 @@ func (m ReviewModel) View() string {
 	if m.TotalFiles == 0 {
 		b.WriteString("No files to clean! All categories are already tidy! 🎉")
 		b.WriteString("\n")
-		b.WriteString(helpStyle.Render("  Press q to quit"))
+		b.WriteString(styles.Help.Render("  Press q to quit"))
 		return b.String()
 	}
 
@@ -331,7 +320,7 @@ func (m ReviewModel) View() string {
 
 	globalFileIdx := 0
 	for ci, cat := range m.Categories {
-		hdr := catHeaderStyle.Render(fmt.Sprintf("  %s(%s, %d files)", cat.Name, utils.FormatBytes(cat.Size), cat.Files))
+		hdr := styles.CategoryHeader.Render(fmt.Sprintf("  %s (%s, %d files)", cat.Name, utils.FormatBytes(cat.Size), cat.Files))
 
 		sections = append(sections, section{
 			headerStr: hdr,
@@ -351,9 +340,9 @@ func (m ReviewModel) View() string {
 		for fi := 0; fi < shown; fi++ {
 			f := cat.AllFiles[fi]
 			short := displayPath(cat.Name, f, m.ShowFull)
-			line := fmt.Sprintf("    %s (%s)", dimStyle.Render(short), utils.FormatBytes(f.Size))
+			line := fmt.Sprintf("    %s (%s)", styles.Dim.Render(short), utils.FormatBytes(f.Size))
 			if globalFileIdx == m.Cursor {
-				line = highlightStyle.Render(fmt.Sprintf("   %s  %s", short, utils.FormatBytes(f.Size)))
+				line = styles.Highlight.Render(fmt.Sprintf("   %s  %s", short, utils.FormatBytes(f.Size)))
 			}
 			lines = append(lines, line)
 			globalFileIdx++
@@ -361,7 +350,7 @@ func (m ReviewModel) View() string {
 
 		remaining := len(cat.AllFiles) - shown
 		if !m.ShowAll && remaining > 0 {
-			lines = append(lines, moreStyle.Render(fmt.Sprintf("    + %d more files [a: to show all]", remaining)))
+			lines = append(lines, styles.More.Render(fmt.Sprintf("    + %d more files [a: to show all]", remaining)))
 		}
 
 		lines = append(lines, "") // spacer
@@ -442,15 +431,15 @@ func (m ReviewModel) View() string {
 
 	if m.ExecuteMode {
 		if switchListHintTxt != "" {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
 		}
 	} else {
 		if switchListHintTxt != "" {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
-			b.WriteString(helpStyle.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
 		}
 	}
 

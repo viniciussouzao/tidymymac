@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -49,30 +49,18 @@ func (m *SummaryModel) SetSize(w, h int) {
 func (m SummaryModel) View() string {
 	var b strings.Builder
 
-	titleStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#10B981")).MarginBottom(1)
-
-	catStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FAFAFA"))
-
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
-
-	errorStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
-
-	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#626262")).MarginTop(1)
-
-	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
-
 	if m.DryRun {
-		b.WriteString(titleStyle.Render("Dry Run Complete!"))
+		b.WriteString(styles.SuccessTitle.Render("Dry Run Complete!"))
 	} else {
-		b.WriteString(titleStyle.Render("Cleanup Complete!"))
+		b.WriteString(styles.SuccessTitle.Render("Cleanup Complete!"))
 	}
 	b.WriteString("\n\n")
 
 	// Table header.
 	header := fmt.Sprintf("  %-22s %12s %10s", "Category", "Space", "Files")
-	b.WriteString(dimStyle.Render(header))
+	b.WriteString(styles.Dim.Render(header))
 	b.WriteString("\n")
-	b.WriteString(dimStyle.Render("  " + strings.Repeat("─", 46)))
+	b.WriteString(styles.Dim.Render("  " + strings.Repeat("─", 46)))
 	b.WriteString("\n")
 
 	for _, r := range m.Results {
@@ -81,37 +69,37 @@ func (m SummaryModel) View() string {
 			utils.FormatBytes(r.BytesFreed),
 			r.FilesDeleted,
 		)
-		b.WriteString(catStyle.Render(line))
+		b.WriteString(styles.Plain.Render(line))
 
 		if len(r.Errors) > 0 {
-			b.WriteString(errorStyle.Render(fmt.Sprintf(" (%d errors)", len(r.Errors))))
+			b.WriteString(styles.Error.Render(fmt.Sprintf(" (%d errors)", len(r.Errors))))
 		}
 		b.WriteString("\n")
 	}
 
-	b.WriteString(dimStyle.Render("  " + strings.Repeat("─", 46)))
+	b.WriteString(styles.Dim.Render("  " + strings.Repeat("─", 46)))
 	b.WriteString("\n")
 
 	totalLine := fmt.Sprintf("  %-22s %12s %10d", "Total", utils.FormatBytes(m.TotalFreed), m.TotalFiles)
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render(totalLine))
+	b.WriteString(styles.Success.Render(totalLine))
 	b.WriteString("\n\n")
 
-	b.WriteString(dimStyle.Render(fmt.Sprintf("  Time elapsed: %s", m.TotalTime.Round(time.Millisecond))))
+	b.WriteString(styles.Dim.Render(fmt.Sprintf("  Time elapsed: %s", m.TotalTime.Round(time.Millisecond))))
 	b.WriteString("\n")
 
 	if m.ErrorCount > 0 {
-		b.WriteString(warnStyle.Render(fmt.Sprintf("  %d errors occurred (permission denied, etc.)", m.ErrorCount)))
+		b.WriteString(styles.Warning.Render(fmt.Sprintf("  %d errors occurred (permission denied, etc.)", m.ErrorCount)))
 		b.WriteString("\n")
 	}
 
 	if m.DryRun {
 		b.WriteString("\n")
-		b.WriteString(warnStyle.Render("  Run with --execute to actually delete these files."))
+		b.WriteString(styles.Warning.Render("  Run with --execute to actually delete these files."))
 		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  Press enter to re-run or q to quit"))
+	b.WriteString(styles.Help.Render("  Press enter to re-run or q to quit"))
 
 	return b.String()
 }

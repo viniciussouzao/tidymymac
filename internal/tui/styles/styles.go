@@ -1,4 +1,4 @@
-package tui
+package styles
 
 import (
 	"strings"
@@ -7,72 +7,116 @@ import (
 )
 
 var (
-	titleStyle = lipgloss.NewStyle().
+	Title = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FF6B6B")).
+		MarginBottom(1)
+
+	SuccessTitle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FF6B6B")).
+			Foreground(lipgloss.Color("#10B981")).
 			MarginBottom(1)
 
-	subtitleStyle = lipgloss.NewStyle().
+	Subtitle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#888888"))
 
-	selectedStyle = lipgloss.NewStyle().
+	Selected = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#7C3AED")).
 			Bold(true)
 
-	cursorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FF6B6B"))
+	Cursor = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF6B6B"))
 
-	sizeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#10B981"))
+	Size = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#10B981"))
 
-	sizeLargeStyle = lipgloss.NewStyle().
+	SizeLarge = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#EF4444")).
 			Bold(true)
 
-	sizeMediumStyle = lipgloss.NewStyle().
+	SizeMedium = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F59E0B"))
 
-	helpStyle = lipgloss.NewStyle().
+	Help = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#626262")).
+		MarginTop(1)
+
+	HelpBlock = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#626262")).
-			MarginTop(1)
+			Margin(1)
 
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EF4444"))
+	Error = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#EF4444"))
 
-	successStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#10B981")).
+	Success = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#10B981")).
+		Bold(true)
+
+	Warning = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#F59E0B"))
+
+	DryRunBanner = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F59E0B")).
+			Bold(true).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#F59E0B")).
+			Padding(0, 1).
+			MarginBottom(1)
+
+	Dim = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#555555"))
+
+	Muted = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#AAAAAA"))
+
+	CategoryHeader = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#7C3AED"))
+
+	More = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#888888")).
+		Italic(true)
+
+	Highlight = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#00B881")).
 			Bold(true)
 
-	warningStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#F59E0B"))
+	Plain = lipgloss.NewStyle()
 
-	dryRunBannerStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#F59E0B")).
-				Bold(true).
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("#F59E0B")).
-				Padding(0, 1).
-				MarginBottom(1)
+	StorageLabel = lipgloss.NewStyle().
+			Italic(true).
+			Underline(true)
 
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#555555"))
-
-	logoStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FF6B6B")).
-			Bold(true)
+	Logo = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF6B6B")).
+		Bold(true)
 )
 
-// SizeStyled returns the size string styled according to the size thresholds
+// SizeStyled returns the size string styled according to the size thresholds.
 func SizeStyled(size int64, text string) string {
 	const gb = 1 << 30
 	const mb100 = 100 << 20
 	switch {
 	case size >= gb:
-		return sizeLargeStyle.Render(text)
+		return SizeLarge.Render(text)
 	case size >= mb100:
-		return sizeMediumStyle.Render(text)
+		return SizeMedium.Render(text)
 	default:
-		return sizeStyle.Render(text)
+		return Size.Render(text)
+	}
+}
+
+// SizeLevelStyle returns the style corresponding to the size thresholds.
+func SizeLevelStyle(size int64) lipgloss.Style {
+	const gb = 1 << 30
+	const mb100 = 100 << 20
+	switch {
+	case size >= gb:
+		return SizeLarge
+	case size >= mb100:
+		return SizeMedium
+	default:
+		return Size
 	}
 }
 
@@ -91,8 +135,8 @@ const asciiLogo = `
                               ░░░░░░                        ░░░░░░                                         
 `
 
-// Logo renders the ASCII art logo with colors
-func Logo() string {
+// RenderLogo renders the ASCII art logo with colors.
+func RenderLogo() string {
 	colors := []string{"#FF6B6B", "#F59E0B", "#10B981", "#7C3AED"}
 	lines := strings.Split(strings.Trim(asciiLogo, "\n"), "\n")
 	if len(lines) == 0 {
@@ -100,7 +144,6 @@ func Logo() string {
 	}
 
 	var out []string
-	// Cycle through the colors for each line
 	steps := len(lines) - 1
 	if steps <= 0 {
 		steps = 1
@@ -113,10 +156,9 @@ func Logo() string {
 	}
 
 	return strings.Join(out, "\n")
-
 }
 
-// TagLine renders a subtitle below the logo
-func TagLine() string {
-	return subtitleStyle.Render("macOS Storage Cleanup Tool")
+// RenderTagLine renders a subtitle below the logo.
+func RenderTagLine() string {
+	return Subtitle.Render("macOS Storage Cleanup Tool")
 }

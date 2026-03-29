@@ -222,8 +222,8 @@ func (m DashboardModel) View() string {
 
 		sizeText := styles.Dim.Render("scanning...")
 		if cat.Size >= 0 {
-			formmated := utils.FormatBytes(cat.Size)
-			sizeText = styles.SizeStyled(cat.Size, formmated)
+			formatted := utils.FormatBytes(cat.Size)
+			sizeText = styles.SizeStyled(cat.Size, formatted)
 		} else if cat.Scanning {
 			sizeText = styles.Dim.Render("scanning...")
 		} else {
@@ -244,8 +244,8 @@ func (m DashboardModel) View() string {
 
 	b.WriteString("\n")
 
-	var totalFreelable int64
-	var selectedFreelable int64
+	var totalFreeable int64
+	var selectedFreeable int64
 	stillScanning := false
 	stillScanningSelected := false
 
@@ -256,9 +256,9 @@ func (m DashboardModel) View() string {
 				stillScanningSelected = true
 			}
 		} else if cat.Size > 0 {
-			totalFreelable += cat.Size
+			totalFreeable += cat.Size
 			if cat.Selected {
-				selectedFreelable += cat.Size
+				selectedFreeable += cat.Size
 			}
 		}
 	}
@@ -268,14 +268,14 @@ func (m DashboardModel) View() string {
 		scanNote = " (scanning...)"
 	}
 
-	b.WriteString(fmt.Sprintf("  Total freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(totalFreelable)), styles.Dim.Render(scanNote)))
+	b.WriteString(fmt.Sprintf("  Total freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(totalFreeable)), styles.Dim.Render(scanNote)))
 
 	selectedScanNote := ""
 	if stillScanningSelected {
 		selectedScanNote = " (scanning...)"
 	}
 
-	b.WriteString(fmt.Sprintf("  Selected freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(selectedFreelable)), styles.Dim.Render(selectedScanNote)))
+	b.WriteString(fmt.Sprintf("  Selected freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(selectedFreeable)), styles.Dim.Render(selectedScanNote)))
 	b.WriteString("\n")
 
 	viewToggleLabel := "v: show all"

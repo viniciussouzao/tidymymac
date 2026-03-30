@@ -29,18 +29,19 @@ type ReviewCategory struct {
 
 // ReviewModel is the model for the review screen, containing all categories and their files, as well as UI state for scrolling and toggling views.
 type ReviewModel struct {
-	Categories   []ReviewCategory
-	TotalSize    int64
-	TotalFiles   int
-	ExecuteMode  bool
-	ShowAll      bool
-	ScrollPos    int
-	Cursor       int
-	VisibleCount []int // indices of categories that are currently visible based on ShowAll and size > 0
-	Width        int
-	Height       int
-	ShowFull     bool
-	UnknownCount int
+	Categories     []ReviewCategory
+	TotalSize      int64
+	TotalFiles     int
+	ExecuteMode    bool
+	ShowAll        bool
+	ScrollPos      int
+	Cursor         int
+	VisibleCount   []int // indices of categories that are currently visible based on ShowAll and size > 0
+	Width          int
+	Height         int
+	ShowFull       bool
+	UnknownCount   int
+	PendingConfirm bool // true when execute mode is waiting for a second enter to confirm deletion
 }
 
 // NewReview constructs a ReviewModel from the scan results
@@ -150,7 +151,7 @@ func (m *ReviewModel) scrollIntoView(ci, fi int) {
 		viewHeight = 20
 	}
 	headerLine := m.headerLineIndexForCategory(ci)
-	focusedLine := headerLine + 1 + fi // +1 to account for the header line itself
+	focusedLine := m.fileLineIndex(ci, fi)
 	visibleEnd := m.ScrollPos + viewHeight - 1
 
 	if focusedLine >= m.ScrollPos && focusedLine <= visibleEnd {
@@ -169,8 +170,8 @@ func (m *ReviewModel) scrollIntoView(ci, fi int) {
 
 // ToggleShowAll toggles between showing top 10 and all files per category.
 func (m *ReviewModel) ToggleShowAll() {
+	ci, fi := m.cursorCatFile()
 	m.ShowAll = !m.ShowAll
-	m.ScrollPos = 0
 	// Adjust visible counts accordingly
 	for i := range m.Categories {
 		if m.ShowAll {
@@ -183,15 +184,18 @@ func (m *ReviewModel) ToggleShowAll() {
 			m.VisibleCount[i] = limit
 		}
 	}
-	// Clamp cursor to available files
-	total := m.totalFiles()
-	if total == 0 {
-		m.Cursor = 0
-		return
+	// When collapsing, clamp cursor if it's now beyond the visible range.
+	if !m.ShowAll {
+		shown := 0
+		if ci < len(m.VisibleCount) {
+			shown = m.VisibleCount[ci]
+		}
+		if shown > 0 && fi >= shown {
+			fi = shown - 1
+			m.Cursor = m.globalFileIndexFor(ci, fi)
+		}
 	}
-	if m.Cursor >= total {
-		m.Cursor = total - 1
-	}
+	m.scrollIntoView(ci, fi)
 }
 
 // ToggleFullPath toggles between shortened and full path display.
@@ -237,7 +241,7 @@ func (m ReviewModel) globalFileIndexFor(ci, fi int) int {
 
 // NextCategory moves focus to the next category and adjusts scroll.
 func (m *ReviewModel) NextCategory() {
-	if len(m.Categories) == 0 {
+	if len(m.Categories) <= 1 {
 		return
 	}
 	ci, _ := m.cursorCatFile()
@@ -264,9 +268,10 @@ func (m *ReviewModel) NextCategory() {
 func (m ReviewModel) headerLineIndexForCategory(i int) int {
 	line := 0
 	for c := 0; c < i; c++ {
-		// header
-		line++
-		// files shown for previous categories
+		line++ // header
+		if !m.Categories[c].SizeKnown {
+			line++ // warning line shown before files for unknown-size categories
+		}
 		shown := 0
 		if c < len(m.VisibleCount) {
 			shown = m.VisibleCount[c]
@@ -280,10 +285,19 @@ func (m ReviewModel) headerLineIndexForCategory(i int) int {
 		if !m.ShowAll && remaining > 0 {
 			line++
 		}
-		// spacer
-		line++
+		line++ // spacer
 	}
 	return line
+}
+
+// fileLineIndex returns the rendered line index of the file at position fi within category ci.
+func (m ReviewModel) fileLineIndex(ci, fi int) int {
+	line := m.headerLineIndexForCategory(ci)
+	line++ // the header line itself
+	if !m.Categories[ci].SizeKnown {
+		line++ // warning line before files
+	}
+	return line + fi
 }
 
 // cursorCatFile returns (categoryIndex, fileIndexWithinCategory) for the current cursor.
@@ -305,11 +319,15 @@ func (m ReviewModel) cursorCatFile() (int, int) {
 func (m ReviewModel) View() string {
 	var b strings.Builder
 
+	modeTag := styles.Warning.Bold(true).Render("[DRY RUN]")
+	if m.ExecuteMode {
+		modeTag = styles.Error.Bold(true).Render("[EXECUTE]")
+	}
 	title := fmt.Sprintf("Review: %s across %d files", utils.FormatBytes(m.TotalSize), m.TotalFiles)
 	if m.UnknownCount > 0 {
 		title = fmt.Sprintf("%s + %d unknown-size categor%s", title, m.UnknownCount, pluralSuffix(m.UnknownCount, "y", "ies"))
 	}
-	b.WriteString(styles.Title.Render(title))
+	b.WriteString(modeTag + " " + styles.Title.Render(title))
 
 	b.WriteString("\n\n")
 
@@ -342,6 +360,10 @@ func (m ReviewModel) View() string {
 		})
 		lines = append(lines, hdr)
 
+		if !cat.SizeKnown {
+			lines = append(lines, styles.Warning.Render("    Note: APFS snapshots don't expose a reliable reclaimable size — excluded from the total."))
+		}
+
 		shown := 0
 		if ci < len(m.VisibleCount) {
 			shown = m.VisibleCount[ci]
@@ -360,7 +382,7 @@ func (m ReviewModel) View() string {
 			}
 			line := fmt.Sprintf("    %s (%s)", styles.Dim.Render(short), sizeText)
 			if globalFileIdx == m.Cursor {
-				line = styles.Highlight.Render(fmt.Sprintf("   %s  %s", short, sizeText))
+				line = fmt.Sprintf("  > %s (%s)", styles.Highlight.Render(short), sizeText)
 			}
 			lines = append(lines, line)
 			globalFileIdx++
@@ -368,10 +390,6 @@ func (m ReviewModel) View() string {
 		// Advance past hidden files so globalFileIdx stays in sync with m.Cursor,
 		// which is always based on AllFiles counts (not VisibleCount).
 		globalFileIdx += len(cat.AllFiles) - shown
-
-		if !cat.SizeKnown {
-			lines = append(lines, styles.Warning.Render("    APFS Time Machine snapshots do not expose a reliable reclaimable size, so this category is excluded from the estimated space total."))
-		}
 
 		remaining := len(cat.AllFiles) - shown
 		if !m.ShowAll && remaining > 0 {
@@ -454,17 +472,44 @@ func (m ReviewModel) View() string {
 		switchListHintTxt = "tab: switch category"
 	}
 
-	if m.ExecuteMode {
+	// Position indicator: show current category and visible/total file count.
+	curCi, _ := m.cursorCatFile()
+	if curCi >= 0 && curCi < len(m.Categories) {
+		curCat := m.Categories[curCi]
+		curShown := 0
+		if curCi < len(m.VisibleCount) {
+			curShown = m.VisibleCount[curCi]
+		}
+		if curShown > len(curCat.AllFiles) {
+			curShown = len(curCat.AllFiles)
+		}
+		_, curFi := m.cursorCatFile()
+		catPos := fmt.Sprintf("  %s  [file %d/%d]", curCat.Name, curFi+1, curShown)
+		if len(curCat.AllFiles) > curShown {
+			catPos = fmt.Sprintf("  %s  [file %d/%d, %d more not shown]", curCat.Name, curFi+1, curShown, len(curCat.AllFiles)-curShown)
+		}
+		if len(m.Categories) > 1 {
+			catPos += fmt.Sprintf("  (%d/%d categories)", curCi+1, len(m.Categories))
+		}
+		b.WriteString(styles.Muted.Render(catPos) + "\n")
+	}
+
+	if m.PendingConfirm {
+		b.WriteString(styles.Error.Bold(true).Render(fmt.Sprintf(
+			"  !! Permanently delete %s across %d files? Press enter to confirm or esc to cancel.",
+			utils.FormatBytes(m.TotalSize), m.TotalFiles,
+		)))
+	} else if m.ExecuteMode {
 		if switchListHintTxt != "" {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt)))
 		}
 	} else {
 		if switchListHintTxt != "" {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt)))
 		}
 	}
 

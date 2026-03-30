@@ -45,11 +45,12 @@ type App struct {
 	height        int
 
 	// Screens
-	dashboard   screens.DashboardModel
-	scanningScr screens.ScanningModel
-	cleaningScr screens.CleaningModel
-	summaryScr  screens.SummaryModel
-	reviewScr   screens.ReviewModel
+	dashboard    screens.DashboardModel
+	scanningScr  screens.ScanningModel
+	cleaningScr  screens.CleaningModel
+	summaryScr   screens.SummaryModel
+	reviewScr    screens.ReviewModel
+	reviewBuilt  bool // true once review is built for the current scan; prevents state reset on esc+enter
 
 	registry    *cleaner.Registry
 	scanResults map[cleaner.Category]*cleaner.ScanResult
@@ -220,6 +221,7 @@ func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if dmsg, ok := action.(screens.DashboardMsg); ok {
 			a.scanningScr = screens.NewScanning(dmsg.Selected, a.registry)
 			a.scanningScr.SetSize(a.width, a.height)
+			a.reviewBuilt = false // new scan invalidates the previous review state
 			a.currentScreen = screenScanning
 
 			cmds := []tea.Cmd{a.scanningScr.Spinner.Tick}
@@ -245,8 +247,11 @@ func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.scanningScr.AllDone() {
 		if key.Matches(msg, keys.Confirm) {
-			results := a.scanningScr.Results()
-			a.reviewScr = screens.NewReview(results, a.executeMode)
+			if !a.reviewBuilt {
+				results := a.scanningScr.Results()
+				a.reviewScr = screens.NewReview(results, a.executeMode)
+				a.reviewBuilt = true
+			}
 			a.reviewScr.SetSize(a.width, a.height)
 			a.currentScreen = screenReview
 			return a, nil
@@ -267,6 +272,11 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.reviewScr.TotalFiles == 0 {
 			return a, nil
 		}
+		if a.executeMode && !a.reviewScr.PendingConfirm {
+			a.reviewScr.PendingConfirm = true
+			return a, nil
+		}
+		a.reviewScr.PendingConfirm = false
 		results := a.scanningScr.Results()
 		a.cleaningScr = screens.NewCleaningModel(results, !a.executeMode)
 		a.cleaningScr.SetSize(a.width, a.height)
@@ -274,6 +284,10 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.startNextClean()
 
 	case key.Matches(msg, keys.Back):
+		if a.reviewScr.PendingConfirm {
+			a.reviewScr.PendingConfirm = false
+			return a, nil
+		}
 		a.currentScreen = screenScanning
 		return a, nil
 

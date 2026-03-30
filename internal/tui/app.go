@@ -45,11 +45,12 @@ type App struct {
 	height        int
 
 	// Screens
-	dashboard   screens.DashboardModel
-	scanningScr screens.ScanningModel
-	cleaningScr screens.CleaningModel
-	summaryScr  screens.SummaryModel
-	reviewScr   screens.ReviewModel
+	dashboard    screens.DashboardModel
+	scanningScr  screens.ScanningModel
+	cleaningScr  screens.CleaningModel
+	summaryScr   screens.SummaryModel
+	reviewScr    screens.ReviewModel
+	reviewBuilt  bool // true once review is built for the current scan; prevents state reset on esc+enter
 
 	registry    *cleaner.Registry
 	scanResults map[cleaner.Category]*cleaner.ScanResult
@@ -220,6 +221,7 @@ func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if dmsg, ok := action.(screens.DashboardMsg); ok {
 			a.scanningScr = screens.NewScanning(dmsg.Selected, a.registry)
 			a.scanningScr.SetSize(a.width, a.height)
+			a.reviewBuilt = false // new scan invalidates the previous review state
 			a.currentScreen = screenScanning
 
 			cmds := []tea.Cmd{a.scanningScr.Spinner.Tick}
@@ -245,8 +247,11 @@ func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.scanningScr.AllDone() {
 		if key.Matches(msg, keys.Confirm) {
-			results := a.scanningScr.Results()
-			a.reviewScr = screens.NewReview(results, a.executeMode)
+			if !a.reviewBuilt {
+				results := a.scanningScr.Results()
+				a.reviewScr = screens.NewReview(results, a.executeMode)
+				a.reviewBuilt = true
+			}
 			a.reviewScr.SetSize(a.width, a.height)
 			a.currentScreen = screenReview
 			return a, nil

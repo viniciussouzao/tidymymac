@@ -151,7 +151,7 @@ func (m *ReviewModel) scrollIntoView(ci, fi int) {
 		viewHeight = 20
 	}
 	headerLine := m.headerLineIndexForCategory(ci)
-	focusedLine := headerLine + 1 + fi // +1 to account for the header line itself
+	focusedLine := m.fileLineIndex(ci, fi)
 	visibleEnd := m.ScrollPos + viewHeight - 1
 
 	if focusedLine >= m.ScrollPos && focusedLine <= visibleEnd {
@@ -170,8 +170,8 @@ func (m *ReviewModel) scrollIntoView(ci, fi int) {
 
 // ToggleShowAll toggles between showing top 10 and all files per category.
 func (m *ReviewModel) ToggleShowAll() {
+	ci, fi := m.cursorCatFile()
 	m.ShowAll = !m.ShowAll
-	m.ScrollPos = 0
 	// Adjust visible counts accordingly
 	for i := range m.Categories {
 		if m.ShowAll {
@@ -184,15 +184,18 @@ func (m *ReviewModel) ToggleShowAll() {
 			m.VisibleCount[i] = limit
 		}
 	}
-	// Clamp cursor to available files
-	total := m.totalFiles()
-	if total == 0 {
-		m.Cursor = 0
-		return
+	// When collapsing, clamp cursor if it's now beyond the visible range.
+	if !m.ShowAll {
+		shown := 0
+		if ci < len(m.VisibleCount) {
+			shown = m.VisibleCount[ci]
+		}
+		if shown > 0 && fi >= shown {
+			fi = shown - 1
+			m.Cursor = m.globalFileIndexFor(ci, fi)
+		}
 	}
-	if m.Cursor >= total {
-		m.Cursor = total - 1
-	}
+	m.scrollIntoView(ci, fi)
 }
 
 // ToggleFullPath toggles between shortened and full path display.
@@ -265,9 +268,10 @@ func (m *ReviewModel) NextCategory() {
 func (m ReviewModel) headerLineIndexForCategory(i int) int {
 	line := 0
 	for c := 0; c < i; c++ {
-		// header
-		line++
-		// files shown for previous categories
+		line++ // header
+		if !m.Categories[c].SizeKnown {
+			line++ // warning line shown before files for unknown-size categories
+		}
 		shown := 0
 		if c < len(m.VisibleCount) {
 			shown = m.VisibleCount[c]
@@ -281,10 +285,19 @@ func (m ReviewModel) headerLineIndexForCategory(i int) int {
 		if !m.ShowAll && remaining > 0 {
 			line++
 		}
-		// spacer
-		line++
+		line++ // spacer
 	}
 	return line
+}
+
+// fileLineIndex returns the rendered line index of the file at position fi within category ci.
+func (m ReviewModel) fileLineIndex(ci, fi int) int {
+	line := m.headerLineIndexForCategory(ci)
+	line++ // the header line itself
+	if !m.Categories[ci].SizeKnown {
+		line++ // warning line before files
+	}
+	return line + fi
 }
 
 // cursorCatFile returns (categoryIndex, fileIndexWithinCategory) for the current cursor.
@@ -347,6 +360,10 @@ func (m ReviewModel) View() string {
 		})
 		lines = append(lines, hdr)
 
+		if !cat.SizeKnown {
+			lines = append(lines, styles.Warning.Render("    Note: APFS snapshots don't expose a reliable reclaimable size — excluded from the total."))
+		}
+
 		shown := 0
 		if ci < len(m.VisibleCount) {
 			shown = m.VisibleCount[ci]
@@ -373,10 +390,6 @@ func (m ReviewModel) View() string {
 		// Advance past hidden files so globalFileIdx stays in sync with m.Cursor,
 		// which is always based on AllFiles counts (not VisibleCount).
 		globalFileIdx += len(cat.AllFiles) - shown
-
-		if !cat.SizeKnown {
-			lines = append(lines, styles.Warning.Render("    APFS Time Machine snapshots do not expose a reliable reclaimable size, so this category is excluded from the estimated space total."))
-		}
 
 		remaining := len(cat.AllFiles) - shown
 		if !m.ShowAll && remaining > 0 {
@@ -457,6 +470,24 @@ func (m ReviewModel) View() string {
 	var switchListHintTxt string
 	if len(m.Categories) > 1 {
 		switchListHintTxt = "tab: switch category"
+	}
+
+	// Position indicator: show current category and visible/total file count.
+	curCi, _ := m.cursorCatFile()
+	if curCi >= 0 && curCi < len(m.Categories) {
+		curCat := m.Categories[curCi]
+		curShown := 0
+		if curCi < len(m.VisibleCount) {
+			curShown = m.VisibleCount[curCi]
+		}
+		if curShown > len(curCat.AllFiles) {
+			curShown = len(curCat.AllFiles)
+		}
+		catPos := fmt.Sprintf("  %s  [%d/%d files shown]", curCat.Name, curShown, len(curCat.AllFiles))
+		if len(m.Categories) > 1 {
+			catPos = fmt.Sprintf("  %s  [%d/%d files shown]  (%d/%d categories)", curCat.Name, curShown, len(curCat.AllFiles), curCi+1, len(m.Categories))
+		}
+		b.WriteString(styles.Muted.Render(catPos) + "\n")
 	}
 
 	if m.PendingConfirm {

@@ -45,7 +45,7 @@ func NewCleaningModel(results map[cleaner.Category]*cleaner.ScanResult, dryRun b
 	var totalTarget int64
 
 	for _, result := range results {
-		if result.TotalSize == 0 {
+		if result.TotalFiles == 0 {
 			continue
 		}
 

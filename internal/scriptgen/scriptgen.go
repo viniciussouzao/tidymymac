@@ -149,6 +149,20 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 			b.WriteString("  echo -e \"${YELLOW}[SKIP]${NC} Docker not available\"\n")
 			b.WriteString("fi\n\n")
 			continue
+
+		case cleaner.CategoryTimeMachineSnapshots:
+			b.WriteString("if command -v tmutil &>/dev/null; then\n")
+			for _, entry := range result.Entries {
+				snapshotDate, ok := snapshotDateFromEntry(entry.Path)
+				if !ok {
+					continue
+				}
+				b.WriteString(fmt.Sprintf("  tmutil deletelocalsnapshots '%s' || true\n", snapshotDate))
+			}
+			b.WriteString("else\n")
+			b.WriteString("  echo -e \"${YELLOW}[SKIP]${NC} tmutil not available\"\n")
+			b.WriteString("fi\n\n")
+			continue
 		}
 
 		// For filesystem-based cleaners, emit rm commands (files) and rm -rf (dirs).
@@ -199,4 +213,23 @@ func totalBytes(results map[cleaner.Category]*cleaner.ScanResult) int64 {
 		n += r.TotalSize
 	}
 	return n
+}
+
+func snapshotDateFromEntry(entry string) (string, bool) {
+	const (
+		prefix = "com.apple.TimeMachine."
+		suffix = ".local"
+	)
+
+	if !strings.HasPrefix(entry, prefix) || !strings.HasSuffix(entry, suffix) {
+		return "", false
+	}
+
+	date := strings.TrimPrefix(entry, prefix)
+	date = strings.TrimSuffix(date, suffix)
+	if date == "" {
+		return "", false
+	}
+
+	return date, true
 }

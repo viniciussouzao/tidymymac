@@ -64,5 +64,6 @@ func DefaultRegistry() *Registry {
 	r.Register(NewUpdatesCleaner())
 	r.Register(NewTrashCleaner())
 	r.Register(NewXcodeCleaner())
+	r.Register(NewTimeMachineCleaner())
 	return r
 }

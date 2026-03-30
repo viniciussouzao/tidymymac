@@ -19,11 +19,12 @@ type fileSummary struct {
 
 // ReviewCategory represents a category of files to review, with its total size, file count, and lists of files.
 type ReviewCategory struct {
-	Name     string
-	Size     int64
-	Files    int
-	TopFiles []fileSummary // to show the top 10 largest files in this category
-	AllFiles []fileSummary // to show all files in the review screen
+	Name      string
+	Size      int64
+	Files     int
+	SizeKnown bool
+	TopFiles  []fileSummary // to show the top 10 largest files in this category
+	AllFiles  []fileSummary // to show all files in the review screen
 }
 
 // ReviewModel is the model for the review screen, containing all categories and their files, as well as UI state for scrolling and toggling views.
@@ -39,6 +40,7 @@ type ReviewModel struct {
 	Width        int
 	Height       int
 	ShowFull     bool
+	UnknownCount int
 }
 
 // NewReview constructs a ReviewModel from the scan results
@@ -46,14 +48,20 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 	m := ReviewModel{ExecuteMode: executeMode}
 
 	for _, result := range results {
-		if result.TotalSize == 0 {
+		if result.TotalFiles == 0 {
 			continue
 		}
 
+		sizeKnown := true
+		if result.Category == cleaner.CategoryTimeMachineSnapshots {
+			sizeKnown = result.SizeKnown || result.TotalFiles == 0
+		}
+
 		cat := ReviewCategory{
-			Name:  string(result.Category),
-			Size:  result.TotalSize,
-			Files: result.TotalFiles,
+			Name:      string(result.Category),
+			Size:      result.TotalSize,
+			Files:     result.TotalFiles,
+			SizeKnown: sizeKnown,
 		}
 
 		// Build file summaries.
@@ -84,6 +92,9 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 		m.Categories = append(m.Categories, cat)
 		m.TotalSize += result.TotalSize
 		m.TotalFiles += result.TotalFiles
+		if !cat.SizeKnown {
+			m.UnknownCount++
+		}
 	}
 
 	// sort categories by size desc
@@ -295,11 +306,11 @@ func (m ReviewModel) cursorCatFile() (int, int) {
 func (m ReviewModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(styles.Title.Render(fmt.Sprintf(
-		"Review: %s across %d files",
-		utils.FormatBytes(m.TotalSize),
-		m.TotalFiles,
-	)))
+	title := fmt.Sprintf("Review: %s across %d files", utils.FormatBytes(m.TotalSize), m.TotalFiles)
+	if m.UnknownCount > 0 {
+		title = fmt.Sprintf("%s + %d unknown-size categor%s", title, m.UnknownCount, pluralSuffix(m.UnknownCount, "y", "ies"))
+	}
+	b.WriteString(styles.Title.Render(title))
 
 	b.WriteString("\n\n")
 
@@ -320,7 +331,11 @@ func (m ReviewModel) View() string {
 
 	globalFileIdx := 0
 	for ci, cat := range m.Categories {
-		hdr := styles.CategoryHeader.Render(fmt.Sprintf("  %s (%s, %d files)", cat.Name, utils.FormatBytes(cat.Size), cat.Files))
+		sizeLabel := utils.FormatBytes(cat.Size)
+		if !cat.SizeKnown {
+			sizeLabel = "unknown size"
+		}
+		hdr := styles.CategoryHeader.Render(fmt.Sprintf("  %s (%s, %d files)", cat.Name, sizeLabel, cat.Files))
 
 		sections = append(sections, section{
 			headerStr: hdr,
@@ -340,12 +355,20 @@ func (m ReviewModel) View() string {
 		for fi := 0; fi < shown; fi++ {
 			f := cat.AllFiles[fi]
 			short := displayPath(cat.Name, f, m.ShowFull)
-			line := fmt.Sprintf("    %s (%s)", styles.Dim.Render(short), utils.FormatBytes(f.Size))
+			sizeText := utils.FormatBytes(f.Size)
+			if !cat.SizeKnown {
+				sizeText = "unknown"
+			}
+			line := fmt.Sprintf("    %s (%s)", styles.Dim.Render(short), sizeText)
 			if globalFileIdx == m.Cursor {
-				line = styles.Highlight.Render(fmt.Sprintf("   %s  %s", short, utils.FormatBytes(f.Size)))
+				line = styles.Highlight.Render(fmt.Sprintf("   %s  %s", short, sizeText))
 			}
 			lines = append(lines, line)
 			globalFileIdx++
+		}
+
+		if !cat.SizeKnown {
+			lines = append(lines, styles.Warning.Render("    APFS Time Machine snapshots do not expose a reliable reclaimable size, so this category is excluded from the estimated space total."))
 		}
 
 		remaining := len(cat.AllFiles) - shown
@@ -468,6 +491,12 @@ func displayPath(category string, f fileSummary, showFull bool) string {
 		return "docker " + rest
 	}
 
+	if category == string(cleaner.CategoryTimeMachineSnapshots) {
+		if date, ok := snapshotDateFromDisplayPath(path); ok {
+			return "snapshot " + date
+		}
+	}
+
 	// Special formatting for caches: ~/Library/Caches/<APP>/<...>/<name>
 	if category == string(cleaner.CategoryCaches) {
 		p := path
@@ -508,4 +537,30 @@ func displayPath(category string, f fileSummary, showFull bool) string {
 		return "..." + path[len(path)-47:]
 	}
 	return path
+}
+
+func pluralSuffix(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
+func snapshotDateFromDisplayPath(path string) (string, bool) {
+	const (
+		prefix = "com.apple.TimeMachine."
+		suffix = ".local"
+	)
+
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
+		return "", false
+	}
+
+	date := strings.TrimPrefix(path, prefix)
+	date = strings.TrimSuffix(date, suffix)
+	if date == "" {
+		return "", false
+	}
+
+	return date, true
 }

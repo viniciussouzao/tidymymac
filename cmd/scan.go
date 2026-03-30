@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
+	"github.com/viniciussouzao/tidymymac/internal/scriptgen"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -44,13 +45,14 @@ $ tidymymac scan docker caches
 		detailed, _ := cmd.Flags().GetBool("detailed")
 		save, _ := cmd.Flags().GetBool("save")
 		quiet, _ := cmd.Flags().GetBool("quiet")
+		generateScript, _ := cmd.Flags().GetBool("generate-script")
 
 		if output != "" && output != "json" && output != "csv" {
 			return fmt.Errorf("invalid --output value %q: must be json or csv", output)
 		}
 
 		if output != "" {
-			return runScanNonInteractive(cmd.Context(), args, output, detailed, save, quiet)
+			return runScanNonInteractive(cmd.Context(), args, output, detailed, save, quiet, generateScript)
 		}
 
 		return runScanInteractive(cmd, args)
@@ -63,11 +65,12 @@ func init() {
 	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
 	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout")
 	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
+	scanCmd.Flags().Bool("generate-script", false, "generate a cleanup script based on the scan results")
 }
 
 // runScanNonInteractive runs the scan without BubbleTea, prints progress to
 // stderr, and writes the result in the requested format to stdout (or a file).
-func runScanNonInteractive(ctx context.Context, args []string, format string, detailed bool, save bool, quiet bool) error {
+func runScanNonInteractive(ctx context.Context, args []string, format string, detailed bool, save bool, quiet bool, generateScript bool) error {
 	stderr := func(format string, a ...any) {
 		if !quiet {
 			fmt.Fprintf(os.Stderr, format, a...)
@@ -110,6 +113,15 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 		stderr("\n  saved to ./%s\n", filename)
 	}
 
+	if generateScript {
+		scriptInput := scanResultToCleanerResults(result)
+		scriptPath, genErr := scriptgen.Generate(scriptInput, cleaner.DefaultRegistry())
+		if genErr != nil {
+			return fmt.Errorf("generating cleanup script: %w", genErr)
+		}
+		stderr("\n  cleanup script generated: %s\n", scriptPath)
+	}
+
 	if writeErr := commands.WriteOutput(out, result, format, detailed); writeErr != nil {
 		return writeErr
 	}
@@ -125,6 +137,21 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 	}
 
 	return nil
+}
+
+// scanResultToCleanerResults converts command-layer scan output into the format
+// expected by the script generator.
+func scanResultToCleanerResults(result commands.ScanResult) map[cleaner.Category]*cleaner.ScanResult {
+	converted := make(map[cleaner.Category]*cleaner.ScanResult, len(result.Categories))
+	for _, cat := range result.Categories {
+		if cat.Err != nil || cat.TotalFiles == 0 {
+			continue
+		}
+		key := cleaner.Category(cat.Name)
+		entry := cleaner.ScanResult{}
+		converted[key] = &entry
+	}
+	return converted
 }
 
 // runScanInteractive runs the scan using the BubbleTea model (default mode).

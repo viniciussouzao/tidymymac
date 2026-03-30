@@ -29,7 +29,7 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 	b.WriteString("# Please review the commands before running the script.\n\n")
 	b.WriteString(strings.Repeat("#", 50))
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("# TidyMyMac Cleanup Script\n"))
+	b.WriteString("# TidyMyMac Cleanup Script\n")
 	b.WriteString(fmt.Sprintf("# Generated on: %s\n", time.Now().Format("2006-01-02 15:04:05")))
 	b.WriteString(strings.Repeat("#", 50))
 	b.WriteString("#\n")
@@ -81,7 +81,7 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 	b.WriteString("}\n\n")
 
 	// Confirmation prompt.
-	b.WriteString(fmt.Sprintf("echo -e \"${YELLOW}TidyMyMac Cleanup Script${NC}\"\n"))
+	b.WriteString("echo -e \"${YELLOW}TidyMyMac Cleanup Script${NC}\"\n")
 	b.WriteString(fmt.Sprintf("echo \"This will delete %d files (%s)\"\n", totalFiles(results), utils.FormatBytes(totalBytes(results))))
 	b.WriteString("echo \"\"\n")
 	b.WriteString("read -p \"Are you sure? (y/N) \" confirm\n")

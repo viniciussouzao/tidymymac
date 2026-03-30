@@ -466,15 +466,15 @@ func (m ReviewModel) View() string {
 		)))
 	} else if m.ExecuteMode {
 		if switchListHintTxt != "" {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt)))
 		}
 	} else {
 		if switchListHintTxt != "" {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt)))
+			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt)))
 		}
 	}
 

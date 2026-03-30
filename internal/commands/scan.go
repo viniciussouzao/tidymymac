@@ -13,10 +13,12 @@ import (
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
+// ScanOptions defines options for the scanning process.
 type ScanOptions struct {
 	Detailed bool
 }
 
+// ScanCategoryResult represents the result of scanning a specific category, including metadata and any errors encountered.
 type ScanCategoryResult struct {
 	Category       cleaner.Category    `json:"category"`
 	Name           string              `json:"name"`
@@ -28,6 +30,7 @@ type ScanCategoryResult struct {
 	ErrMsg         string              `json:"error,omitempty"`
 }
 
+// ScanResult represents the overall result of a scanning operation
 type ScanResult struct {
 	ScannedAt      time.Time            `json:"scanned_at"`
 	TotalFiles     int                  `json:"total_files"`
@@ -37,6 +40,7 @@ type ScanResult struct {
 	Categories     []ScanCategoryResult `json:"categories"`
 }
 
+// ScanEventType defines the type of events emitted during the scanning process.
 type ScanEventType string
 
 const (
@@ -45,6 +49,7 @@ const (
 	ScanEventDone     ScanEventType = "done"
 )
 
+// ScanEvent represents an event emitted during the scanning process, containing information about the category being scanned, progress updates, and any results or errors.
 type ScanEvent struct {
 	Type     ScanEventType
 	Category cleaner.Category
@@ -54,6 +59,7 @@ type ScanEvent struct {
 	Err      error
 }
 
+// RunScan executes the scanning process for the specified categories and returns a ScanResult summarizing the findings.
 func RunScan(ctx context.Context, registry *cleaner.Registry, selected []string, opts ScanOptions, onEvent func(ScanEvent)) (ScanResult, error) {
 	cleaners, err := resolveCleaners(registry, selected)
 	if err != nil {
@@ -157,6 +163,7 @@ func RunScan(ctx context.Context, registry *cleaner.Registry, selected []string,
 	return result, nil
 }
 
+// resolveCleaners is a helper function that takes a registry of cleaners and a list of selected category strings, and returns a slice of Cleaner instances corresponding to the selected categories.
 func resolveCleaners(registry *cleaner.Registry, selected []string) ([]cleaner.Cleaner, error) {
 	if len(selected) == 0 {
 		return registry.All(), nil
@@ -192,12 +199,14 @@ func WriteOutput(w io.Writer, result ScanResult, format string, detailed bool) e
 	}
 }
 
+// writeJSON encodes the ScanResult as pretty-printed JSON and writes it to w.
 func writeJSON(w io.Writer, result ScanResult) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(result)
 }
 
+// writeCSV writes the ScanResult to w in CSV format. If detailed is true, it includes individual file entries
 func writeCSV(w io.Writer, result ScanResult, detailed bool) error {
 	cw := csv.NewWriter(w)
 

@@ -11,6 +11,7 @@ import (
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
+// Generate creates a shell script to clean up files based on the scan results.
 func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleaner.Registry) (string, error) {
 	timestamp := time.Now().Format("20060102-150405")
 	filename := fmt.Sprintf("tidymymac-cleanup-script-%s.sh", timestamp)

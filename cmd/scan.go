@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -191,7 +192,7 @@ func runScanInteractive(cmd *cobra.Command, args []string) error {
 			if genErr != nil {
 				return fmt.Errorf("generating cleanup script: %w", genErr)
 			}
-			fmt.Println(scanHelpStyle.Render(" Cleanup script generated: " + scriptPath))
+			fmt.Println(scanHelpStyle.Render(" Cleanup script generated: " + filepath.Base(scriptPath)))
 		}
 		fmt.Println(scanHelpStyle.Render("  Run 'tidymymac clean' to remove these files | Run 'tidymymac clean <category>' to remove specific categories"))
 	}

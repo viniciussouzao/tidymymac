@@ -13,7 +13,7 @@ import (
 
 func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleaner.Registry) (string, error) {
 	timestamp := time.Now().Format("20060102-150405")
-	filename := fmt.Sprintf("tidymyac-cleanup-script-%s.sh", timestamp)
+	filename := fmt.Sprintf("tidymymac-cleanup-script-%s.sh", timestamp)
 
 	cwd, err := os.Getwd()
 	if err != nil {

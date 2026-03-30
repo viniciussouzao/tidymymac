@@ -12,11 +12,13 @@ import (
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
+// CleanerOptions defines options for the cleaning process.
 type CleanerOptions struct {
 	Detailed bool
 	DryRun   bool
 }
 
+// CleanCategoryResult represents the result of cleaning a specific category.
 type CleanCategoryResult struct {
 	Category     cleaner.Category    `json:"category"`
 	Name         string              `json:"name"`
@@ -27,6 +29,7 @@ type CleanCategoryResult struct {
 	ErrMsg       string              `json:"error,omitempty"`
 }
 
+// CleanResult represents the overall result of the cleaning process.
 type CleanResult struct {
 	CleanedAt      time.Time             `json:"cleaned_at"`
 	TotalFiles     int                   `json:"total_files"`
@@ -36,6 +39,7 @@ type CleanResult struct {
 	Categories     []CleanCategoryResult `json:"categories"`
 }
 
+// RevalidationSummary provides a summary of the revalidation process during cleaning.
 type RevalidationSummary struct {
 	RevalidatedFiles int `json:"revalidated_files"`
 	MissingFiles     int `json:"missing_files"`
@@ -43,11 +47,13 @@ type RevalidationSummary struct {
 	EmptyCategories  int `json:"empty_categories"`
 }
 
+// CleanOutput represents the output of the cleaning process, including results and optional revalidation summary.
 type CleanOutput struct {
 	Result       CleanResult          `json:"result"`
 	Revalidation *RevalidationSummary `json:"revalidation,omitempty"`
 }
 
+// CleanEventType defines the type of events emitted during the cleaning process.
 type CleanEventType string
 
 const (
@@ -56,6 +62,7 @@ const (
 	CleanEventDone     CleanEventType = "done"
 )
 
+// CleanEvent represents an event emitted during the cleaning process, including its type, category, progress, and any associated errors.
 type CleanEvent struct {
 	Type     CleanEventType
 	Category cleaner.Category
@@ -65,10 +72,12 @@ type CleanEvent struct {
 	Err      error
 }
 
+// RunClean executes the cleaning process for the selected categories and returns the results.
 func RunClean(ctx context.Context, registry *cleaner.Registry, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {
 	return runClean(ctx, registry, selected, opts, ScanResult{}, false, onEvent)
 }
 
+// runClean is the internal implementation of the cleaning process, allowing for optional use of a prepared scan result.
 func runClean(ctx context.Context, registry *cleaner.Registry, selected []string, opts CleanerOptions, preparedScan ScanResult, usePreparedScan bool, onEvent func(CleanEvent)) (CleanResult, error) {
 	cleaners, err := resolveCleaners(registry, selected)
 	if err != nil {
@@ -189,6 +198,8 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 	return result, nil
 }
 
+// buildCleanScanResult constructs a cleaner.ScanResult from a prepared ScanResult for a specific cleaner category.
+// It helps avoid re-scanning if we already have the scan results available.
 func buildCleanScanResult(c cleaner.Cleaner, preparedScan ScanResult, usePreparedScan bool) (*cleaner.ScanResult, error) {
 	if !usePreparedScan {
 		return nil, nil
@@ -212,6 +223,7 @@ func buildCleanScanResult(c cleaner.Cleaner, preparedScan ScanResult, usePrepare
 	return &cleaner.ScanResult{Category: c.Category()}, nil
 }
 
+// WriteCleanOutput writes the CleanOutput to the provided writer in the specified format (e.g., JSON).
 func WriteCleanOutput(w io.Writer, output CleanOutput, format string) error {
 	switch format {
 	case "json":

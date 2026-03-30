@@ -11,6 +11,7 @@ import (
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
+// PreparedScanResult is a wrapper around ScanResult that includes additional metadata about the revalidation process.
 type PreparedScanResult struct {
 	Result           ScanResult
 	RevalidatedFiles int
@@ -19,6 +20,7 @@ type PreparedScanResult struct {
 	EmptyCategories  int
 }
 
+// LoadScanResult reads a JSON-encoded ScanResult from the provided reader and decodes it into a ScanResult struct.
 func LoadScanResult(r io.Reader) (ScanResult, error) {
 	var result ScanResult
 	if err := json.NewDecoder(r).Decode(&result); err != nil {
@@ -27,6 +29,9 @@ func LoadScanResult(r io.Reader) (ScanResult, error) {
 	return result, nil
 }
 
+// PrepareScanResultForClean takes a ScanResult and prepares it for the cleaning process by revalidating file entries and categorizing them according to the provided registry and selected categories.
+// It returns a PreparedScanResult that includes the original ScanResult along with metadata about the revalidation process, such as the number of revalidated files, missing files, type-changed files, and empty categories.
+// If any errors occur during preparation, they are returned as well.
 func PrepareScanResultForClean(registry *cleaner.Registry, scan ScanResult, selected []string) (PreparedScanResult, error) {
 	cleaners, err := resolveCleaners(registry, selected)
 	if err != nil {
@@ -128,6 +133,8 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 	return revalidated, missing, typeChanged
 }
 
+// RunCleanWithScanResult takes a ScanResult, prepares it for cleaning, and then executes the cleaning process while emitting events through the provided onEvent callback.
+// It returns a CleanResult summarizing the outcome of the cleaning operation or an error if any step fails.
 func RunCleanWithScanResult(ctx context.Context, registry *cleaner.Registry, scan ScanResult, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {
 	prepared, err := PrepareScanResultForClean(registry, scan, selected)
 	if err != nil {
@@ -137,6 +144,8 @@ func RunCleanWithScanResult(ctx context.Context, registry *cleaner.Registry, sca
 	return RunCleanWithPreparedScanResult(ctx, registry, prepared, selected, opts, onEvent)
 }
 
+// RunCleanWithPreparedScanResult executes the cleaning process using a PreparedScanResult, which includes a ScanResult along with metadata about the revalidation process.
+// It returns a CleanResult summarizing the outcome of the cleaning operation or an error if any step fails.
 func RunCleanWithPreparedScanResult(ctx context.Context, registry *cleaner.Registry, prepared PreparedScanResult, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {
 	return runClean(ctx, registry, selected, opts, prepared.Result, true, onEvent)
 }

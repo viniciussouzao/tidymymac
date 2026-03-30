@@ -119,38 +119,51 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 }
 
 func (m *ReviewModel) ScrollUp() {
-	if m.Cursor > 0 {
-		m.Cursor--
-		ci, fi := m.cursorCatFile()
-		base := 0
-		if fi >= 10 {
-			base = fi - 10
-		}
-		m.ScrollPos = m.headerLineIndexForCategory(ci) + base
+	ci, fi := m.cursorCatFile()
+	if fi == 0 {
+		// Already at the first file of this category — don't cross into another.
+		return
 	}
+	m.Cursor--
+	m.scrollIntoView(ci, fi-1)
 }
 
 func (m *ReviewModel) ScrollDown() {
-	total := m.totalFiles()
-	if total == 0 {
+	ci, fi := m.cursorCatFile()
+	shown := 0
+	if ci < len(m.VisibleCount) {
+		shown = m.VisibleCount[ci]
+	}
+	if fi >= shown-1 {
+		// Already at the last visible file of this category — don't cross into another.
 		return
 	}
+	m.Cursor++
+	m.scrollIntoView(ci, fi+1)
+}
 
-	if m.Cursor < total-1 {
-		m.Cursor++
-		ci, fi := m.cursorCatFile()
+// scrollIntoView adjusts ScrollPos so the file at (ci, fi) is visible,
+// scrolling the minimum amount necessary.
+func (m *ReviewModel) scrollIntoView(ci, fi int) {
+	viewHeight := m.Height - 10
+	if viewHeight < 5 {
+		viewHeight = 20
+	}
+	headerLine := m.headerLineIndexForCategory(ci)
+	focusedLine := headerLine + 1 + fi // +1 to account for the header line itself
+	visibleEnd := m.ScrollPos + viewHeight - 1
 
-		if !m.ShowAll && ci >= 0 && ci < len(m.VisibleCount) {
-			if fi+1 > m.VisibleCount[ci] {
-				m.VisibleCount[ci] = fi + 1
-			}
+	if focusedLine >= m.ScrollPos && focusedLine <= visibleEnd {
+		// Already visible — don't scroll.
+	} else if focusedLine > visibleEnd {
+		// Below viewport: scroll down minimally.
+		m.ScrollPos = focusedLine - viewHeight + 2
+		if m.ScrollPos < 0 {
+			m.ScrollPos = 0
 		}
-
-		base := 0
-		if fi >= 10 {
-			base = fi - 9
-		}
-		m.ScrollPos = m.headerLineIndexForCategory(ci) + base
+	} else {
+		// Above viewport: scroll up to show the category header.
+		m.ScrollPos = headerLine
 	}
 }
 
@@ -227,7 +240,7 @@ func (m *ReviewModel) NextCategory() {
 	if len(m.Categories) == 0 {
 		return
 	}
-	ci, fi := m.cursorCatFile()
+	ci, _ := m.cursorCatFile()
 	// Find next category with files (wrap around)
 	start := (ci + 1) % len(m.Categories)
 	next := start
@@ -240,25 +253,11 @@ func (m *ReviewModel) NextCategory() {
 	if len(m.Categories[next].AllFiles) == 0 {
 		return
 	}
-	// Clamp file index to available files in new category
-	if fi > len(m.Categories[next].AllFiles)-1 {
-		fi = len(m.Categories[next].AllFiles) - 1
-	}
-	if fi < 0 {
-		fi = 0
-	}
-	// Ensure visible count reveals the focused item when not showing all
-	if !m.ShowAll && next < len(m.VisibleCount) && fi+1 > m.VisibleCount[next] {
-		m.VisibleCount[next] = fi + 1
-	}
+	// Always start at the first file of the new category.
+	fi := 0
 	// Move cursor to the corresponding global index
 	m.Cursor = m.globalFileIndexFor(next, fi)
-	// Adjust scroll to keep list stable for first 10; move after that
-	base := 0
-	if fi >= 10 {
-		base = fi - 9
-	}
-	m.ScrollPos = m.headerLineIndexForCategory(next) + base
+	m.scrollIntoView(next, fi)
 }
 
 // headerLineIndexForCategory computes the line index of the header for category i.
@@ -366,6 +365,9 @@ func (m ReviewModel) View() string {
 			lines = append(lines, line)
 			globalFileIdx++
 		}
+		// Advance past hidden files so globalFileIdx stays in sync with m.Cursor,
+		// which is always based on AllFiles counts (not VisibleCount).
+		globalFileIdx += len(cat.AllFiles) - shown
 
 		if !cat.SizeKnown {
 			lines = append(lines, styles.Warning.Render("    APFS Time Machine snapshots do not expose a reliable reclaimable size, so this category is excluded from the estimated space total."))

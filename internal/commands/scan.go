@@ -30,7 +30,7 @@ type ScanCategoryResult struct {
 	ErrMsg         string              `json:"error,omitempty"`
 }
 
-// ScanResult represents the overall result of a scanning operation
+// ScanResult represents the overall result of a scanning operation.
 type ScanResult struct {
 	ScannedAt      time.Time            `json:"scanned_at"`
 	TotalFiles     int                  `json:"total_files"`
@@ -206,7 +206,7 @@ func writeJSON(w io.Writer, result ScanResult) error {
 	return enc.Encode(result)
 }
 
-// writeCSV writes the ScanResult to w in CSV format. If detailed is true, it includes individual file entries
+// writeCSV writes the ScanResult to w in CSV format. If detailed is true, it includes individual file entries.
 func writeCSV(w io.Writer, result ScanResult, detailed bool) error {
 	cw := csv.NewWriter(w)
 

@@ -199,7 +199,7 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 }
 
 // buildCleanScanResult constructs a cleaner.ScanResult from a prepared ScanResult for a specific cleaner category.
-// it helps avoid re-scanning if we already have the scan results available
+// It helps avoid re-scanning if we already have the scan results available.
 func buildCleanScanResult(c cleaner.Cleaner, preparedScan ScanResult, usePreparedScan bool) (*cleaner.ScanResult, error) {
 	if !usePreparedScan {
 		return nil, nil

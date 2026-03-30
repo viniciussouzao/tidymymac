@@ -144,6 +144,8 @@ func RunCleanWithScanResult(ctx context.Context, registry *cleaner.Registry, sca
 	return RunCleanWithPreparedScanResult(ctx, registry, prepared, selected, opts, onEvent)
 }
 
+// RunCleanWithPreparedScanResult executes the cleaning process using a PreparedScanResult, which includes a ScanResult along with metadata about the revalidation process.
+// It returns a CleanResult summarizing the outcome of the cleaning operation or an error if any step fails.
 func RunCleanWithPreparedScanResult(ctx context.Context, registry *cleaner.Registry, prepared PreparedScanResult, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {
 	return runClean(ctx, registry, selected, opts, prepared.Result, true, onEvent)
 }

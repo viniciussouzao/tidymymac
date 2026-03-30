@@ -267,6 +267,11 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.reviewScr.TotalFiles == 0 {
 			return a, nil
 		}
+		if a.executeMode && !a.reviewScr.PendingConfirm {
+			a.reviewScr.PendingConfirm = true
+			return a, nil
+		}
+		a.reviewScr.PendingConfirm = false
 		results := a.scanningScr.Results()
 		a.cleaningScr = screens.NewCleaningModel(results, !a.executeMode)
 		a.cleaningScr.SetSize(a.width, a.height)
@@ -274,6 +279,10 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.startNextClean()
 
 	case key.Matches(msg, keys.Back):
+		if a.reviewScr.PendingConfirm {
+			a.reviewScr.PendingConfirm = false
+			return a, nil
+		}
 		a.currentScreen = screenScanning
 		return a, nil
 

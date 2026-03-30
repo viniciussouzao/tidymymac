@@ -29,18 +29,19 @@ type ReviewCategory struct {
 
 // ReviewModel is the model for the review screen, containing all categories and their files, as well as UI state for scrolling and toggling views.
 type ReviewModel struct {
-	Categories   []ReviewCategory
-	TotalSize    int64
-	TotalFiles   int
-	ExecuteMode  bool
-	ShowAll      bool
-	ScrollPos    int
-	Cursor       int
-	VisibleCount []int // indices of categories that are currently visible based on ShowAll and size > 0
-	Width        int
-	Height       int
-	ShowFull     bool
-	UnknownCount int
+	Categories     []ReviewCategory
+	TotalSize      int64
+	TotalFiles     int
+	ExecuteMode    bool
+	ShowAll        bool
+	ScrollPos      int
+	Cursor         int
+	VisibleCount   []int // indices of categories that are currently visible based on ShowAll and size > 0
+	Width          int
+	Height         int
+	ShowFull       bool
+	UnknownCount   int
+	PendingConfirm bool // true when execute mode is waiting for a second enter to confirm deletion
 }
 
 // NewReview constructs a ReviewModel from the scan results
@@ -305,11 +306,15 @@ func (m ReviewModel) cursorCatFile() (int, int) {
 func (m ReviewModel) View() string {
 	var b strings.Builder
 
+	modeTag := styles.Warning.Bold(true).Render("[DRY RUN]")
+	if m.ExecuteMode {
+		modeTag = styles.Error.Bold(true).Render("[EXECUTE]")
+	}
 	title := fmt.Sprintf("Review: %s across %d files", utils.FormatBytes(m.TotalSize), m.TotalFiles)
 	if m.UnknownCount > 0 {
 		title = fmt.Sprintf("%s + %d unknown-size categor%s", title, m.UnknownCount, pluralSuffix(m.UnknownCount, "y", "ies"))
 	}
-	b.WriteString(styles.Title.Render(title))
+	b.WriteString(modeTag + " " + styles.Title.Render(title))
 
 	b.WriteString("\n\n")
 
@@ -360,7 +365,7 @@ func (m ReviewModel) View() string {
 			}
 			line := fmt.Sprintf("    %s (%s)", styles.Dim.Render(short), sizeText)
 			if globalFileIdx == m.Cursor {
-				line = styles.Highlight.Render(fmt.Sprintf("   %s  %s", short, sizeText))
+				line = fmt.Sprintf("  > %s (%s)", styles.Highlight.Render(short), sizeText)
 			}
 			lines = append(lines, line)
 			globalFileIdx++
@@ -454,7 +459,12 @@ func (m ReviewModel) View() string {
 		switchListHintTxt = "tab: switch category"
 	}
 
-	if m.ExecuteMode {
+	if m.PendingConfirm {
+		b.WriteString(styles.Error.Bold(true).Render(fmt.Sprintf(
+			"  !! Permanently delete %s across %d files? Press enter to confirm or esc to cancel.",
+			utils.FormatBytes(m.TotalSize), m.TotalFiles,
+		)))
+	} else if m.ExecuteMode {
 		if switchListHintTxt != "" {
 			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back  | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {

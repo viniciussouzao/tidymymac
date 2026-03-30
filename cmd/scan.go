@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
+	"github.com/viniciussouzao/tidymymac/internal/scriptgen"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -44,13 +46,14 @@ $ tidymymac scan docker caches
 		detailed, _ := cmd.Flags().GetBool("detailed")
 		save, _ := cmd.Flags().GetBool("save")
 		quiet, _ := cmd.Flags().GetBool("quiet")
+		generateScript, _ := cmd.Flags().GetBool("generate-script")
 
 		if output != "" && output != "json" && output != "csv" {
 			return fmt.Errorf("invalid --output value %q: must be json or csv", output)
 		}
 
 		if output != "" {
-			return runScanNonInteractive(cmd.Context(), args, output, detailed, save, quiet)
+			return runScanNonInteractive(cmd.Context(), args, output, detailed, save, quiet, generateScript)
 		}
 
 		return runScanInteractive(cmd, args)
@@ -63,11 +66,12 @@ func init() {
 	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
 	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout")
 	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
+	scanCmd.Flags().Bool("generate-script", false, "generate a cleanup script based on the scan results")
 }
 
 // runScanNonInteractive runs the scan without BubbleTea, prints progress to
 // stderr, and writes the result in the requested format to stdout (or a file).
-func runScanNonInteractive(ctx context.Context, args []string, format string, detailed bool, save bool, quiet bool) error {
+func runScanNonInteractive(ctx context.Context, args []string, format string, detailed bool, save bool, quiet bool, generateScript bool) error {
 	stderr := func(format string, a ...any) {
 		if !quiet {
 			fmt.Fprintf(os.Stderr, format, a...)
@@ -80,7 +84,7 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 		ctx,
 		cleaner.DefaultRegistry(),
 		args,
-		commands.ScanOptions{Detailed: detailed},
+		commands.ScanOptions{Detailed: detailed || generateScript},
 		func(event commands.ScanEvent) {
 			switch event.Type {
 			case commands.ScanEventStarted:
@@ -110,6 +114,15 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 		stderr("\n  saved to ./%s\n", filename)
 	}
 
+	if generateScript {
+		scriptInput := scanResultToCleanerResults(result)
+		scriptPath, genErr := scriptgen.Generate(scriptInput, cleaner.DefaultRegistry())
+		if genErr != nil {
+			return fmt.Errorf("generating cleanup script: %w", genErr)
+		}
+		stderr("\n  cleanup script generated: %s\n", scriptPath)
+	}
+
 	if writeErr := commands.WriteOutput(out, result, format, detailed); writeErr != nil {
 		return writeErr
 	}
@@ -127,9 +140,29 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 	return nil
 }
 
+// scanResultToCleanerResults converts command-layer scan output into the format
+// expected by the script generator.
+func scanResultToCleanerResults(result commands.ScanResult) map[cleaner.Category]*cleaner.ScanResult {
+	converted := make(map[cleaner.Category]*cleaner.ScanResult, len(result.Categories))
+	for _, cat := range result.Categories {
+		if cat.Err != nil || cat.TotalFiles == 0 {
+			continue
+		}
+		converted[cat.Category] = &cleaner.ScanResult{
+			Category:   cat.Category,
+			Entries:    cat.Files,
+			TotalSize:  cat.TotalSize,
+			TotalFiles: cat.TotalFiles,
+		}
+	}
+	return converted
+}
+
 // runScanInteractive runs the scan using the BubbleTea model (default mode).
 func runScanInteractive(cmd *cobra.Command, args []string) error {
-	m := newScanModel(cmd.Context(), args)
+	generateScript, _ := cmd.Flags().GetBool("generate-script")
+
+	m := newScanModel(cmd.Context(), args, generateScript)
 	p := tea.NewProgram(m)
 
 	final, err := p.Run()
@@ -153,6 +186,14 @@ func runScanInteractive(cmd *cobra.Command, args []string) error {
 	}
 
 	if finalModel.err == nil && finalModel.result != nil {
+		if generateScript {
+			scriptInput := scanResultToCleanerResults(*finalModel.result)
+			scriptPath, genErr := scriptgen.Generate(scriptInput, cleaner.DefaultRegistry())
+			if genErr != nil {
+				return fmt.Errorf("generating cleanup script: %w", genErr)
+			}
+			fmt.Println(scanHelpStyle.Render(" Cleanup script generated: " + filepath.Base(scriptPath)))
+		}
 		fmt.Println(scanHelpStyle.Render("  Run 'tidymymac clean' to remove these files | Run 'tidymymac clean <category>' to remove specific categories"))
 	}
 
@@ -213,27 +254,29 @@ type scanCategoryProgress struct {
 }
 
 type scanModel struct {
-	ctx        context.Context
-	args       []string
-	spinner    spinner.Model
-	result     *commands.ScanResult
-	err        error
-	scanning   bool
-	categories []scanCategoryProgress
-	eventCh    chan commands.ScanEvent
+	ctx            context.Context
+	args           []string
+	spinner        spinner.Model
+	result         *commands.ScanResult
+	err            error
+	scanning       bool
+	categories     []scanCategoryProgress
+	eventCh        chan commands.ScanEvent
+	generateScript bool
 }
 
-func newScanModel(ctx context.Context, args []string) scanModel {
+func newScanModel(ctx context.Context, args []string, generateScript bool) scanModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
 
 	return scanModel{
-		ctx:      ctx,
-		args:     args,
-		spinner:  s,
-		scanning: true,
-		eventCh:  make(chan commands.ScanEvent, 50),
+		ctx:            ctx,
+		args:           args,
+		spinner:        s,
+		scanning:       true,
+		eventCh:        make(chan commands.ScanEvent, 50),
+		generateScript: generateScript,
 	}
 }
 
@@ -241,7 +284,7 @@ func (m scanModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{}, func(event commands.ScanEvent) {
+			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{Detailed: m.generateScript}, func(event commands.ScanEvent) {
 				m.eventCh <- event
 			})
 			close(m.eventCh)

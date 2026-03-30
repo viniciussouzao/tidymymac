@@ -15,6 +15,9 @@
 - 🛡️ Dry-run by default — nothing is deleted without your explicit confirmation
 - 🔌 Modular cleaners for different categories of junk
 - 📊 Progress reporting and summary of reclaimed space
+- 📤 Export scan results as JSON or CSV
+- 📝 Generate shell cleanup scripts from scan results
+- 🎯 Target specific categories in any command
 
 ### 🗂️ Cleaners
 
@@ -26,6 +29,11 @@
 | 🍺 Homebrew Cache | Packages cached by `brew` |
 | 🐳 Docker Artifacts | Stopped containers, untagged images, orphaned volumes |
 | 📱 iOS Backups | iPhone/iPad backups in `~/Library/Application Support/MobileSync/Backup` |
+| 🍎 macOS Updates | Old macOS update residues and installers |
+| 🗂️ Xcode | DerivedData, archives, simulators |
+| 👨‍💻 Development Artifacts | Go build cache and downloaded module cache |
+| 🕰️ Time Machine Snapshots | Local Time Machine snapshots stored on disk |
+| 🗑️ Trash | Files in the Trash waiting to be permanently removed |
 
 ## 🚀 Installation
 
@@ -51,13 +59,59 @@ tidymymac
 tidymymac --execute
 ```
 
-### 📋 Subcommands
+### 📋 Commands
+
+#### `scan` — identify junk without deleting
 
 ```bash
-tidymymac scan      # Scan for junk without launching the TUI
-tidymymac clean     # Clean without the TUI (non-interactive)
+# Interactive table (default)
+tidymymac scan
+
+# Scan specific categories only
+tidymymac scan docker caches xcode
+
+# Output as JSON or CSV
+tidymymac scan --output json
+tidymymac scan --output csv
+
+# Include individual file paths in output
+tidymymac scan --output json --detailed
+
+# Save output to a timestamped file
+tidymymac scan --output csv --save
+
+# Generate a shell cleanup script from scan results
+tidymymac scan --generate-script
+
+# Suppress progress output (useful in scripts)
+tidymymac scan --output json --quiet
+```
+
+#### `clean` — delete junk files
+
+```bash
+# Preview what would be deleted (dry-run, default)
+tidymymac clean
+
+# Actually delete files
+tidymymac clean --execute
+
+# Clean specific categories
+tidymymac clean docker caches --execute
+
+# Use a previously saved detailed scan instead of re-scanning
+tidymymac clean --from-file scan.json --execute
+
+# Output cleanup result as JSON
+tidymymac clean --output json
+```
+
+#### Other commands
+
+```bash
+tidymymac version   # Print version, commit, build date, platform, and Go version
 tidymymac explain   # Explain what each category contains
-tidymymac history   # Show past cleanup runs and reclaimed space
+tidymymac history   # Show past cleanup runs
 ```
 
 ## 🏗️ Development

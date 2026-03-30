@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install deps
+        run: go mod download
+
+      - name: Build darwin/amd64
+        run: |
+          GOOS=darwin GOARCH=amd64 go build \
+            -ldflags="-X github.com/viniciussouzao/tidymymac/internal/buildinfo.Version=${{ github.ref_name }} \
+                      -X github.com/viniciussouzao/tidymymac/internal/buildinfo.Commit=${{ github.sha }} \
+                      -X github.com/viniciussouzao/tidymymac/internal/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o dist/tidymymac-darwin-amd64 \
+            ./cmd/tidymymac/
+
+      - name: Build darwin/arm64
+        run: |
+          GOOS=darwin GOARCH=arm64 go build \
+            -ldflags="-X github.com/viniciussouzao/tidymymac/internal/buildinfo.Version=${{ github.ref_name }} \
+                      -X github.com/viniciussouzao/tidymymac/internal/buildinfo.Commit=${{ github.sha }} \
+                      -X github.com/viniciussouzao/tidymymac/internal/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o dist/tidymymac-darwin-arm64 \
+            ./cmd/tidymymac/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

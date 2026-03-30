@@ -13,6 +13,7 @@ const (
 	CategoryTrashBin             Category = "trash_files"
 	CategoryXcode                Category = "xcode"
 	CategoryDevelopmentArtifacts Category = "development_artifacts"
+	CategoryTimeMachineSnapshots Category = "time_machine"
 )
 
 func (c Category) DisplayName() string {
@@ -37,6 +38,8 @@ func (c Category) DisplayName() string {
 		return "Xcode"
 	case CategoryDevelopmentArtifacts:
 		return "Development Artifacts"
+	case CategoryTimeMachineSnapshots:
+		return "Time Machine Snapshots"
 	default:
 		return string(c)
 	}

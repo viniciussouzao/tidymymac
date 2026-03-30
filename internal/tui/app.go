@@ -168,10 +168,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a App) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 	if msg.result != nil {
 		a.scanResults[msg.category] = msg.result
-		a.dashboard.UpdateCategorySize(string(msg.category), msg.result.TotalSize)
-	} else {
-		a.dashboard.UpdateCategorySize(string(msg.category), 0)
 	}
+	a.dashboard.UpdateCategoryResult(string(msg.category), msg.result)
 
 	if a.currentScreen == screenScanning {
 		a.scanningScr.UpdateScanResult(msg.category, msg.result, msg.err)
@@ -266,7 +264,7 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Confirm):
-		if a.reviewScr.TotalSize == 0 {
+		if a.reviewScr.TotalFiles == 0 {
 			return a, nil
 		}
 		results := a.scanningScr.Results()

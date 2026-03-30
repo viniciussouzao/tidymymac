@@ -25,6 +25,7 @@ type ScanResult struct {
 	Entries    []FileEntry
 	TotalSize  int64
 	TotalFiles int
+	SizeKnown  bool
 	Duration   time.Duration
 	Errors     []error
 }

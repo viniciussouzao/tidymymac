@@ -12,13 +12,14 @@ import (
 )
 
 type ScanningCategory struct {
-	Name     string
-	Category cleaner.Category
-	Status   string // "scanning", "done", "error" or "skipped"
-	Files    int
-	Bytes    int64
-	Result   *cleaner.ScanResult
-	Error    error
+	Name      string
+	Category  cleaner.Category
+	Status    string // "scanning", "done", "error" or "skipped"
+	Files     int
+	Bytes     int64
+	SizeKnown bool
+	Result    *cleaner.ScanResult
+	Error     error
 }
 
 type ScanningModel struct {
@@ -61,10 +62,15 @@ func (m *ScanningModel) UpdateScanResult(category cleaner.Category, result *clea
 				m.Categories[i].Status = "error"
 				m.Categories[i].Error = err
 			} else {
+				sizeKnown := true
+				if result.Category == cleaner.CategoryTimeMachineSnapshots {
+					sizeKnown = result.SizeKnown || result.TotalFiles == 0
+				}
 				m.Categories[i].Status = "done"
 				m.Categories[i].Result = result
 				m.Categories[i].Files = result.TotalFiles
 				m.Categories[i].Bytes = result.TotalSize
+				m.Categories[i].SizeKnown = sizeKnown
 			}
 			return
 		}
@@ -125,9 +131,13 @@ func (m ScanningModel) View() string {
 			sizeText = styles.Dim.Render("scanning...")
 		case "done":
 			icon = styles.Success.Render("✓")
-			sizeText = utils.FormatBytes(cat.Bytes)
-			if cat.Files > 0 {
-				sizeText = fmt.Sprintf("%s (%d files)", sizeText, cat.Files)
+			if cat.Files > 0 && !cat.SizeKnown {
+				sizeText = fmt.Sprintf("unknown (%d snapshots)", cat.Files)
+			} else {
+				sizeText = utils.FormatBytes(cat.Bytes)
+				if cat.Files > 0 {
+					sizeText = fmt.Sprintf("%s (%d files)", sizeText, cat.Files)
+				}
 			}
 			sizeText = styles.Success.Render(sizeText)
 		case "error":

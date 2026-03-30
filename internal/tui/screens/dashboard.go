@@ -19,6 +19,8 @@ type CategoryItem struct {
 	//Icon      string // for future use, maybe we can add emojis or something to make it more visually appealing
 	Selected  bool
 	Size      int64 // in bytes, -1 means not scanned yet
+	Files     int
+	SizeKnown bool
 	Scanning  bool
 	NeedsSudo bool
 }
@@ -44,6 +46,7 @@ func NewDashboard() DashboardModel {
 			Name:      c.Category().DisplayName(),
 			Desc:      c.Description(),
 			Size:      -1,
+			SizeKnown: true,
 			Scanning:  true, // Já começa como scanning
 			NeedsSudo: c.RequiresSudo(),
 		})
@@ -120,16 +123,30 @@ func (m *DashboardModel) SetCategoryScanning(id string) {
 	for i := range m.Categories {
 		if m.Categories[i].ID == id {
 			m.Categories[i].Size = -1 // reset size so the UI shows "Scanning..."
+			m.Categories[i].Files = 0
+			m.Categories[i].SizeKnown = true
 			m.Categories[i].Scanning = true
 		}
 	}
 }
 
-// UpdateCategorySize updates the scanned size for a category.
-func (m *DashboardModel) UpdateCategorySize(id string, size int64) {
+// UpdateCategoryResult updates the scanned result for a category.
+func (m *DashboardModel) UpdateCategoryResult(id string, result *cleaner.ScanResult) {
 	for i := range m.Categories {
 		if m.Categories[i].ID == id {
-			m.Categories[i].Size = size
+			if result == nil {
+				m.Categories[i].Size = 0
+				m.Categories[i].Files = 0
+				m.Categories[i].SizeKnown = true
+			} else {
+				sizeKnown := true
+				if result.Category == cleaner.CategoryTimeMachineSnapshots {
+					sizeKnown = result.SizeKnown || result.TotalFiles == 0
+				}
+				m.Categories[i].Size = result.TotalSize
+				m.Categories[i].Files = result.TotalFiles
+				m.Categories[i].SizeKnown = sizeKnown
+			}
 			m.Categories[i].Scanning = false
 			return
 		}
@@ -160,7 +177,7 @@ func (m DashboardModel) visibleIndices() []int {
 	}
 	var indices []int
 	for i, category := range m.Categories {
-		if category.Size != 0 { // show if not yet scanned (-1) or has content (>0)
+		if category.Size != 0 || (category.Files > 0 && !category.SizeKnown) {
 			indices = append(indices, i)
 		}
 	}
@@ -221,7 +238,9 @@ func (m DashboardModel) View() string {
 		}
 
 		sizeText := styles.Dim.Render("scanning...")
-		if cat.Size >= 0 {
+		if !cat.Scanning && cat.Files > 0 && !cat.SizeKnown {
+			sizeText = styles.Warning.Render("unknown")
+		} else if cat.Size >= 0 {
 			formatted := utils.FormatBytes(cat.Size)
 			sizeText = styles.SizeStyled(cat.Size, formatted)
 		} else if cat.Scanning {

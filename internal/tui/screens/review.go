@@ -241,7 +241,7 @@ func (m ReviewModel) globalFileIndexFor(ci, fi int) int {
 
 // NextCategory moves focus to the next category and adjusts scroll.
 func (m *ReviewModel) NextCategory() {
-	if len(m.Categories) == 0 {
+	if len(m.Categories) <= 1 {
 		return
 	}
 	ci, _ := m.cursorCatFile()
@@ -483,9 +483,13 @@ func (m ReviewModel) View() string {
 		if curShown > len(curCat.AllFiles) {
 			curShown = len(curCat.AllFiles)
 		}
-		catPos := fmt.Sprintf("  %s  [%d/%d files shown]", curCat.Name, curShown, len(curCat.AllFiles))
+		_, curFi := m.cursorCatFile()
+		catPos := fmt.Sprintf("  %s  [file %d/%d]", curCat.Name, curFi+1, curShown)
+		if len(curCat.AllFiles) > curShown {
+			catPos = fmt.Sprintf("  %s  [file %d/%d, %d more not shown]", curCat.Name, curFi+1, curShown, len(curCat.AllFiles)-curShown)
+		}
 		if len(m.Categories) > 1 {
-			catPos = fmt.Sprintf("  %s  [%d/%d files shown]  (%d/%d categories)", curCat.Name, curShown, len(curCat.AllFiles), curCi+1, len(m.Categories))
+			catPos += fmt.Sprintf("  (%d/%d categories)", curCi+1, len(m.Categories))
 		}
 		b.WriteString(styles.Muted.Render(catPos) + "\n")
 	}

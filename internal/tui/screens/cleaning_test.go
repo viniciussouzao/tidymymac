@@ -2,6 +2,7 @@ package screens
 
 import (
 	"testing"
+	"time"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 )
@@ -41,5 +42,20 @@ func TestCleaningModelSkipCategoryMarksTerminalState(t *testing.T) {
 	}
 	if !m.Done {
 		t.Fatal("Done = false, want true after all categories reach terminal state")
+	}
+}
+
+func TestCleaningModelElapsedFreezesWhenDone(t *testing.T) {
+	startedAt := time.Now().Add(-2 * time.Minute)
+	finishedAt := startedAt.Add(35 * time.Second)
+
+	m := CleaningModel{
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+		Done:       true,
+	}
+
+	if got := m.elapsed(); got != 35*time.Second {
+		t.Fatalf("elapsed() = %s, want %s", got, 35*time.Second)
 	}
 }

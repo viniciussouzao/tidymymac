@@ -41,6 +41,7 @@ type CleaningModel struct {
 	Width                  int
 	Height                 int
 	StartedAt              time.Time
+	FinishedAt             time.Time
 	CurrentCategoryStarted time.Time
 	ActivityFrame          string
 }
@@ -113,14 +114,7 @@ func (m *CleaningModel) UpdateCleanResult(category cleaner.Category, result *cle
 
 	m.TotalFreed = m.totalFreed()
 
-	//check if all categories are done
-	m.Done = true
-	for _, c := range m.Categories {
-		if c.Status == "pending" || c.Status == "cleaning" {
-			m.Done = false
-			break
-		}
-	}
+	m.updateDoneState()
 }
 
 // SkipCategory marks a category as intentionally skipped and keeps the flow moving.
@@ -136,14 +130,7 @@ func (m *CleaningModel) SkipCategory(category cleaner.Category, reason string) {
 	}
 
 	m.TotalFreed = m.totalFreed()
-
-	m.Done = true
-	for _, c := range m.Categories {
-		if c.Status == "pending" || c.Status == "cleaning" {
-			m.Done = false
-			break
-		}
-	}
+	m.updateDoneState()
 }
 
 // UpdateCleanProgress updates the currently running category with partial progress.
@@ -200,6 +187,20 @@ func (m *CleaningModel) SetSize(w, h int) {
 // SetActivityFrame updates the spinner frame shown for the active category.
 func (m *CleaningModel) SetActivityFrame(frame string) {
 	m.ActivityFrame = frame
+}
+
+func (m *CleaningModel) updateDoneState() {
+	m.Done = true
+	for _, c := range m.Categories {
+		if c.Status == "pending" || c.Status == "cleaning" {
+			m.Done = false
+			break
+		}
+	}
+
+	if m.Done && m.FinishedAt.IsZero() {
+		m.FinishedAt = time.Now()
+	}
 }
 
 func (m CleaningModel) totalFreed() int64 {
@@ -284,6 +285,13 @@ func truncatePath(path string, maxLen int) string {
 	return path[:prefixLen] + ".../" + base
 }
 
+func (m CleaningModel) elapsed() time.Duration {
+	if !m.FinishedAt.IsZero() {
+		return m.FinishedAt.Sub(m.StartedAt).Round(time.Second)
+	}
+	return time.Since(m.StartedAt).Round(time.Second)
+}
+
 // View renders the cleaning screen
 func (m CleaningModel) View() string {
 	var b strings.Builder
@@ -355,22 +363,27 @@ func (m CleaningModel) View() string {
 	// Overall progress.
 	if len(m.Categories) > 0 {
 		pct := m.overallExecutionProgress()
-		b.WriteString(fmt.Sprintf("  Execution: %d/%d categories complete\n",
+		b.WriteString(styles.Subtitle.Render(fmt.Sprintf("  Execution: %d/%d categories complete",
 			m.completedCategories(),
 			len(m.Categories),
-		))
+		)))
+		b.WriteString("\n")
 		b.WriteString("  ")
 		b.WriteString(m.OverallBar.ViewAs(pct))
 		b.WriteString("\n")
+		b.WriteString("\n")
 		if m.TotalTarget > 0 {
-			b.WriteString(fmt.Sprintf("  Reclaimed so far: %s / %s targeted\n",
+			b.WriteString(styles.Subtitle.Render(fmt.Sprintf("  Reclaimed so far: %s / %s targeted",
 				utils.FormatBytes(m.TotalFreed),
 				utils.FormatBytes(m.TotalTarget),
-			))
+			)))
+			b.WriteString("\n")
 		} else {
-			b.WriteString(fmt.Sprintf("  Reclaimed so far: %s\n", utils.FormatBytes(m.TotalFreed)))
+			b.WriteString(styles.Subtitle.Render(fmt.Sprintf("  Reclaimed so far: %s", utils.FormatBytes(m.TotalFreed))))
+			b.WriteString("\n")
 		}
-		b.WriteString(fmt.Sprintf("  Elapsed: %s\n", time.Since(m.StartedAt).Round(time.Second)))
+		b.WriteString(styles.Muted.Render(fmt.Sprintf("  Elapsed: %s", m.elapsed())))
+		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")

@@ -48,4 +48,5 @@ type CleanResult struct {
 	Errors       []error
 	Duration     time.Duration
 	DryRun       bool
+	Skipped      bool // true when the category was intentionally skipped (e.g. requires sudo but process is not elevated)
 }

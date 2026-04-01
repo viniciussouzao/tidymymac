@@ -30,6 +30,9 @@ func NewSummary(results []*cleaner.CleanResult, dryRun bool) SummaryModel {
 	}
 
 	for _, r := range results {
+		if r.Skipped {
+			continue
+		}
 		m.TotalFreed += r.BytesFreed
 		m.TotalFiles += r.FilesDeleted
 		m.TotalTime += r.Duration
@@ -64,6 +67,17 @@ func (m SummaryModel) View() string {
 	b.WriteString("\n")
 
 	for _, r := range m.Results {
+		if r.Skipped {
+			line := fmt.Sprintf("  %-22s %12s %10s",
+				r.Category.DisplayName(),
+				"—",
+				"—",
+			)
+			b.WriteString(styles.Dim.Render(line))
+			b.WriteString(styles.Warning.Render(" (skipped: requires sudo)"))
+			b.WriteString("\n")
+			continue
+		}
 		line := fmt.Sprintf("  %-22s %12s %10d",
 			r.Category.DisplayName(),
 			utils.FormatBytes(r.BytesFreed),

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -45,16 +47,17 @@ type App struct {
 	height        int
 
 	// Screens
-	dashboard    screens.DashboardModel
-	scanningScr  screens.ScanningModel
-	cleaningScr  screens.CleaningModel
-	summaryScr   screens.SummaryModel
-	reviewScr    screens.ReviewModel
-	reviewBuilt  bool // true once review is built for the current scan; prevents state reset on esc+enter
+	dashboard   screens.DashboardModel
+	scanningScr screens.ScanningModel
+	cleaningScr screens.CleaningModel
+	summaryScr  screens.SummaryModel
+	reviewScr   screens.ReviewModel
+	reviewBuilt bool // true once review is built for the current scan; prevents state reset on esc+enter
 
 	registry    *cleaner.Registry
 	scanResults map[cleaner.Category]*cleaner.ScanResult
 	spinner     spinner.Model
+	isElevated  bool
 	scanning    bool
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -78,6 +81,7 @@ func NewApp(execute bool) App {
 		registry:      cleaner.DefaultRegistry(),
 		scanResults:   make(map[cleaner.Category]*cleaner.ScanResult),
 		spinner:       s,
+		isElevated:    os.Geteuid() == 0,
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -127,6 +131,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var scanCmd tea.Cmd
 		a.spinner, cmd = a.spinner.Update(msg)
 		a.scanningScr.Spinner, scanCmd = a.scanningScr.Spinner.Update(msg) // update scanning screen spinner as well
+		a.cleaningScr.SetActivityFrame(a.spinner.View())
 		return a, tea.Batch(cmd, scanCmd)
 
 	case scanCompleteMsg:
@@ -249,7 +254,7 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, keys.Confirm) {
 			if !a.reviewBuilt {
 				results := a.scanningScr.Results()
-				a.reviewScr = screens.NewReview(results, a.executeMode)
+				a.reviewScr = screens.NewReview(results, a.executeMode, a.registry, a.isElevated)
 				a.reviewBuilt = true
 			}
 			a.reviewScr.SetSize(a.width, a.height)
@@ -272,11 +277,26 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.reviewScr.TotalFiles == 0 {
 			return a, nil
 		}
-		if a.executeMode && !a.reviewScr.PendingConfirm {
-			a.reviewScr.PendingConfirm = true
-			return a, nil
+		switch a.reviewScr.ConfirmState {
+		case screens.ConfirmNone:
+			if a.reviewScr.ShouldWarnAboutSudo() {
+				a.reviewScr.ConfirmState = screens.ConfirmSudo
+				return a, nil
+			}
+			if a.executeMode {
+				a.reviewScr.ConfirmState = screens.ConfirmExecute
+				return a, nil
+			}
+			// dry run: proceed immediately without an extra confirmation step
+		case screens.ConfirmSudo:
+			if a.executeMode {
+				a.reviewScr.ConfirmState = screens.ConfirmExecute
+				return a, nil
+			}
+			a.reviewScr.ConfirmState = screens.ConfirmNone
+		case screens.ConfirmExecute:
+			a.reviewScr.ConfirmState = screens.ConfirmNone
 		}
-		a.reviewScr.PendingConfirm = false
 		results := a.scanningScr.Results()
 		a.cleaningScr = screens.NewCleaningModel(results, !a.executeMode)
 		a.cleaningScr.SetSize(a.width, a.height)
@@ -284,8 +304,8 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.startNextClean()
 
 	case key.Matches(msg, keys.Back):
-		if a.reviewScr.PendingConfirm {
-			a.reviewScr.PendingConfirm = false
+		if a.reviewScr.ConfirmState != screens.ConfirmNone {
+			a.reviewScr.ConfirmState = screens.ConfirmNone
 			return a, nil
 		}
 		a.currentScreen = screenScanning
@@ -345,20 +365,30 @@ func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) startNextClean() (tea.Model, tea.Cmd) {
-	next := a.cleaningScr.NextCategory()
-	if next == nil {
-		return a, nil
-	}
+	for {
+		next := a.cleaningScr.NextCategory()
+		if next == nil {
+			return a, nil
+		}
 
-	c, ok := a.registry.Get(next.Category)
-	if !ok {
-		return a, nil
-	}
+		c, ok := a.registry.Get(next.Category)
+		if !ok {
+			continue
+		}
 
-	dryRun := !a.executeMode
-	cmd, msgCh := cleanCategoryStreamCmd(a.ctx, c, next.Entries, dryRun)
-	a.cleanMsgCh = msgCh
-	return a, cmd
+		if a.executeMode && !a.isElevated && c.RequiresSudo() {
+			a.cleaningScr.SkipCategory(next.Category, fmt.Sprintf("%s requires sudo. Re-run the app with sudo to clean it.", c.Category().DisplayName()))
+			if a.cleaningScr.Done {
+				return a, nil
+			}
+			continue
+		}
+
+		dryRun := !a.executeMode
+		cmd, msgCh := cleanCategoryStreamCmd(a.ctx, c, next.Entries, dryRun)
+		a.cleanMsgCh = msgCh
+		return a, cmd
+	}
 }
 
 func cleanCategoryStreamCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.FileEntry, dryRun bool) (tea.Cmd, <-chan tea.Msg) {

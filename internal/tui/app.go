@@ -288,7 +288,13 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			// dry run: proceed immediately without an extra confirmation step
-		case screens.ConfirmSudo, screens.ConfirmExecute:
+		case screens.ConfirmSudo:
+			if a.executeMode {
+				a.reviewScr.ConfirmState = screens.ConfirmExecute
+				return a, nil
+			}
+			a.reviewScr.ConfirmState = screens.ConfirmNone
+		case screens.ConfirmExecute:
 			a.reviewScr.ConfirmState = screens.ConfirmNone
 		}
 		results := a.scanningScr.Results()

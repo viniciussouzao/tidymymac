@@ -11,6 +11,15 @@ import (
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
+// ConfirmState represents the pending confirmation step in the review flow.
+type ConfirmState int
+
+const (
+	ConfirmNone    ConfirmState = iota
+	ConfirmSudo                 // waiting for user to confirm sudo-warning before proceeding
+	ConfirmExecute              // waiting for user to confirm execute-mode deletion
+)
+
 type fileSummary struct {
 	Path  string
 	Size  int64
@@ -20,6 +29,7 @@ type fileSummary struct {
 // ReviewCategory represents a category of files to review, with its total size, file count, and lists of files.
 type ReviewCategory struct {
 	Name      string
+	Category  cleaner.Category
 	Size      int64
 	Files     int
 	SizeKnown bool
@@ -42,8 +52,8 @@ type ReviewModel struct {
 	Height         int
 	ShowFull       bool
 	UnknownCount   int
-	SudoCategories []string
-	PendingConfirm bool // true when execute mode is waiting for a second enter to confirm deletion
+	SudoCategories []cleaner.Category
+	ConfirmState   ConfirmState
 }
 
 // NewReview constructs a ReviewModel from the scan results
@@ -65,6 +75,7 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 
 		cat := ReviewCategory{
 			Name:      string(result.Category),
+			Category:  result.Category,
 			Size:      result.TotalSize,
 			Files:     result.TotalFiles,
 			SizeKnown: sizeKnown,
@@ -103,7 +114,7 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 		}
 		if registry != nil {
 			if c, ok := registry.Get(result.Category); ok && c.RequiresSudo() {
-				m.SudoCategories = append(m.SudoCategories, result.Category.DisplayName())
+				m.SudoCategories = append(m.SudoCategories, result.Category)
 			}
 		}
 	}
@@ -138,15 +149,15 @@ func (m ReviewModel) actionableTotals() (int64, int) {
 		return m.TotalSize, m.TotalFiles
 	}
 
-	blocked := make(map[string]struct{}, len(m.SudoCategories))
-	for _, name := range m.SudoCategories {
-		blocked[name] = struct{}{}
+	blocked := make(map[cleaner.Category]struct{}, len(m.SudoCategories))
+	for _, cat := range m.SudoCategories {
+		blocked[cat] = struct{}{}
 	}
 
 	var totalSize int64
 	var totalFiles int
 	for _, cat := range m.Categories {
-		if _, isBlocked := blocked[cat.CategoryDisplayName()]; isBlocked {
+		if _, isBlocked := blocked[cat.Category]; isBlocked {
 			continue
 		}
 		totalSize += cat.Size
@@ -373,9 +384,13 @@ func (m ReviewModel) View() string {
 	b.WriteString("\n\n")
 
 	if m.ShouldWarnAboutSudo() {
+		sudoNames := make([]string, len(m.SudoCategories))
+		for i, cat := range m.SudoCategories {
+			sudoNames[i] = cat.DisplayName()
+		}
 		warning := fmt.Sprintf(
 			"Some selected categories require sudo and will be skipped unless you re-run with elevated privileges: %s.",
-			strings.Join(m.SudoCategories, ", "),
+			strings.Join(sudoNames, ", "),
 		)
 		b.WriteString(styles.Warning.Render("  Warning: " + warning))
 		b.WriteString("\n")
@@ -546,13 +561,13 @@ func (m ReviewModel) View() string {
 		b.WriteString(styles.Muted.Render(catPos) + "\n")
 	}
 
-	if m.PendingConfirm {
+	if m.ConfirmState != ConfirmNone {
 		totalSize, totalFiles := m.actionableTotals()
 		message := fmt.Sprintf(
 			"  !! Permanently delete %s across %d files? Press enter to confirm or esc to cancel.",
 			utils.FormatBytes(totalSize), totalFiles,
 		)
-		if m.ShouldWarnAboutSudo() {
+		if m.ConfirmState == ConfirmSudo {
 			message = fmt.Sprintf(
 				"  !! Permanently delete %s across %d files and skip %d sudo-protected categor%s? Press enter to confirm or esc to cancel.",
 				utils.FormatBytes(totalSize),

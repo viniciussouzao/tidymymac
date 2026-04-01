@@ -164,6 +164,11 @@ func (m CleaningModel) Results() []*cleaner.CleanResult {
 	for _, c := range m.Categories {
 		if c.Result != nil {
 			results = append(results, c.Result)
+		} else if c.Status == "skipped" {
+			results = append(results, &cleaner.CleanResult{
+				Category: c.Category,
+				Skipped:  true,
+			})
 		} else {
 			var errs []error
 			if c.Error != nil {

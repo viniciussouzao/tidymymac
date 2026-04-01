@@ -277,15 +277,20 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.reviewScr.TotalFiles == 0 {
 			return a, nil
 		}
-		if a.reviewScr.ShouldWarnAboutSudo() && !a.reviewScr.PendingConfirm {
-			a.reviewScr.PendingConfirm = true
-			return a, nil
+		switch a.reviewScr.ConfirmState {
+		case screens.ConfirmNone:
+			if a.reviewScr.ShouldWarnAboutSudo() {
+				a.reviewScr.ConfirmState = screens.ConfirmSudo
+				return a, nil
+			}
+			if a.executeMode {
+				a.reviewScr.ConfirmState = screens.ConfirmExecute
+				return a, nil
+			}
+			// dry run: proceed immediately without an extra confirmation step
+		case screens.ConfirmSudo, screens.ConfirmExecute:
+			a.reviewScr.ConfirmState = screens.ConfirmNone
 		}
-		if a.executeMode && !a.reviewScr.PendingConfirm {
-			a.reviewScr.PendingConfirm = true
-			return a, nil
-		}
-		a.reviewScr.PendingConfirm = false
 		results := a.scanningScr.Results()
 		a.cleaningScr = screens.NewCleaningModel(results, !a.executeMode)
 		a.cleaningScr.SetSize(a.width, a.height)
@@ -293,8 +298,8 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.startNextClean()
 
 	case key.Matches(msg, keys.Back):
-		if a.reviewScr.PendingConfirm {
-			a.reviewScr.PendingConfirm = false
+		if a.reviewScr.ConfirmState != screens.ConfirmNone {
+			a.reviewScr.ConfirmState = screens.ConfirmNone
 			return a, nil
 		}
 		a.currentScreen = screenScanning
@@ -354,27 +359,30 @@ func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) startNextClean() (tea.Model, tea.Cmd) {
-	next := a.cleaningScr.NextCategory()
-	if next == nil {
-		return a, nil
-	}
-
-	c, ok := a.registry.Get(next.Category)
-	if !ok {
-		return a, nil
-	}
-	if a.executeMode && !a.isElevated && c.RequiresSudo() {
-		a.cleaningScr.SkipCategory(next.Category, fmt.Sprintf("%s requires sudo. Re-run the app with sudo to clean it.", c.Category().DisplayName()))
-		if a.cleaningScr.Done {
+	for {
+		next := a.cleaningScr.NextCategory()
+		if next == nil {
 			return a, nil
 		}
-		return a.startNextClean()
-	}
 
-	dryRun := !a.executeMode
-	cmd, msgCh := cleanCategoryStreamCmd(a.ctx, c, next.Entries, dryRun)
-	a.cleanMsgCh = msgCh
-	return a, cmd
+		c, ok := a.registry.Get(next.Category)
+		if !ok {
+			return a, nil
+		}
+
+		if a.executeMode && !a.isElevated && c.RequiresSudo() {
+			a.cleaningScr.SkipCategory(next.Category, fmt.Sprintf("%s requires sudo. Re-run the app with sudo to clean it.", c.Category().DisplayName()))
+			if a.cleaningScr.Done {
+				return a, nil
+			}
+			continue
+		}
+
+		dryRun := !a.executeMode
+		cmd, msgCh := cleanCategoryStreamCmd(a.ctx, c, next.Entries, dryRun)
+		a.cleanMsgCh = msgCh
+		return a, cmd
+	}
 }
 
 func cleanCategoryStreamCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.FileEntry, dryRun bool) (tea.Cmd, <-chan tea.Msg) {

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -45,16 +47,17 @@ type App struct {
 	height        int
 
 	// Screens
-	dashboard    screens.DashboardModel
-	scanningScr  screens.ScanningModel
-	cleaningScr  screens.CleaningModel
-	summaryScr   screens.SummaryModel
-	reviewScr    screens.ReviewModel
-	reviewBuilt  bool // true once review is built for the current scan; prevents state reset on esc+enter
+	dashboard   screens.DashboardModel
+	scanningScr screens.ScanningModel
+	cleaningScr screens.CleaningModel
+	summaryScr  screens.SummaryModel
+	reviewScr   screens.ReviewModel
+	reviewBuilt bool // true once review is built for the current scan; prevents state reset on esc+enter
 
 	registry    *cleaner.Registry
 	scanResults map[cleaner.Category]*cleaner.ScanResult
 	spinner     spinner.Model
+	isElevated  bool
 	scanning    bool
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -78,6 +81,7 @@ func NewApp(execute bool) App {
 		registry:      cleaner.DefaultRegistry(),
 		scanResults:   make(map[cleaner.Category]*cleaner.ScanResult),
 		spinner:       s,
+		isElevated:    os.Geteuid() == 0,
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -127,6 +131,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var scanCmd tea.Cmd
 		a.spinner, cmd = a.spinner.Update(msg)
 		a.scanningScr.Spinner, scanCmd = a.scanningScr.Spinner.Update(msg) // update scanning screen spinner as well
+		a.cleaningScr.SetActivityFrame(a.spinner.View())
 		return a, tea.Batch(cmd, scanCmd)
 
 	case scanCompleteMsg:
@@ -249,7 +254,7 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, keys.Confirm) {
 			if !a.reviewBuilt {
 				results := a.scanningScr.Results()
-				a.reviewScr = screens.NewReview(results, a.executeMode)
+				a.reviewScr = screens.NewReview(results, a.executeMode, a.registry, a.isElevated)
 				a.reviewBuilt = true
 			}
 			a.reviewScr.SetSize(a.width, a.height)
@@ -270,6 +275,10 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Confirm):
 		if a.reviewScr.TotalFiles == 0 {
+			return a, nil
+		}
+		if a.reviewScr.ShouldWarnAboutSudo() && !a.reviewScr.PendingConfirm {
+			a.reviewScr.PendingConfirm = true
 			return a, nil
 		}
 		if a.executeMode && !a.reviewScr.PendingConfirm {
@@ -353,6 +362,13 @@ func (a App) startNextClean() (tea.Model, tea.Cmd) {
 	c, ok := a.registry.Get(next.Category)
 	if !ok {
 		return a, nil
+	}
+	if a.executeMode && !a.isElevated && c.RequiresSudo() {
+		a.cleaningScr.SkipCategory(next.Category, fmt.Sprintf("%s requires sudo. Re-run the app with sudo to clean it.", c.Category().DisplayName()))
+		if a.cleaningScr.Done {
+			return a, nil
+		}
+		return a.startNextClean()
 	}
 
 	dryRun := !a.executeMode

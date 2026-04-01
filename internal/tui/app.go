@@ -373,7 +373,7 @@ func (a App) startNextClean() (tea.Model, tea.Cmd) {
 
 		c, ok := a.registry.Get(next.Category)
 		if !ok {
-			return a, nil
+			continue
 		}
 
 		if a.executeMode && !a.isElevated && c.RequiresSudo() {

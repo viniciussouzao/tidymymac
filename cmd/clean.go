@@ -107,7 +107,11 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 	)
 
 	result, revalidation, err = executeClean(ctx, registry, args, fromFile, forceStaleScan, opts, cleanProgressPrinter(stderr), stderr)
-	if err == nil && !dryRun {
+	if err != nil {
+		return err
+	}
+
+	if !dryRun {
 		_ = history.Append(buildRunRecord(result, time.Since(start).Milliseconds()))
 	}
 
@@ -573,9 +577,10 @@ func buildRunRecord(result commands.CleanResult, durationMs int64) history.RunRe
 		}
 
 		run.Categories = append(run.Categories, history.CategoryRecord{
-			Name:  cat.Name,
-			Files: cat.DeletedFiles,
-			Bytes: cat.DeletedSize,
+			Name:        cat.Name,
+			DisplayName: cat.Category.DisplayName(),
+			Files:       cat.DeletedFiles,
+			Bytes:       cat.DeletedSize,
 		})
 	}
 

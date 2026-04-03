@@ -580,8 +580,8 @@ func buildRunRecord(result commands.CleanResult, durationMs int64) history.RunRe
 	}
 
 	for _, cat := range result.Categories {
-		if cat.Err != nil {
-			continue // skip categories that failed to clean to avoid dirty data in the history
+		if cat.Err != nil || (cat.DeletedFiles == 0 && cat.DeletedSize == 0) {
+			continue // skip categories that failed or cleaned nothing
 		}
 
 		run.Categories = append(run.Categories, history.CategoryRecord{

@@ -385,7 +385,11 @@ func (m cleanModel) Init() tea.Cmd {
 			)
 
 			close(m.eventCh)
-			if err == nil && !m.dryRun {
+			if err != nil {
+				return err
+			}
+
+			if !m.dryRun {
 				_ = history.Append(buildRunRecord(result, time.Since(start).Milliseconds()))
 			}
 

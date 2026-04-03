@@ -31,7 +31,7 @@ go.work.sum
 bin/
 
 # Editor/IDE
-# .idea/
+ .idea/*
 .vscode/
 .github/agents/
 .DS_Store

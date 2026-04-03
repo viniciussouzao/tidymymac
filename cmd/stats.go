@@ -117,7 +117,7 @@ func renderStatsBlock(title string, stats history.AllTimeStats, locTime *time.Lo
 	b.WriteString(sep)
 	b.WriteString("\n")
 	b.WriteString(boldStyle.Render(fmt.Sprintf("Total runs:   %s\n", scanDimStyle.Render(fmt.Sprintf("%d", stats.TotalRuns)))))
-	b.WriteString(boldStyle.Render(fmt.Sprintf("Total files:  %d\n", scanDimStyle.Render(fmt.Sprintf("%d", stats.TotalFiles)))))
+	b.WriteString(boldStyle.Render(fmt.Sprintf("Total files:  %s\n", scanDimStyle.Render(fmt.Sprintf("%d", stats.TotalFiles)))))
 	b.WriteString(boldStyle.Render(fmt.Sprintf("Total bytes:  %s\n", scanDimStyle.Render(utils.FormatBytes(stats.TotalBytes)))))
 	b.WriteString(boldStyle.Render(fmt.Sprintf("Avg per run: %s\n", scanDimStyle.Render(utils.FormatBytes(stats.AvgBytes)))))
 	b.WriteString(boldStyle.Render(fmt.Sprintf("Last run at:  %s\n", scanDimStyle.Render(stats.LastRunAt.In(locTime).Format("2006-01-02 15:04:05")))))

@@ -103,7 +103,7 @@ func renderCategoryStats(displayName string, stats history.AllTimeStats, locTime
 
 func renderStatsBlock(title string, stats history.AllTimeStats, locTime *time.Location) string {
 	if stats.TotalRuns == 0 {
-		return scanHelpStyle.Render(fmt.Sprintf("%s\nno recorded runs yet.", title))
+		return scanHelpStyle.Render(title) + scanHelpStyle.Render("  no recorded runs yet.") + "\n"
 	}
 
 	boldStyle := lipgloss.NewStyle().Bold(true)

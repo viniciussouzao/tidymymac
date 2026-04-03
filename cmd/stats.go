@@ -1,40 +1,127 @@
-/*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-
-*/
 package cmd
 
 import (
 	"fmt"
+	"slices"
+	"strings"
+	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/history"
+	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
 // statsCmd represents the stats command
 var statsCmd = &cobra.Command{
 	Use:   "stats",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Short: "Show all-time statistics of cleanup runs",
+	Long: `Show all-time cleanup statistics.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("stats called")
+Without arguments, this command shows the aggregate statistics for every
+successful cleanup run recorded by TidyMyMac.
+
+With one category argument, it shows the aggregate statistics for that
+specific category across all recorded runs.
+
+Example:
+
+# Show all-time statistics for all categories
+tidymymac stats
+
+# Show all-time statistics for the "Downloads" category
+tidymymac stats caches
+`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		record, err := history.Load()
+		if err != nil {
+			return fmt.Errorf("error loading history: %w. You can reset it by deleting the file at ~/.tidymymac/history.json", err)
+		}
+
+		if len(args) == 0 {
+			fmt.Fprint(cmd.OutOrStdout(), renderAllTimeStats(history.Stats(record), time.Local))
+			return nil
+		}
+
+		categoryName := args[0]
+		if err := validateHistoryCategory(categoryName); err != nil {
+			return err
+		}
+
+		category := cleaner.Category(categoryName)
+		fmt.Fprint(cmd.OutOrStdout(), renderCategoryStats(category.DisplayName(), history.StatsByCategory(record, categoryName), time.Local))
+		return nil
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(statsCmd)
+}
 
-	// Here you will define your flags and configuration settings.
+func validateHistoryCategory(name string) error {
+	registry := cleaner.DefaultRegistry()
+	if _, exists := registry.Get(cleaner.Category(name)); exists {
+		return nil
+	}
 
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// statsCmd.PersistentFlags().String("foo", "", "A help for foo")
+	available := make([]string, 0, len(registry.All()))
+	for _, cat := range registry.All() {
+		available = append(available, string(cat.Category()))
+	}
 
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// statsCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	slices.Sort(available)
+
+	var b strings.Builder
+
+	b.WriteString(fmt.Sprintf("unknown category %q. Available categories:\n", name))
+	for _, category := range available {
+		b.WriteString("  ")
+		b.WriteString(category)
+		b.WriteString("\n")
+	}
+
+	return fmt.Errorf("%s", strings.TrimSuffix(b.String(), "\n"))
+}
+
+func renderAllTimeStats(stats history.AllTimeStats, locTime *time.Location) string {
+	return renderStatsBlock(
+		"  all-time stats",
+		stats,
+		locTime,
+	)
+}
+
+func renderCategoryStats(displayName string, stats history.AllTimeStats, locTime *time.Location) string {
+	return renderStatsBlock(
+		fmt.Sprintf("stats for %s", displayName),
+		stats,
+		locTime,
+	)
+}
+
+func renderStatsBlock(title string, stats history.AllTimeStats, locTime *time.Location) string {
+	if stats.TotalRuns == 0 {
+		return scanHelpStyle.Render(fmt.Sprintf("%s\nno recorded runs yet.", title))
+	}
+
+	boldStyle := lipgloss.NewStyle().Bold(true)
+	const statsTableWidth = 40
+	sep := scanDimStyle.Render("  " + strings.Repeat("─", statsTableWidth))
+
+	var b strings.Builder
+
+	b.WriteString(boldStyle.Render(title))
+	b.WriteString("\n")
+	b.WriteString(sep)
+	b.WriteString("\n")
+	b.WriteString(boldStyle.Render(fmt.Sprintf("Total runs:   %s\n", scanDimStyle.Render(fmt.Sprintf("%d", stats.TotalRuns)))))
+	b.WriteString(boldStyle.Render(fmt.Sprintf("Total files:  %d\n", scanDimStyle.Render(fmt.Sprintf("%d", stats.TotalFiles)))))
+	b.WriteString(boldStyle.Render(fmt.Sprintf("Total bytes:  %s\n", scanDimStyle.Render(utils.FormatBytes(stats.TotalBytes)))))
+	b.WriteString(boldStyle.Render(fmt.Sprintf("Avg per run: %s\n", scanDimStyle.Render(utils.FormatBytes(stats.AvgBytes)))))
+	b.WriteString(boldStyle.Render(fmt.Sprintf("Last run at:  %s\n", scanDimStyle.Render(stats.LastRunAt.In(locTime).Format("2006-01-02 15:04:05")))))
+	b.WriteString("\n")
+	return b.String()
+
 }

@@ -111,4 +111,6 @@ func unlockHistoryFile(lockFile *os.File) {
 
 	_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
 	_ = lockFile.Close()
+
+	_ = os.Remove(lockFile.Name())
 }

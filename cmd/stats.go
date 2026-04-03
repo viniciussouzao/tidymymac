@@ -95,7 +95,7 @@ func renderAllTimeStats(stats history.AllTimeStats, locTime *time.Location) stri
 
 func renderCategoryStats(displayName string, stats history.AllTimeStats, locTime *time.Location) string {
 	return renderStatsBlock(
-		fmt.Sprintf("stats for %s", displayName),
+		fmt.Sprintf("  stats for %s", displayName),
 		stats,
 		locTime,
 	)

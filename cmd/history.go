@@ -63,7 +63,12 @@ tidymymac history --verbose
 			verbose: verbose,
 		}
 
-		fmt.Fprint(cmd.OutOrStdout(), renderHistory(records, opts, time.Local))
+		historyOutput, err := renderHistory(records, opts, time.Local)
+		if err != nil {
+			return fmt.Errorf("error rendering history: %w", err)
+		}
+
+		fmt.Fprint(cmd.OutOrStdout(), historyOutput)
 		return nil
 
 	},
@@ -76,7 +81,7 @@ func init() {
 	historyCmd.Flags().Int("last", 5, "number of recent runs to show (ignored if --all is set)")
 }
 
-func renderHistory(record history.Record, opts historyOptions, loc *time.Location) string {
+func renderHistory(record history.Record, opts historyOptions, loc *time.Location) (string, error) {
 	var b strings.Builder
 	boldStyle := lipgloss.NewStyle().Bold(true)
 
@@ -97,7 +102,7 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 	if len(record.Runs) == 0 {
 		b.WriteString(scanHelpStyle.Render("  no cleanup history found. Run tidymymac to get started."))
 		b.WriteString("\n")
-		return b.String()
+		return b.String(), nil
 	}
 
 	runs := slices.Clone(record.Runs)
@@ -165,7 +170,7 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 				WithIndent(2).
 				Srender()
 			if err != nil {
-				return "failed to render category tree: " + err.Error()
+				return "failed to render category tree: " + err.Error(), err
 			}
 
 			b.WriteString(indentMultiline(treeText, "  "))
@@ -184,7 +189,7 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 		b.WriteString("\n")
 	}
 
-	return b.String()
+	return b.String(), nil
 }
 
 func formatHistoryDuration(d time.Duration) string {

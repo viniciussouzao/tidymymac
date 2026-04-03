@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
+	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -79,6 +80,7 @@ const (
 )
 
 func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, fromFile string, forceStaleScan bool, output string, quiet bool) error {
+	start := time.Now()
 	stderr := func(format string, a ...any) {
 		if !quiet {
 			fmt.Fprintf(os.Stderr, format, a...)
@@ -105,8 +107,8 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 	)
 
 	result, revalidation, err = executeClean(ctx, registry, args, fromFile, forceStaleScan, opts, cleanProgressPrinter(stderr), stderr)
-	if err != nil {
-		return err
+	if err == nil && !dryRun {
+		_ = history.Append(buildRunRecord(result, time.Since(start).Milliseconds()))
 	}
 
 	if output != "" {
@@ -361,6 +363,7 @@ func (m cleanModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
+			start := time.Now()
 			result, revalidation, err := executeClean(
 				m.ctx,
 				cleaner.DefaultRegistry(),
@@ -376,7 +379,12 @@ func (m cleanModel) Init() tea.Cmd {
 				},
 				func(string, ...any) {},
 			)
+
 			close(m.eventCh)
+			if err == nil && !m.dryRun {
+				_ = history.Append(buildRunRecord(result, time.Since(start).Milliseconds()))
+			}
+
 			return cleanDoneMsg{
 				result:       result,
 				revalidation: revalidation,
@@ -549,4 +557,27 @@ func (m cleanModel) View() string {
 
 func actionSize(size int64) string {
 	return utils.FormatBytes(size)
+}
+
+func buildRunRecord(result commands.CleanResult, durationMs int64) history.RunRecord {
+	run := history.RunRecord{
+		RanAt:      result.CleanedAt,
+		TotalFiles: result.TotalFiles,
+		TotalBytes: result.TotalSize,
+		DurationMs: durationMs,
+	}
+
+	for _, cat := range result.Categories {
+		if cat.Err != nil {
+			continue // skip categories that failed to clean to avoid dirty data in the history
+		}
+
+		run.Categories = append(run.Categories, history.CategoryRecord{
+			Name:  cat.Name,
+			Files: cat.DeletedFiles,
+			Bytes: cat.DeletedSize,
+		})
+	}
+
+	return run
 }

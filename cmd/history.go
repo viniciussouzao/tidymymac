@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
@@ -92,7 +93,6 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 	)
 	historyTableWidth := historyColRun + historyColRanAt + historyColFreed + historyColFiles + historyColDuration + 8
 	sep := scanDimStyle.Render("  " + strings.Repeat("─", historyTableWidth))
-	historyTreeName := historyTreeNameMin
 
 	if len(record.Runs) == 0 {
 		b.WriteString(scanHelpStyle.Render("  no cleanup history found. Run tidymymac to get started."))
@@ -126,7 +126,7 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 	}
 
 	b.WriteString(fmt.Sprintf("\n  %s  %s  %s  %s  %s\n",
-		boldStyle.Render(fmt.Sprintf("%-*s", historyColRun, "Run")),
+		boldStyle.Render(fmt.Sprintf("%-*s", historyColRun, "ID")),
 		boldStyle.Render(fmt.Sprintf("%-*s", historyColRanAt, "Ran At")),
 		boldStyle.Render(fmt.Sprintf("%*s", historyColFreed, "Freed")),
 		boldStyle.Render(fmt.Sprintf("%*s", historyColFiles, "Files")),
@@ -136,6 +136,7 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 	b.WriteString("\n")
 
 	for i, run := range runs {
+		// default info
 		b.WriteString(fmt.Sprintf(
 			"  %-*s  %-*s  %s  %s  %s\n",
 			historyColRun, fmt.Sprintf("#%d", run.ID),
@@ -145,27 +146,29 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 			scanDimStyle.Render(fmt.Sprintf("%*s", historyColDuration, formatHistoryDuration(time.Duration(run.DurationMs)*time.Millisecond))),
 		))
 
-		if !opts.verbose {
-			continue
-		}
+		// verbose
+		if opts.verbose && len(run.Categories) > 0 {
+			categoriesTree := pterm.TreeNode{}
 
-		for j, cat := range run.Categories {
-			// old implementation using a table-like structure
-			// i'm gonna try using pterm to render a tree structure instead, since it looks nicer and is easier to code
-
-			prefix := scanDimStyle.Render("├─")
-			if j == len(run.Categories)-1 {
-				prefix = scanDimStyle.Render("└─")
+			for _, cat := range run.Categories {
+				categoriesTree.Children = append(categoriesTree.Children, pterm.TreeNode{
+					Text: scanDimStyle.Render(cat.DisplayName),
+					Children: []pterm.TreeNode{
+						{Text: scanDimStyle.Render("Freed: " + utils.FormatBytes(cat.Bytes))},
+						{Text: scanDimStyle.Render(fmt.Sprintf("Files: %d", cat.Files))},
+					},
+				})
 			}
 
-			b.WriteString(fmt.Sprintf(
-				"%s%s %-*s  %s  %s\n",
-				strings.Repeat(" ", historyTreeIndent),
-				prefix,
-				historyTreeName, scanDimStyle.Render(cat.DisplayName),
-				scanDimStyle.Render(fmt.Sprintf("%*s", historyTreeFreed, utils.FormatBytes(cat.Bytes))),
-				scanDimStyle.Render(fmt.Sprintf("%*d files", historyTreeFiles, cat.Files)),
-			))
+			treeText, err := pterm.DefaultTree.
+				WithRoot(categoriesTree).
+				WithIndent(2).
+				Srender()
+			if err != nil {
+				return "failed to render category tree: " + err.Error()
+			}
+
+			b.WriteString(indentMultiline(treeText, "  "))
 		}
 
 		if i < len(runs)-1 {
@@ -190,4 +193,13 @@ func formatHistoryDuration(d time.Duration) string {
 	}
 
 	return d.Round(time.Second).String()
+}
+
+func indentMultiline(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+
+	return strings.Join(lines, "\n")
 }

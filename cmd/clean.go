@@ -386,7 +386,11 @@ func (m cleanModel) Init() tea.Cmd {
 
 			close(m.eventCh)
 			if err != nil {
-				return err
+				return cleanDoneMsg{
+					result:       result,
+					revalidation: revalidation,
+					err:          err,
+				}
 			}
 
 			if !m.dryRun {

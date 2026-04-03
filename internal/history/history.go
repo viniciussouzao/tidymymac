@@ -75,6 +75,7 @@ func Stats(record Record) AllTimeStats {
 	return out
 }
 
+// StatsByCategory computes the all-time statistics for a specific category from the given history record
 func StatsByCategory(record Record, category string) AllTimeStats {
 	var out AllTimeStats
 	for _, run := range record.Runs {

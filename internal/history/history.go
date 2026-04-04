@@ -42,11 +42,11 @@ func NewRunRecord(ranAt time.Time, durationMs int64, categories []CategoryRecord
 	run := RunRecord{
 		RanAt:      ranAt,
 		DurationMs: durationMs,
+		Categories: categories,
 	}
 	for _, cat := range categories {
 		run.TotalFiles += cat.Files
 		run.TotalBytes += cat.Bytes
-		run.Categories = append(run.Categories, cat)
 	}
 	return run
 }

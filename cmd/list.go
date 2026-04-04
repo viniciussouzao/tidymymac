@@ -8,6 +8,10 @@ import (
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 )
 
+type listOptions struct {
+	detailed bool
+}
+
 // listCmd represents the list command
 var listCmd = &cobra.Command{
 	Use:   "list",
@@ -31,11 +35,12 @@ Example:
 tidymymac list categories
 `,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Fprint(cmd.OutOrStdout(), returnCategories())
+		detailed, _ := cmd.Flags().GetBool("detailed")
+		fmt.Fprint(cmd.OutOrStdout(), returnCategories(listOptions{detailed: detailed}))
 	},
 }
 
-func returnCategories() string {
+func returnCategories(opts listOptions) string {
 	var b strings.Builder
 	sep := scanDimStyle.Render("  " + strings.Repeat("─", 40))
 
@@ -46,6 +51,9 @@ func returnCategories() string {
 	categories := cleaner.DefaultRegistry()
 	for _, c := range categories.All() {
 		b.WriteString("  " + string(c.Category()) + "\n")
+		if opts.detailed {
+			b.WriteString("    " + scanDimStyle.Render(c.Description()) + "\n")
+		}
 	}
 
 	b.WriteString(scanHelpStyle.Render("  run tidymymac scan/clean <category> to perform a scan or cleanup for a specific category"))
@@ -58,5 +66,5 @@ func returnCategories() string {
 func init() {
 	rootCmd.AddCommand(listCmd)
 	listCmd.AddCommand(listCategoriesCmd)
-
+	listCategoriesCmd.Flags().Bool("detailed", false, "Show detailed information for each category")
 }

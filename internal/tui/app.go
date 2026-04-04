@@ -201,7 +201,7 @@ func (a App) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 
 	if a.cleaningScr.Done {
 		if a.executeMode {
-			_ = history.Append(buildTUIRunRecord(a.cleaningScr.Results(), time.Since(a.cleanStartTime).Milliseconds()))
+			_ = history.Append(buildTUIRunRecord(a.cleaningScr.Results(), a.cleanStartTime, time.Since(a.cleanStartTime).Milliseconds()))
 		}
 		return a, nil
 	}
@@ -474,25 +474,18 @@ func (a App) Model() tea.Model {
 	return a
 }
 
-func buildTUIRunRecord(results []*cleaner.CleanResult, durationMs int64) history.RunRecord {
-	run := history.RunRecord{
-		RanAt:      time.Now().UTC(),
-		DurationMs: durationMs,
-	}
-
+func buildTUIRunRecord(results []*cleaner.CleanResult, ranAt time.Time, durationMs int64) history.RunRecord {
+	var categories []history.CategoryRecord
 	for _, r := range results {
 		if r == nil || r.Skipped || len(r.Errors) > 0 || (r.FilesDeleted == 0 && r.BytesFreed == 0) {
 			continue
 		}
-		run.TotalFiles += r.FilesDeleted
-		run.TotalBytes += r.BytesFreed
-		run.Categories = append(run.Categories, history.CategoryRecord{
+		categories = append(categories, history.CategoryRecord{
 			Name:        string(r.Category),
 			DisplayName: r.Category.DisplayName(),
 			Files:       r.FilesDeleted,
 			Bytes:       r.BytesFreed,
 		})
 	}
-
-	return run
+	return history.NewRunRecord(ranAt, durationMs, categories)
 }

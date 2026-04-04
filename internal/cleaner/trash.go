@@ -160,7 +160,7 @@ func (c *TrashCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bo
 	if !hasAccess.FullDiskAccess {
 		// If we don't have Full Disk Access, we use osascript to empty the Trash as a fallback.
 		// In tradeoff, we won't be able to report progress or handle individual entry errors, but at least we can attempt to free up space.
-		cmd := exec.CommandContext(ctx, "osascript", "-e", `tell application "Finder" to empty the trash`)
+		cmd := exec.CommandContext(ctx, "osascript", "-e", `tell application "Finder" to empty trash with security`)
 		err := cmd.Run()
 		if err != nil {
 			result.Errors = append(result.Errors, err)

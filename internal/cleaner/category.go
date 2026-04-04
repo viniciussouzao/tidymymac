@@ -10,7 +10,7 @@ const (
 	CategoryDocker               Category = "docker"
 	CategoryIOSBackups           Category = "ios_backups"
 	CategoryUpdates              Category = "macos_updates"
-	CategoryTrashBin             Category = "trash_files"
+	CategoryTrashBin             Category = "trash"
 	CategoryXcode                Category = "xcode"
 	CategoryDevelopmentArtifacts Category = "development_artifacts"
 	CategoryTimeMachineSnapshots Category = "time_machine"

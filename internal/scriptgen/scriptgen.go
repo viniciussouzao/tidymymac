@@ -150,6 +150,17 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 			b.WriteString("fi\n\n")
 			continue
 
+		case cleaner.CategoryDevelopmentArtifacts:
+			b.WriteString("if command -v go &>/dev/null; then\n")
+			b.WriteString("  echo \"Running go clean -cache...\"\n")
+			b.WriteString("  go clean -cache\n")
+			b.WriteString("  echo \"Running go clean -modcache...\"\n")
+			b.WriteString("  go clean -modcache\n")
+			b.WriteString("else\n")
+			b.WriteString("  echo -e \"${YELLOW}[SKIP]${NC} Go not installed\"\n")
+			b.WriteString("fi\n\n")
+			continue
+
 		case cleaner.CategoryTimeMachineSnapshots:
 			b.WriteString("if command -v tmutil &>/dev/null; then\n")
 			for _, entry := range result.Entries {

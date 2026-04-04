@@ -77,7 +77,7 @@ tidymymac history --verbose
 func init() {
 	rootCmd.AddCommand(historyCmd)
 	historyCmd.Flags().BoolP("all", "a", false, "show the full history of successful runs")
-	historyCmd.Flags().BoolP("verbose", "v", false, "show detailed information for each run")
+	historyCmd.Flags().BoolP("verbose", "v", false, "show per-category breakdown for each run")
 	historyCmd.Flags().Int("last", 5, "number of recent runs to show (ignored if --all is set)")
 }
 

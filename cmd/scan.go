@@ -22,9 +22,9 @@ import (
 // scanCmd represents the scan command
 var scanCmd = &cobra.Command{
 	Use:   "scan",
-	Short: "Scans the system for junk files and other unnecessary data without entering the TUI",
-	Long: `Scans the system for junk files and other unnecessary data.
-This command helps users identify files that can be safely removed to free up disk space.
+	Short: "Scan the system and report junk files by category",
+	Long: `Scan the system for junk files and report how much space can be freed per category.
+By default, displays an interactive table. Use --output to get machine-readable results.
 
 Example usage:
 # Scan the system for junk files (interactive table)
@@ -67,7 +67,7 @@ func init() {
 	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
 	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout")
 	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
-	scanCmd.Flags().Bool("generate-script", false, "generate a cleanup script based on the scan results")
+	scanCmd.Flags().Bool("generate-script", false, "generate a shell script to delete the found files")
 }
 
 // runScanNonInteractive runs the scan, using BubbleTea when --save is set (and

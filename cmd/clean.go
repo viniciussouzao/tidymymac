@@ -22,8 +22,8 @@ import (
 
 var cleanCmd = &cobra.Command{
 	Use:   "clean",
-	Short: "delete the junk files without opening the TUI",
-	Long: `Cleans junk files without opening the TUI.
+	Short: "Delete junk files by category",
+	Long: `Delete junk files across all categories or a specific subset.
 By default this command runs in dry-run mode and only simulates the cleanup.
 Pass --execute to actually delete files.
 
@@ -67,9 +67,9 @@ $ tidymymac clean --from-file scan.json --output json
 
 func init() {
 	rootCmd.AddCommand(cleanCmd)
-	cleanCmd.Flags().StringP("output", "o", "", "output format: json")
+	cleanCmd.Flags().StringP("output", "o", "", "output format for results: json (omit for interactive table)")
 	cleanCmd.Flags().Bool("detailed", false, "include individual file paths in the cleanup result")
-	cleanCmd.Flags().String("from-file", "", "load a previous JSON scan result and revalidate its file list before cleaning")
+	cleanCmd.Flags().String("from-file", "", "load a JSON scan file (from 'scan --output json --detailed') and revalidate its entries before cleaning")
 	cleanCmd.Flags().Bool("force-stale-scan", false, "allow --from-file scan results older than 24 hours when used with --execute")
 	cleanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr")
 }

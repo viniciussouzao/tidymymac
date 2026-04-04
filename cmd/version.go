@@ -10,7 +10,7 @@ import (
 // versionCmd represents the version command
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print the version information",
+	Short: "Print version, build date, and platform info",
 	Long: `Print the version information of the application, including the version number,
 commit hash, build date, platform, and Go version.`,
 	Run: func(cmd *cobra.Command, args []string) {

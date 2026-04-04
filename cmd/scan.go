@@ -67,7 +67,7 @@ func init() {
 	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
 	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout")
 	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
-	scanCmd.Flags().Bool("generate-script", false, "generate a cleanup script based on the scan results")
+	scanCmd.Flags().Bool("generate-script", false, "generate a shell script to delete the found files")
 }
 
 // runScanNonInteractive runs the scan, using BubbleTea when --save is set (and

@@ -28,7 +28,7 @@ tidymymac list categories
 var listCategoriesCmd = &cobra.Command{
 	Use:   "categories",
 	Short: "List all categories that can be scanned or cleaned",
-	Long: `List all available categories that TidyMyMac can clean or scan. 
+	Long: `List all available categories that TidyMyMac can clean or scan.
 This is useful to know which categories you can target when running tidymymac scan or tidymymac clean with a specific category argument.
 
 Example:
@@ -68,5 +68,5 @@ func returnCategories(opts listOptions) string {
 func init() {
 	rootCmd.AddCommand(listCmd)
 	listCmd.AddCommand(listCategoriesCmd)
-	listCategoriesCmd.Flags().Bool("detailed", false, "Show detailed information for each category")
+	listCategoriesCmd.Flags().Bool("detailed", false, "show a description for each category")
 }

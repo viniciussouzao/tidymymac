@@ -67,7 +67,7 @@ $ tidymymac clean --from-file scan.json --output json
 
 func init() {
 	rootCmd.AddCommand(cleanCmd)
-	cleanCmd.Flags().StringP("output", "o", "", "output format: json")
+	cleanCmd.Flags().StringP("output", "o", "", "output format for results: json (omit for interactive table)")
 	cleanCmd.Flags().Bool("detailed", false, "include individual file paths in the cleanup result")
 	cleanCmd.Flags().String("from-file", "", "load a JSON scan file (from 'scan --output json --detailed') and revalidate its entries before cleaning")
 	cleanCmd.Flags().Bool("force-stale-scan", false, "allow --from-file scan results older than 24 hours when used with --execute")

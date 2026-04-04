@@ -33,5 +33,5 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().BoolVarP(&executeFlag, "execute", "e", false, "Actually delete files (default is dry-run)")
+	rootCmd.PersistentFlags().BoolVarP(&executeFlag, "execute", "e", false, "execute deletions; without this flag runs as a dry-run preview")
 }

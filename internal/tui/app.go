@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
@@ -54,14 +56,15 @@ type App struct {
 	reviewScr   screens.ReviewModel
 	reviewBuilt bool // true once review is built for the current scan; prevents state reset on esc+enter
 
-	registry    *cleaner.Registry
-	scanResults map[cleaner.Category]*cleaner.ScanResult
-	spinner     spinner.Model
-	isElevated  bool
-	scanning    bool
-	ctx         context.Context
-	cancel      context.CancelFunc
-	cleanMsgCh  <-chan tea.Msg
+	registry       *cleaner.Registry
+	scanResults    map[cleaner.Category]*cleaner.ScanResult
+	spinner        spinner.Model
+	isElevated     bool
+	scanning       bool
+	ctx            context.Context
+	cancel         context.CancelFunc
+	cleanMsgCh     <-chan tea.Msg
+	cleanStartTime time.Time
 
 	// to-do: i want to use this for the generate script only feature
 	//scriptMessage string
@@ -197,6 +200,9 @@ func (a App) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 	a.cleaningScr.UpdateCleanResult(msg.category, msg.result, msg.err)
 
 	if a.cleaningScr.Done {
+		if a.executeMode {
+			_ = history.Append(buildTUIRunRecord(a.cleaningScr.Results(), time.Since(a.cleanStartTime).Milliseconds()))
+		}
 		return a, nil
 	}
 
@@ -301,6 +307,7 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.cleaningScr = screens.NewCleaningModel(results, !a.executeMode)
 		a.cleaningScr.SetSize(a.width, a.height)
 		a.currentScreen = screenCleaning
+		a.cleanStartTime = time.Now()
 		return a.startNextClean()
 
 	case key.Matches(msg, keys.Back):
@@ -465,4 +472,27 @@ func (a App) View() string {
 
 func (a App) Model() tea.Model {
 	return a
+}
+
+func buildTUIRunRecord(results []*cleaner.CleanResult, durationMs int64) history.RunRecord {
+	run := history.RunRecord{
+		RanAt:      time.Now().UTC(),
+		DurationMs: durationMs,
+	}
+
+	for _, r := range results {
+		if r == nil || r.Skipped || len(r.Errors) > 0 || (r.FilesDeleted == 0 && r.BytesFreed == 0) {
+			continue
+		}
+		run.TotalFiles += r.FilesDeleted
+		run.TotalBytes += r.BytesFreed
+		run.Categories = append(run.Categories, history.CategoryRecord{
+			Name:        string(r.Category),
+			DisplayName: r.Category.DisplayName(),
+			Files:       r.FilesDeleted,
+			Bytes:       r.BytesFreed,
+		})
+	}
+
+	return run
 }

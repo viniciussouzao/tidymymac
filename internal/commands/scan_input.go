@@ -33,6 +33,12 @@ func LoadScanResult(r io.Reader) (ScanResult, error) {
 // It returns a PreparedScanResult that includes the original ScanResult along with metadata about the revalidation process, such as the number of revalidated files, missing files, type-changed files, and empty categories.
 // If any errors occur during preparation, they are returned as well.
 func PrepareScanResultForClean(registry *cleaner.Registry, scan ScanResult, selected []string) (PreparedScanResult, error) {
+	if len(selected) == 0 {
+		for _, cat := range scan.Categories {
+			selected = append(selected, string(cat.Category))
+		}
+	}
+
 	cleaners, err := resolveCleaners(registry, selected)
 	if err != nil {
 		return PreparedScanResult{}, err
@@ -147,5 +153,10 @@ func RunCleanWithScanResult(ctx context.Context, registry *cleaner.Registry, sca
 // RunCleanWithPreparedScanResult executes the cleaning process using a PreparedScanResult, which includes a ScanResult along with metadata about the revalidation process.
 // It returns a CleanResult summarizing the outcome of the cleaning operation or an error if any step fails.
 func RunCleanWithPreparedScanResult(ctx context.Context, registry *cleaner.Registry, prepared PreparedScanResult, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {
+	if len(selected) == 0 {
+		for _, cat := range prepared.Result.Categories {
+			selected = append(selected, string(cat.Category))
+		}
+	}
 	return runClean(ctx, registry, selected, opts, prepared.Result, true, onEvent)
 }

@@ -572,25 +572,17 @@ func actionSize(size int64) string {
 }
 
 func buildRunRecord(result commands.CleanResult, durationMs int64) history.RunRecord {
-	run := history.RunRecord{
-		RanAt:      result.CleanedAt,
-		TotalFiles: result.TotalFiles,
-		TotalBytes: result.TotalSize,
-		DurationMs: durationMs,
-	}
-
+	var categories []history.CategoryRecord
 	for _, cat := range result.Categories {
-		if cat.Err != nil {
-			continue // skip categories that failed to clean to avoid dirty data in the history
+		if cat.Err != nil || (cat.DeletedFiles == 0 && cat.DeletedSize == 0) {
+			continue // skip categories that failed or cleaned nothing
 		}
-
-		run.Categories = append(run.Categories, history.CategoryRecord{
+		categories = append(categories, history.CategoryRecord{
 			Name:        cat.Name,
 			DisplayName: cat.Category.DisplayName(),
 			Files:       cat.DeletedFiles,
 			Bytes:       cat.DeletedSize,
 		})
 	}
-
-	return run
+	return history.NewRunRecord(result.CleanedAt, durationMs, categories)
 }

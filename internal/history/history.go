@@ -36,6 +36,21 @@ type AllTimeStats struct {
 	LastRunAt  time.Time
 }
 
+// NewRunRecord constructs a RunRecord from a set of category records and timing
+// data. TotalFiles and TotalBytes are derived from the provided categories.
+func NewRunRecord(ranAt time.Time, durationMs int64, categories []CategoryRecord) RunRecord {
+	run := RunRecord{
+		RanAt:      ranAt,
+		DurationMs: durationMs,
+		Categories: categories,
+	}
+	for _, cat := range categories {
+		run.TotalFiles += cat.Files
+		run.TotalBytes += cat.Bytes
+	}
+	return run
+}
+
 // Load reads the history from the default path
 func Load() (Record, error) {
 	p, err := path()

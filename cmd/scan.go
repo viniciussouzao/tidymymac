@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,9 +70,49 @@ func init() {
 	scanCmd.Flags().Bool("generate-script", false, "generate a cleanup script based on the scan results")
 }
 
-// runScanNonInteractive runs the scan without BubbleTea, prints progress to
-// stderr, and writes the result in the requested format to stdout (or a file).
+// runScanNonInteractive runs the scan, using BubbleTea when --save is set (and
+// --quiet is absent), otherwise printing progress to stderr.
 func runScanNonInteractive(ctx context.Context, args []string, format string, detailed bool, save bool, quiet bool, generateScript bool) error {
+	if save && !quiet {
+		m := newScanModel(ctx, args, generateScript, true, format, detailed)
+		p := tea.NewProgram(m)
+
+		final, err := p.Run()
+		if err != nil {
+			return err
+		}
+
+		finalModel, ok := final.(scanModel)
+		if !ok {
+			return nil
+		}
+
+		if finalModel.err != nil {
+			return finalModel.err
+		}
+
+		if generateScript && finalModel.result != nil {
+			scriptInput := scanResultToCleanerResults(*finalModel.result)
+			scriptPath, genErr := scriptgen.Generate(scriptInput, cleaner.DefaultRegistry())
+			if genErr != nil {
+				return fmt.Errorf("generating cleanup script: %w", genErr)
+			}
+			fmt.Println(scanHelpStyle.Render("  cleanup script generated: " + filepath.Base(scriptPath)))
+		}
+
+		if finalModel.result != nil && finalModel.result.HasErrors {
+			var failed []string
+			for _, cat := range finalModel.result.Categories {
+				if cat.Err != nil {
+					failed = append(failed, cat.Name)
+				}
+			}
+			return fmt.Errorf("scan completed with errors in: %s", strings.Join(failed, ", "))
+		}
+
+		return nil
+	}
+
 	stderr := func(format string, a ...any) {
 		if !quiet {
 			fmt.Fprintf(os.Stderr, format, a...)
@@ -162,7 +203,7 @@ func scanResultToCleanerResults(result commands.ScanResult) map[cleaner.Category
 func runScanInteractive(cmd *cobra.Command, args []string) error {
 	generateScript, _ := cmd.Flags().GetBool("generate-script")
 
-	m := newScanModel(cmd.Context(), args, generateScript)
+	m := newScanModel(cmd.Context(), args, generateScript, false, "", false)
 	p := tea.NewProgram(m)
 
 	final, err := p.Run()
@@ -238,8 +279,9 @@ func styledSize(size int64, text string) string {
 }
 
 type scanDoneMsg struct {
-	result commands.ScanResult
-	err    error
+	result  commands.ScanResult
+	err     error
+	savedTo string
 }
 
 type scanEventMsg struct {
@@ -263,9 +305,13 @@ type scanModel struct {
 	categories     []scanCategoryProgress
 	eventCh        chan commands.ScanEvent
 	generateScript bool
+	save           bool
+	format         string
+	detailed       bool
+	savedTo        string
 }
 
-func newScanModel(ctx context.Context, args []string, generateScript bool) scanModel {
+func newScanModel(ctx context.Context, args []string, generateScript bool, save bool, format string, detailed bool) scanModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
@@ -277,6 +323,9 @@ func newScanModel(ctx context.Context, args []string, generateScript bool) scanM
 		scanning:       true,
 		eventCh:        make(chan commands.ScanEvent, 50),
 		generateScript: generateScript,
+		save:           save,
+		format:         format,
+		detailed:       detailed,
 	}
 }
 
@@ -284,11 +333,33 @@ func (m scanModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{Detailed: m.generateScript}, func(event commands.ScanEvent) {
+			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{Detailed: m.detailed || m.generateScript}, func(event commands.ScanEvent) {
 				m.eventCh <- event
 			})
 			close(m.eventCh)
-			return scanDoneMsg{result: result, err: err}
+
+			if err != nil {
+				return scanDoneMsg{result: result, err: err}
+			}
+
+			if m.save {
+				filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02"), m.format)
+				f, createErr := os.Create(filename)
+				if createErr != nil {
+					if errors.Is(createErr, os.ErrPermission) {
+						return scanDoneMsg{result: result, err: fmt.Errorf("permission denied: ./%s", filename)}
+					}
+					return scanDoneMsg{result: result, err: createErr}
+				}
+				writeErr := commands.WriteOutput(f, result, m.format, m.detailed)
+				_ = f.Close()
+				if writeErr != nil {
+					return scanDoneMsg{result: result, err: writeErr}
+				}
+				return scanDoneMsg{result: result, savedTo: filename}
+			}
+
+			return scanDoneMsg{result: result}
 		},
 		m.listenEvents(),
 	)
@@ -334,6 +405,7 @@ func (m scanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanDoneMsg:
 		m.scanning = false
 		m.err = msg.err
+		m.savedTo = msg.savedTo
 		if m.err == nil {
 			m.result = &msg.result
 		}
@@ -374,7 +446,13 @@ func (m scanModel) View() string {
 	}
 
 	if m.err != nil {
-		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("  ✗ error scanning: %v", m.err)))
+		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("  ✗ %v", m.err)))
+		return b.String()
+	}
+
+	if m.savedTo != "" {
+		b.WriteString(scanDoneStyle.Render(fmt.Sprintf("  saved to ./%s", m.savedTo)))
+		b.WriteString("\n")
 		return b.String()
 	}
 

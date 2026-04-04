@@ -15,17 +15,19 @@ type listOptions struct {
 // listCmd represents the list command
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List available categories",
-	Long: `List can return different types of information depending on the subcommand used. For example:
+	Short: "List available resources (e.g. categories)",
+	Long: `List available resources used by TidyMyMac.
+
+Use a subcommand to specify what to list:
 
 # List all available categories
-tidymymac list categories		
+tidymymac list categories
 `,
 }
 
 var listCategoriesCmd = &cobra.Command{
 	Use:   "categories",
-	Short: "List available categories",
+	Short: "List all categories that can be scanned or cleaned",
 	Long: `List all available categories that TidyMyMac can clean or scan. 
 This is useful to know which categories you can target when running tidymymac scan or tidymymac clean with a specific category argument.
 

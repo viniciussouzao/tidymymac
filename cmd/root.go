@@ -13,8 +13,11 @@ var executeFlag bool
 
 var rootCmd = &cobra.Command{
 	Use:   "tidymymac",
-	Short: "MacOS storage cleanup tool",
-	Long:  `TidyMyMac scans for junk files and helps you clean up your Mac storage.`,
+	Short: "macOS storage cleanup tool",
+	Long:  `TidyMyMac scans for junk files and helps you clean up your Mac storage.
+
+Running without a subcommand opens the interactive TUI where you can browse
+and select categories to clean. Use subcommands for non-interactive workflows.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		p := tea.NewProgram(tui.NewApp(executeFlag), tea.WithAltScreen())
 		_, err := p.Run()

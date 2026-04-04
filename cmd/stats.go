@@ -30,7 +30,7 @@ Example:
 # Show all-time statistics for all categories
 tidymymac stats
 
-# Show all-time statistics for the "Downloads" category
+# Show all-time statistics for the "caches" category
 tidymymac stats caches
 `,
 	Args: cobra.MaximumNArgs(1),

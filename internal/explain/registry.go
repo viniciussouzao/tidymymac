@@ -142,32 +142,20 @@ func missingCleanerError(spec contributorSpec) error {
 }
 
 func newContributorDetails(registry *cleaner.Registry, spec contributorSpec) Contributor {
-	if registry == nil {
-		return scannerContributor{
-			name:        spec.name,
-			description: spec.description,
-			sources:     append([]string(nil), spec.sources...),
-			context:     spec.context,
-			runtimeErr:  missingCleanerError(spec),
-		}
-	}
-
-	category, ok := registry.Get(spec.category)
-	if !ok {
-		return scannerContributor{
-			name:        spec.name,
-			description: spec.description,
-			sources:     append([]string(nil), spec.sources...),
-			context:     spec.context,
-			runtimeErr:  missingCleanerError(spec),
-		}
-	}
-
-	return scannerContributor{
+	c := scannerContributor{
 		name:        spec.name,
 		description: spec.description,
 		sources:     append([]string(nil), spec.sources...),
 		context:     spec.context,
-		cleaner:     category,
 	}
+
+	if registry != nil {
+		if underlying, ok := registry.Get(spec.category); ok {
+			c.cleaner = underlying
+			return c
+		}
+	}
+
+	c.runtimeErr = missingCleanerError(spec)
+	return c
 }

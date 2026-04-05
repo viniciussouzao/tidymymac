@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
 
@@ -95,26 +94,11 @@ func renderContributorHeader(contributor ContributorResult) string {
 func renderSafetyBadge(level SafetyLevel) string {
 	switch level {
 	case SafetyLevelSafe:
-		return lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#0B1F13")).
-			Background(lipgloss.Color("#10B981")).
-			Padding(0, 1).
-			Render("SAFE")
+		return styles.SafetyBadgeSafe.Render("SAFE")
 	case SafetyLevelCaution:
-		return lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#201A00")).
-			Background(lipgloss.Color("#F59E0B")).
-			Padding(0, 1).
-			Render("CAUTION")
+		return styles.SafetyBadgeCaution.Render("CAUTION")
 	case SafetyLevelDoNotTouch:
-		return lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#EF4444")).
-			Padding(0, 1).
-			Render("DO NOT TOUCH")
+		return styles.SafetyBadgeDoNotTouch.Render("DO NOT TOUCH")
 	default:
 		return styles.Dim.Render(fmt.Sprintf("[%s]", level))
 	}

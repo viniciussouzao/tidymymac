@@ -88,22 +88,31 @@ func (c scannerContributor) Run(ctx context.Context) (ContributorResult, error) 
 
 // RunProfile executes all contributors in the given profile definition and aggregates the results.
 func RunProfile(ctx context.Context, def ProfileDefinition) (ProfileResult, error) {
+	if len(def.Profile) == 0 {
+		return ProfileResult{}, fmt.Errorf("profile definition has no profile names")
+	}
+
 	result := ProfileResult{
 		Name:         def.Profile[0],
 		Description:  def.Description,
 		Summary:      def.Summary,
 		CoverageNote: def.CoverageNote,
-		ScannedAt:    time.Now(),
+		ScannedAt:    time.Now().UTC(),
 	}
 
 	for _, contributor := range def.Contributors {
 		contributorResult, err := contributor.Run(ctx)
 		if err != nil {
-			return result, err
+			contributorResult = ContributorResult{
+				Name:         contributor.Name(),
+				HasError:     true,
+				ErrorMessage: err.Error(),
+			}
 		}
 		result.Contributors = append(result.Contributors, contributorResult)
 		if contributorResult.HasError {
 			result.HasErrors = true
+			continue
 		}
 		result.TotalSize += contributorResult.TotalSize
 	}

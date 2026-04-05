@@ -83,6 +83,24 @@ var (
 
 	Plain = lipgloss.NewStyle()
 
+	SafetyBadgeSafe = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#0B1F13")).
+			Background(lipgloss.Color("#10B981")).
+			Padding(0, 1)
+
+	SafetyBadgeCaution = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#201A00")).
+				Background(lipgloss.Color("#F59E0B")).
+				Padding(0, 1)
+
+	SafetyBadgeDoNotTouch = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#FFFFFF")).
+				Background(lipgloss.Color("#EF4444")).
+				Padding(0, 1)
+
 	StorageLabel = lipgloss.NewStyle().
 			Italic(true).
 			Underline(true)

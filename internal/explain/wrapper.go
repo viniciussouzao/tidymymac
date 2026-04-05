@@ -3,6 +3,7 @@ package explain
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
@@ -82,5 +83,31 @@ func (c scannerContributor) Run(ctx context.Context) (ContributorResult, error) 
 		return result, nil
 	}
 
+	return result, nil
+}
+
+// RunProfile executes all contributors in the given profile definition and aggregates the results.
+func RunProfile(ctx context.Context, def ProfileDefinition) (ProfileResult, error) {
+	result := ProfileResult{
+		Name:         def.Profile[0],
+		Description:  def.Description,
+		Summary:      def.Summary,
+		CoverageNote: def.CoverageNote,
+		ScannedAt:    time.Now(),
+	}
+
+	for _, contributor := range def.Contributors {
+		contributorResult, err := contributor.Run(ctx)
+		if err != nil {
+			return result, err
+		}
+		result.Contributors = append(result.Contributors, contributorResult)
+		if contributorResult.HasError {
+			result.HasErrors = true
+		}
+		result.TotalSize += contributorResult.TotalSize
+	}
+
+	result.TotalSizeHuman = utils.FormatBytes(result.TotalSize)
 	return result, nil
 }

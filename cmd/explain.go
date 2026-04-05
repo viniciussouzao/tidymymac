@@ -4,29 +4,39 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/explain"
 )
 
-// explainCmd represents the explain command
 var explainCmd = &cobra.Command{
-	Use:   "explain",
-	Short: "provides a detailed explanation of the possible junk files and their storage impact",
-	Long: `Provides a detailed explanation of the possible junk files and their storage impact. 
-This command helps users understand what types of files are considered junk and how they affect storage usage. It is useful for making informed decisions about which files to delete.
+	Use:   "explain <profile>",
+	Short: "Explain a macOS storage category using supported TidyMyMac contributors",
+	Long: `Explain a macOS storage category using supported TidyMyMac contributors.
 
 Example usage:
-# Get an explanation of system data usage
-$ tidymymac explain system-data 
-
-# Get an explanation of docker storage usage
-$ tidymymac explain docker
+# Explain System Data usage
+$ tidymymac explain system-data
 `,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		profile, err := explain.ResolveProfile(explain.Profile(args[0]), cleaner.DefaultRegistry())
+		if err != nil {
+			return err
+		}
 
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("explain called")
+		result, err := explain.RunProfile(cmd.Context(), profile)
+		if err != nil {
+			return err
+		}
+
+		if _, err := fmt.Fprint(cmd.OutOrStdout(), explain.FormatProfileResult(result)); err != nil {
+			return err
+		}
+
+		return nil
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(explainCmd)
-
 }

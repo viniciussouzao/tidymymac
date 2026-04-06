@@ -507,7 +507,7 @@ func (m cleanModel) View() string {
 	}
 
 	if m.err != nil {
-		return b.String()
+		return ""
 	}
 
 	if m.revalidation != nil {

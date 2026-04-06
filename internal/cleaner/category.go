@@ -8,12 +8,12 @@ const (
 	CategoryCaches               Category = "caches"
 	CategoryLogs                 Category = "logs"
 	CategoryDocker               Category = "docker"
-	CategoryIOSBackups           Category = "ios_backups"
-	CategoryUpdates              Category = "macos_updates"
+	CategoryIOSBackups           Category = "ios-backups"
+	CategoryUpdates              Category = "macos-updates"
 	CategoryTrashBin             Category = "trash"
 	CategoryXcode                Category = "xcode"
-	CategoryDevelopmentArtifacts Category = "development_artifacts"
-	CategoryTimeMachineSnapshots Category = "time_machine"
+	CategoryDevelopmentArtifacts Category = "development-artifacts"
+	CategoryTimeMachineSnapshots Category = "time-machine"
 )
 
 func (c Category) DisplayName() string {

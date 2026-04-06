@@ -87,7 +87,7 @@ func validateHistoryCategory(name string) error {
 
 func renderAllTimeStats(stats history.AllTimeStats, locTime *time.Location) string {
 	return renderStatsBlock(
-		"  all-time stats",
+		"\n  all-time stats",
 		stats,
 		locTime,
 	)

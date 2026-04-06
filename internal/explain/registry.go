@@ -67,7 +67,7 @@ func systemDataProfile(registry *cleaner.Registry) ProfileDefinition {
 				name:        ContributorCaches,
 				description: "Cached data created to speed up apps and repeated tasks.",
 				sources:     []string{"browsers", "IDEs", "media apps", "desktop applications"},
-				category:    cleaner.CategoryCaches,
+				category:    cleaner.CategoryApplicationCaches,
 				context: ExplainContext{
 					WhatIsThis:     "Cached data created to speed up apps and repeated tasks.",
 					WhatGenerates:  "Browsers, IDEs, media apps and other desktop applications.",

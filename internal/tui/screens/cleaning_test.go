@@ -10,7 +10,7 @@ import (
 func TestCleaningModelOverallExecutionProgressCountsSkippedAndPartial(t *testing.T) {
 	m := CleaningModel{
 		Categories: []CleaningCategory{
-			{Category: cleaner.CategoryCaches, Status: "done", FilesTotal: 10, FilesDeleted: 10},
+			{Category: cleaner.CategoryApplicationCaches, Status: "done", FilesTotal: 10, FilesDeleted: 10},
 			{Category: cleaner.CategoryLogs, Status: "skipped", FilesTotal: 5},
 			{Category: cleaner.CategoryTemp, Status: "cleaning", FilesTotal: 4, FilesDeleted: 2},
 			{Category: cleaner.CategoryDocker, Status: "pending", FilesTotal: 3},
@@ -28,7 +28,7 @@ func TestCleaningModelSkipCategoryMarksTerminalState(t *testing.T) {
 	m := CleaningModel{
 		Categories: []CleaningCategory{
 			{Category: cleaner.CategoryLogs, Status: "cleaning"},
-			{Category: cleaner.CategoryCaches, Status: "done"},
+			{Category: cleaner.CategoryApplicationCaches, Status: "done"},
 		},
 	}
 

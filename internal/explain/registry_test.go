@@ -97,7 +97,7 @@ func TestResolveProfileUnknown(t *testing.T) {
 func TestNewContributorDetailsNilRegistry(t *testing.T) {
 	c := newContributorDetails(nil, contributorSpec{
 		name:     ContributorCaches,
-		category: cleaner.CategoryCaches,
+		category: cleaner.CategoryApplicationCaches,
 	})
 
 	result, err := c.Run(t.Context())
@@ -115,7 +115,7 @@ func TestNewContributorDetailsMissingCategory(t *testing.T) {
 
 	c := newContributorDetails(r, contributorSpec{
 		name:     ContributorCaches,
-		category: cleaner.CategoryCaches,
+		category: cleaner.CategoryApplicationCaches,
 	})
 
 	result, err := c.Run(t.Context())
@@ -130,13 +130,13 @@ func TestNewContributorDetailsMissingCategory(t *testing.T) {
 func TestNewContributorDetailsFound(t *testing.T) {
 	r := cleaner.NewRegistry()
 	r.Register(stubCleaner{
-		category:   cleaner.CategoryCaches,
+		category:   cleaner.CategoryApplicationCaches,
 		scanResult: &cleaner.ScanResult{TotalSize: 2048, TotalFiles: 3},
 	})
 
 	c := newContributorDetails(r, contributorSpec{
 		name:     ContributorCaches,
-		category: cleaner.CategoryCaches,
+		category: cleaner.CategoryApplicationCaches,
 	})
 
 	result, err := c.Run(t.Context())

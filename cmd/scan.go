@@ -447,7 +447,8 @@ func (m scanModel) View() string {
 	}
 
 	if m.err != nil {
-		return ""
+		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("  ✗ %v", m.err)))
+		return b.String()
 	}
 
 	if m.savedTo != "" {

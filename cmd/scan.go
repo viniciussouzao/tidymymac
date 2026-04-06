@@ -425,10 +425,10 @@ const (
 func (m scanModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(scanTitleStyle.Render("🔎 scanning your mac..."))
-	b.WriteString("\n")
-
 	if m.scanning {
+		b.WriteString(scanTitleStyle.Render("🔎 scanning your mac..."))
+		b.WriteString("\n")
+
 		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), scanDimStyle.Render("looking for things that you may not need anymore...")))
 		b.WriteString("\n\n")
 		for _, cat := range m.categories {

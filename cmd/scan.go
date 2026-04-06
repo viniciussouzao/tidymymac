@@ -59,6 +59,7 @@ $ tidymymac scan docker caches
 
 		return runScanInteractive(cmd, args)
 	},
+	SilenceUsage: true,
 }
 
 func init() {
@@ -446,8 +447,7 @@ func (m scanModel) View() string {
 	}
 
 	if m.err != nil {
-		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("  ✗ %v", m.err)))
-		return b.String()
+		return ""
 	}
 
 	if m.savedTo != "" {

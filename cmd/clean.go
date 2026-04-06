@@ -63,6 +63,7 @@ $ tidymymac clean --from-file scan.json --output json
 
 		return runCleanInteractive(cmd, args, detailed, fromFile, forceStaleScan)
 	},
+	SilenceUsage: true,
 }
 
 func init() {
@@ -81,17 +82,21 @@ const (
 
 func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, fromFile string, forceStaleScan bool, output string, quiet bool) error {
 	start := time.Now()
+
 	stderr := func(format string, a ...any) {
-		if !quiet {
-			fmt.Fprintf(os.Stderr, format, a...)
+		if quiet {
+			return
 		}
+		fmt.Fprintf(os.Stderr, format, a...)
 	}
+
+	var b strings.Builder
 
 	dryRun := !executeFlag
 	if dryRun {
-		stderr("🧪 dry-run mode: no files will be deleted. Use --execute to actually clean.\n")
+		b.WriteString("🧪 dry-run mode: no files will be deleted. Use --execute to actually clean.\n")
 	} else {
-		stderr("🧹 cleaning your mac...\n")
+		b.WriteString("🧹 cleaning your mac...\n")
 	}
 
 	registry := cleaner.DefaultRegistry()
@@ -141,17 +146,17 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 		actionVerb = "cleaned"
 	}
 
-	fmt.Printf("%s %s across %d files.\n", actionSummary, result.TotalSizeHuman, result.TotalFiles)
+	b.WriteString(fmt.Sprintf("%s %s across %d files.\n", actionSummary, result.TotalSizeHuman, result.TotalFiles))
 	for _, category := range result.Categories {
 		if category.Err != nil {
-			fmt.Printf("- %s: error: %s\n", category.Name, category.ErrMsg)
+			b.WriteString(fmt.Sprintf("- %s: error: %s\n", category.Name, category.ErrMsg))
 			continue
 		}
 
-		fmt.Printf("- %s: %s, %d files %s\n", category.Name, actionSize(category.DeletedSize), category.DeletedFiles, actionVerb)
+		b.WriteString(fmt.Sprintf("- %s: %s, %d files %s\n", category.Name, actionSize(category.DeletedSize), category.DeletedFiles, actionVerb))
 		if detailed {
 			for _, file := range category.Files {
-				fmt.Printf("  %s\n", file.Path)
+				b.WriteString(fmt.Sprintf("  %s\n", file.Path))
 			}
 		}
 	}
@@ -165,6 +170,8 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 		}
 		return fmt.Errorf("clean completed with errors in: %s", strings.Join(failed, ", "))
 	}
+
+	_, _ = fmt.Fprint(os.Stdout, b.String())
 
 	return nil
 }
@@ -500,7 +507,6 @@ func (m cleanModel) View() string {
 	}
 
 	if m.err != nil {
-		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("  ✗ error cleaning: %v", m.err)))
 		return b.String()
 	}
 

@@ -42,7 +42,7 @@ func TestRegistryAllPreservesOrder(t *testing.T) {
 		t.Fatalf("All() returned %d cleaners, want 3", len(all))
 	}
 
-	want := []Category{CategoryLogs, CategoryTemp, CategoryCaches}
+	want := []Category{CategoryLogs, CategoryTemp, CategoryApplicationCaches}
 	for i, c := range all {
 		if c.Category() != want[i] {
 			t.Errorf("All()[%d].Category() = %q, want %q", i, c.Category(), want[i])
@@ -78,7 +78,7 @@ func TestDefaultRegistryHasAllCleaners(t *testing.T) {
 	expected := []Category{
 		CategoryTemp,
 		CategoryHomebrew,
-		CategoryCaches,
+		CategoryApplicationCaches,
 		CategoryDevelopmentArtifacts,
 		CategoryLogs,
 		CategoryDocker,

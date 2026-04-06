@@ -9,7 +9,7 @@ func TestCategoryDisplayName(t *testing.T) {
 	}{
 		{CategoryTemp, "Temporary Files"},
 		{CategoryHomebrew, "Homebrew Cache"},
-		{CategoryCaches, "Application Caches"},
+		{CategoryApplicationCaches, "Application Caches"},
 		{CategoryDevelopmentArtifacts, "Development Artifacts"},
 		{CategoryLogs, "System Logs"},
 		{CategoryDocker, "Docker"},

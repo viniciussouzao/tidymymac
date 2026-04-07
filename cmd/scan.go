@@ -404,7 +404,7 @@ func (m scanModel) View() string {
 			if cat.err {
 				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name)))
 			} else if cat.done {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Size.Render("✓"), styles.Dim.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Success.Render("✓"), styles.Dim.Render(cat.name)))
 			} else {
 				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name)))
 			}

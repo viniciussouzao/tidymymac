@@ -162,6 +162,8 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 		}
 	}
 
+	_, _ = fmt.Fprint(os.Stdout, b.String())
+
 	if result.HasErrors {
 		var failed []string
 		for _, cat := range result.Categories {
@@ -171,8 +173,6 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 		}
 		return fmt.Errorf("clean completed with errors in: %s", strings.Join(failed, ", "))
 	}
-
-	_, _ = fmt.Fprint(os.Stdout, b.String())
 
 	return nil
 }
@@ -497,7 +497,7 @@ func (m cleanModel) View() string {
 			if cat.err {
 				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name)))
 			} else if cat.done {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Size.Render("✓"), styles.Dim.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Success.Render("✓"), styles.Dim.Render(cat.name)))
 			} else {
 				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name)))
 			}
@@ -508,7 +508,7 @@ func (m cleanModel) View() string {
 	}
 
 	if m.err != nil {
-		return ""
+		return styles.Error.Render(fmt.Sprintf("  ✗ error cleaning: %v", m.err))
 	}
 
 	if m.revalidation != nil {

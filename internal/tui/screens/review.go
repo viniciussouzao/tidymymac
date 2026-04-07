@@ -623,7 +623,7 @@ func displayPath(category string, f fileSummary, showFull bool) string {
 	}
 
 	// Special formatting for caches: ~/Library/Caches/<APP>/<...>/<name>
-	if category == string(cleaner.CategoryCaches) {
+	if category == string(cleaner.CategoryApplicationCaches) {
 		p := path
 		// Ensure we have a consistent base prefix with ~ if under home
 		if strings.HasPrefix(p, "~/") {

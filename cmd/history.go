@@ -10,6 +10,7 @@ import (
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/viniciussouzao/tidymymac/internal/history"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -97,10 +98,10 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 		historyTreeNameMin = 16
 	)
 	historyTableWidth := historyColRun + historyColRanAt + historyColFreed + historyColFiles + historyColDuration + 8
-	sep := scanDimStyle.Render("  " + strings.Repeat("─", historyTableWidth))
+	sep := styles.Dim.Render("  " + strings.Repeat("─", historyTableWidth))
 
 	if len(record.Runs) == 0 {
-		b.WriteString(scanHelpStyle.Render("  no cleanup history found. Run tidymymac to get started."))
+		b.WriteString(styles.Help.Render("  no cleanup history found. Run tidymymac to get started."))
 		b.WriteString("\n")
 		return b.String(), nil
 	}
@@ -146,9 +147,9 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 			"  %-*s  %-*s  %s  %s  %s\n",
 			historyColRun, fmt.Sprintf("#%d", run.ID),
 			historyColRanAt, run.RanAt.In(loc).Format("2006-01-02 15:04"),
-			scanDimStyle.Render(fmt.Sprintf("%*s", historyColFreed, utils.FormatBytes(run.TotalBytes))),
-			scanDimStyle.Render(fmt.Sprintf("%*d", historyColFiles, run.TotalFiles)),
-			scanDimStyle.Render(fmt.Sprintf("%*s", historyColDuration, formatHistoryDuration(time.Duration(run.DurationMs)*time.Millisecond))),
+			styles.Dim.Render(fmt.Sprintf("%*s", historyColFreed, utils.FormatBytes(run.TotalBytes))),
+			styles.Dim.Render(fmt.Sprintf("%*d", historyColFiles, run.TotalFiles)),
+			styles.Dim.Render(fmt.Sprintf("%*s", historyColDuration, formatHistoryDuration(time.Duration(run.DurationMs)*time.Millisecond))),
 		))
 
 		// verbose
@@ -157,10 +158,10 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 
 			for _, cat := range run.Categories {
 				categoriesTree.Children = append(categoriesTree.Children, pterm.TreeNode{
-					Text: scanDimStyle.Render(cat.DisplayName),
+					Text: styles.Dim.Render(cat.DisplayName),
 					Children: []pterm.TreeNode{
-						{Text: scanDimStyle.Render("Freed: " + utils.FormatBytes(cat.Bytes))},
-						{Text: scanDimStyle.Render(fmt.Sprintf("Files: %d", cat.Files))},
+						{Text: styles.Dim.Render("Freed: " + utils.FormatBytes(cat.Bytes))},
+						{Text: styles.Dim.Render(fmt.Sprintf("Files: %d", cat.Files))},
 					},
 				})
 			}
@@ -185,7 +186,7 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 	b.WriteString("\n")
 
 	if !opts.all {
-		b.WriteString(scanHelpStyle.Render(fmt.Sprintf("  Showing the last %d runs. Use --all to view the full history.", len(runs))))
+		b.WriteString(styles.Help.Render(fmt.Sprintf("  Showing the last %d runs. Use --all to view the full history.", len(runs))))
 		b.WriteString("\n")
 	}
 

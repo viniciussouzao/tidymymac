@@ -48,7 +48,7 @@ func TestScannerContributorRunScanSuccess(t *testing.T) {
 	c := scannerContributor{
 		name: ContributorCaches,
 		cleaner: stubCleaner{
-			category: cleaner.CategoryCaches,
+			category: cleaner.CategoryApplicationCaches,
 			scanResult: &cleaner.ScanResult{
 				TotalSize:  300,
 				TotalFiles: 2,
@@ -88,7 +88,7 @@ func TestScannerContributorRunScanError(t *testing.T) {
 	c := scannerContributor{
 		name: ContributorCaches,
 		cleaner: stubCleaner{
-			category: cleaner.CategoryCaches,
+			category: cleaner.CategoryApplicationCaches,
 			scanErr:  errors.New("permission denied"),
 		},
 	}
@@ -109,7 +109,7 @@ func TestScannerContributorRunScanPartialResult(t *testing.T) {
 	c := scannerContributor{
 		name: ContributorCaches,
 		cleaner: stubCleaner{
-			category:   cleaner.CategoryCaches,
+			category:   cleaner.CategoryApplicationCaches,
 			scanResult: &cleaner.ScanResult{TotalSize: 512, TotalFiles: 1},
 			scanErr:    errors.New("partial failure"),
 		},

@@ -8,8 +8,8 @@ import (
 
 func TestCachesCleanerMetadata(t *testing.T) {
 	c := NewCachesCleaner()
-	if c.Category() != CategoryCaches {
-		t.Errorf("Category() = %q, want %q", c.Category(), CategoryCaches)
+	if c.Category() != CategoryApplicationCaches {
+		t.Errorf("Category() = %q, want %q", c.Category(), CategoryApplicationCaches)
 	}
 	if c.Name() != "App Caches" {
 		t.Errorf("Name() = %q, want %q", c.Name(), "App Caches")
@@ -31,8 +31,8 @@ func TestCachesCleanerScanReturnsResult(t *testing.T) {
 	if result == nil {
 		t.Fatal("Scan() returned nil result")
 	}
-	if result.Category != CategoryCaches {
-		t.Errorf("Category = %q, want %q", result.Category, CategoryCaches)
+	if result.Category != CategoryApplicationCaches {
+		t.Errorf("Category = %q, want %q", result.Category, CategoryApplicationCaches)
 	}
 }
 
@@ -73,8 +73,8 @@ func TestCachesCleanerScanWithTempDir(t *testing.T) {
 		t.Errorf("TotalSize = %d, want 1536", result.TotalSize)
 	}
 	for _, e := range result.Entries {
-		if e.Category != CategoryCaches {
-			t.Errorf("entry category = %q, want %q", e.Category, CategoryCaches)
+		if e.Category != CategoryApplicationCaches {
+			t.Errorf("entry category = %q, want %q", e.Category, CategoryApplicationCaches)
 		}
 	}
 }
@@ -100,7 +100,7 @@ func TestCachesCleanerCleanDryRun(t *testing.T) {
 
 	c := NewCachesCleaner()
 	entries := []FileEntry{
-		{Path: f, Size: 256, Category: CategoryCaches},
+		{Path: f, Size: 256, Category: CategoryApplicationCaches},
 	}
 
 	result, err := c.Clean(t.Context(), entries, true, nil)
@@ -125,7 +125,7 @@ func TestCachesCleanerCleanActualDeletion(t *testing.T) {
 
 	c := NewCachesCleaner()
 	entries := []FileEntry{
-		{Path: f, Size: 256, Category: CategoryCaches},
+		{Path: f, Size: 256, Category: CategoryApplicationCaches},
 	}
 
 	result, err := c.Clean(t.Context(), entries, false, nil)
@@ -148,7 +148,7 @@ func TestCachesCleanerCleanSkipsDirectories(t *testing.T) {
 	dir := t.TempDir()
 	c := NewCachesCleaner()
 	entries := []FileEntry{
-		{Path: dir, Size: 0, IsDir: true, Category: CategoryCaches},
+		{Path: dir, Size: 0, IsDir: true, Category: CategoryApplicationCaches},
 	}
 
 	result, err := c.Clean(t.Context(), entries, false, nil)
@@ -166,7 +166,7 @@ func TestCachesCleanerCleanContextCancellation(t *testing.T) {
 
 	c := NewCachesCleaner()
 	entries := []FileEntry{
-		{Path: "/tmp/whatever", Size: 100, Category: CategoryCaches},
+		{Path: "/tmp/whatever", Size: 100, Category: CategoryApplicationCaches},
 	}
 
 	_, err := c.Clean(ctx, entries, false, nil)
@@ -182,13 +182,13 @@ func TestCachesCleanerCleanProgress(t *testing.T) {
 	var progressCalls int
 	c := NewCachesCleaner()
 	entries := []FileEntry{
-		{Path: f, Size: 100, Category: CategoryCaches},
+		{Path: f, Size: 100, Category: CategoryApplicationCaches},
 	}
 
 	_, err := c.Clean(t.Context(), entries, false, func(p CleanProgress) {
 		progressCalls++
-		if p.Category != CategoryCaches {
-			t.Errorf("progress Category = %q, want %q", p.Category, CategoryCaches)
+		if p.Category != CategoryApplicationCaches {
+			t.Errorf("progress Category = %q, want %q", p.Category, CategoryApplicationCaches)
 		}
 	})
 	if err != nil {

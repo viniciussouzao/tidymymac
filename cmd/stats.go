@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/history"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -87,7 +88,7 @@ func validateHistoryCategory(name string) error {
 
 func renderAllTimeStats(stats history.AllTimeStats, locTime *time.Location) string {
 	return renderStatsBlock(
-		"  all-time stats",
+		"\n  all-time stats",
 		stats,
 		locTime,
 	)
@@ -103,12 +104,12 @@ func renderCategoryStats(displayName string, stats history.AllTimeStats, locTime
 
 func renderStatsBlock(title string, stats history.AllTimeStats, locTime *time.Location) string {
 	if stats.TotalRuns == 0 {
-		return scanHelpStyle.Render(title) + scanHelpStyle.Render("  no recorded runs yet.") + "\n"
+		return styles.Help.Render(title) + styles.Help.Render("  no recorded runs yet.") + "\n"
 	}
 
 	boldStyle := lipgloss.NewStyle().Bold(true)
 	const statsTableWidth = 40
-	sep := scanDimStyle.Render("  " + strings.Repeat("─", statsTableWidth))
+	sep := styles.Dim.Render("  " + strings.Repeat("─", statsTableWidth))
 
 	var b strings.Builder
 
@@ -116,11 +117,11 @@ func renderStatsBlock(title string, stats history.AllTimeStats, locTime *time.Lo
 	b.WriteString("\n")
 	b.WriteString(sep)
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total runs:", scanDimStyle.Render(fmt.Sprintf("%d", stats.TotalRuns))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total files:", scanDimStyle.Render(fmt.Sprintf("%d", stats.TotalFiles))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total bytes:", scanDimStyle.Render(utils.FormatBytes(stats.TotalBytes))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Avg per run:", scanDimStyle.Render(utils.FormatBytes(stats.AvgBytes))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Last run at:", scanDimStyle.Render(stats.LastRunAt.In(locTime).Format("2006-01-02 15:04:05"))))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total runs:", styles.Dim.Render(fmt.Sprintf("%d", stats.TotalRuns))))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total files:", styles.Dim.Render(fmt.Sprintf("%d", stats.TotalFiles))))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total bytes:", styles.Dim.Render(utils.FormatBytes(stats.TotalBytes))))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Avg per run:", styles.Dim.Render(utils.FormatBytes(stats.AvgBytes))))
+	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Last run at:", styles.Dim.Render(stats.LastRunAt.In(locTime).Format("2006-01-02 15:04:05"))))
 	b.WriteString("\n")
 	return b.String()
 

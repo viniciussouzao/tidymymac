@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
 
 type listOptions struct {
@@ -44,7 +45,7 @@ tidymymac list categories
 
 func returnCategories(opts listOptions) string {
 	var b strings.Builder
-	sep := scanDimStyle.Render("  " + strings.Repeat("─", 40))
+	sep := styles.Dim.Render("  " + strings.Repeat("─", 40))
 
 	b.WriteString("\n")
 	b.WriteString(sep)
@@ -54,11 +55,11 @@ func returnCategories(opts listOptions) string {
 	for _, c := range categories.All() {
 		b.WriteString("  " + string(c.Category()) + "\n")
 		if opts.detailed {
-			b.WriteString("    " + scanDimStyle.Render(c.Description()) + "\n")
+			b.WriteString("    " + styles.Dim.Render(c.Description()) + "\n")
 		}
 	}
 
-	b.WriteString(scanHelpStyle.Render("  run tidymymac scan/clean <category> to perform a scan or cleanup for a specific category"))
+	b.WriteString(styles.Help.Render("  run tidymymac scan/clean <category> to perform a scan or cleanup for a specific category"))
 	b.WriteString("\n")
 
 	return b.String()

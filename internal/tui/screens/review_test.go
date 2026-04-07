@@ -17,8 +17,8 @@ func TestReviewModelShouldWarnAboutSudo(t *testing.T) {
 			TotalSize:  10,
 			TotalFiles: 1,
 		},
-		cleaner.CategoryCaches: {
-			Category:   cleaner.CategoryCaches,
+		cleaner.CategoryApplicationCaches: {
+			Category:   cleaner.CategoryApplicationCaches,
 			TotalSize:  20,
 			TotalFiles: 2,
 		},

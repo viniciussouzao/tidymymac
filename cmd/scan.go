@@ -16,6 +16,7 @@ import (
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
 	"github.com/viniciussouzao/tidymymac/internal/scriptgen"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -59,6 +60,7 @@ $ tidymymac scan docker caches
 
 		return runScanInteractive(cmd, args)
 	},
+	SilenceUsage: true,
 }
 
 func init() {
@@ -97,7 +99,7 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 			if genErr != nil {
 				return fmt.Errorf("generating cleanup script: %w", genErr)
 			}
-			fmt.Println(scanHelpStyle.Render("  cleanup script generated: " + filepath.Base(scriptPath)))
+			fmt.Println(styles.Help.Render("  cleanup script generated: " + filepath.Base(scriptPath)))
 		}
 
 		if finalModel.result != nil && finalModel.result.HasErrors {
@@ -145,7 +147,7 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 
 	out := os.Stdout
 	if save {
-		filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02"), format)
+		filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02-15-04-05"), format)
 		f, createErr := os.Create(filename)
 		if createErr != nil {
 			return fmt.Errorf("creating output file: %w", createErr)
@@ -233,9 +235,9 @@ func runScanInteractive(cmd *cobra.Command, args []string) error {
 			if genErr != nil {
 				return fmt.Errorf("generating cleanup script: %w", genErr)
 			}
-			fmt.Println(scanHelpStyle.Render(" Cleanup script generated: " + filepath.Base(scriptPath)))
+			fmt.Println(styles.Help.Render(" Cleanup script generated: " + filepath.Base(scriptPath)))
 		}
-		fmt.Println(scanHelpStyle.Render("  Run 'tidymymac clean' to remove these files | Run 'tidymymac clean <category>' to remove specific categories"))
+		fmt.Println(styles.Help.Render("  Run 'tidymymac clean' to remove these files | Run 'tidymymac clean <category>' to remove specific categories"))
 	}
 
 	return finalModel.err
@@ -243,40 +245,9 @@ func runScanInteractive(cmd *cobra.Command, args []string) error {
 
 var (
 	scanTitleStyle = lipgloss.NewStyle().
-			Bold(false).
-			Foreground(lipgloss.Color("#717171")).
-			MarginBottom(1)
-
-	scanDoneStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#10B981"))
-
-	scanErrorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#EF4444"))
-
-	scanDimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#717171"))
-
-	scanHelpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#626262")).
-			MarginTop(1)
-
-	scanSizeSmall = lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
-	scanSizeMid   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
-	scanSizeLarge = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
+		Foreground(lipgloss.Color("#717171")).
+		MarginBottom(1)
 )
-
-func styledSize(size int64, text string) string {
-	const gb = 1 << 30
-	const mb100 = 100 << 20
-	switch {
-	case size >= gb:
-		return scanSizeLarge.Render(text)
-	case size >= mb100:
-		return scanSizeMid.Render(text)
-	default:
-		return scanSizeSmall.Render(text)
-	}
-}
 
 type scanDoneMsg struct {
 	result  commands.ScanResult
@@ -314,7 +285,7 @@ type scanModel struct {
 func newScanModel(ctx context.Context, args []string, generateScript bool, save bool, format string, detailed bool) scanModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
+	s.Style = styles.Cursor
 
 	return scanModel{
 		ctx:            ctx,
@@ -343,7 +314,7 @@ func (m scanModel) Init() tea.Cmd {
 			}
 
 			if m.save {
-				filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02"), m.format)
+				filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02-15-04-05"), m.format)
 				f, createErr := os.Create(filename)
 				if createErr != nil {
 					if errors.Is(createErr, os.ErrPermission) {
@@ -416,50 +387,62 @@ func (m scanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 const (
-	colCategory = 24
-	colFiles    = 8
-	colSize     = 12
-	tableWidth  = colCategory + colFiles + colSize + 6
+	colFiles = 8
+	colSize  = 12
 )
 
 func (m scanModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(scanTitleStyle.Render("🔎 scanning your mac..."))
-	b.WriteString("\n")
-
 	if m.scanning {
-		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), scanDimStyle.Render("looking for things that you may not need anymore...")))
+		b.WriteString(scanTitleStyle.Render("🔎 scanning your mac..."))
+		b.WriteString("\n")
+
+		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), styles.Dim.Render("looking for things that you may not need anymore...")))
 		b.WriteString("\n\n")
 		for _, cat := range m.categories {
 			if cat.err {
-				b.WriteString(fmt.Sprintf("  %s %s\n", scanErrorStyle.Render("✗"), scanDimStyle.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name)))
 			} else if cat.done {
-				b.WriteString(fmt.Sprintf("  %s %s\n", scanDoneStyle.Render("✓"), scanDimStyle.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Success.Render("✓"), styles.Dim.Render(cat.name)))
 			} else {
-				b.WriteString(fmt.Sprintf("  %s %s\n", scanDimStyle.Render("·"), scanDimStyle.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name)))
 			}
 		}
 		b.WriteString("\n")
-		b.WriteString(scanHelpStyle.Render(" q to quit"))
+		b.WriteString(styles.Help.Render(" q to quit"))
 		return b.String()
 	}
 
 	if m.err != nil {
-		b.WriteString(scanErrorStyle.Render(fmt.Sprintf("  ✗ %v", m.err)))
+		b.WriteString(styles.Error.Render(fmt.Sprintf("  ✗ %v", m.err)))
 		return b.String()
 	}
 
 	if m.savedTo != "" {
-		b.WriteString(scanDoneStyle.Render(fmt.Sprintf("  saved to ./%s", m.savedTo)))
+		b.WriteString(styles.Size.Render(fmt.Sprintf("  saved to ./%s", m.savedTo)))
 		b.WriteString("\n")
 		return b.String()
 	}
 
-	boldStyle := lipgloss.NewStyle().Bold(true)
-	sep := scanDimStyle.Render("  " + strings.Repeat("─", tableWidth))
+	// compute colCategory dynamically from the widest visible name + sudo tag
+	colCategory := lipgloss.Width("Category")
+	for _, cat := range m.result.Categories {
+		w := lipgloss.Width(cat.Name)
+		if cat.RequireSudo {
+			w += lipgloss.Width(" (sudo)")
+		}
+		if w > colCategory {
+			colCategory = w
+		}
+	}
+	colCategory += 2
+	tableWidth := colCategory + colFiles + colSize + 6
 
-	// header — pad plain text first, then apply style
+	boldStyle := lipgloss.NewStyle().Bold(true)
+	sep := styles.Dim.Render("  " + strings.Repeat("─", tableWidth))
+
+	// header
 	b.WriteString(fmt.Sprintf("\n  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Category")),
 		boldStyle.Render(fmt.Sprintf("%*s", colFiles, "Files")),
@@ -468,23 +451,29 @@ func (m scanModel) View() string {
 	b.WriteString(sep)
 	b.WriteString("\n")
 
-	// rows — pad plain text first, then apply style
+	// rows
 	for _, cat := range m.result.Categories {
 		var filesText, sizeText string
 
 		if cat.Err != nil {
-			filesText = scanErrorStyle.Render(fmt.Sprintf("%*s", colFiles, "─"))
-			sizeText = scanErrorStyle.Render(fmt.Sprintf("%*s", colSize, "error"))
+			filesText = styles.Error.Render(fmt.Sprintf("%*s", colFiles, "─"))
+			sizeText = styles.Error.Render(fmt.Sprintf("%*s", colSize, "error"))
 		} else {
-			filesText = scanDimStyle.Render(fmt.Sprintf("%*d", colFiles, cat.TotalFiles))
-			sizeText = styledSize(cat.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(cat.TotalSize)))
+			filesText = styles.Dim.Render(fmt.Sprintf("%*d", colFiles, cat.TotalFiles))
+			sizeText = styles.SizeStyled(cat.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(cat.TotalSize)))
 		}
 
-		b.WriteString(fmt.Sprintf("  %-*s  %s  %s\n",
-			colCategory, cat.Name,
-			filesText,
-			sizeText,
-		))
+		nameWithTag := cat.Name
+		if cat.RequireSudo {
+			nameWithTag += styles.Dim.Render(" (sudo)")
+		}
+		pad := colCategory - lipgloss.Width(nameWithTag)
+		if pad < 0 {
+			pad = 0
+		}
+		nameCell := nameWithTag + strings.Repeat(" ", pad)
+
+		b.WriteString(fmt.Sprintf("  %s  %s  %s\n", nameCell, filesText, sizeText))
 	}
 
 	// total
@@ -492,8 +481,8 @@ func (m scanModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Total")),
-		scanDimStyle.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
-		styledSize(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
+		styles.Dim.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
+		styles.SizeStyled(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
 	))
 
 	return b.String()

@@ -17,6 +17,7 @@ import (
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
 	"github.com/viniciussouzao/tidymymac/internal/history"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -313,7 +314,7 @@ func runCleanInteractive(cmd *cobra.Command, args []string, detailed bool, fromF
 	}
 
 	if finalModel.err == nil && finalModel.result != nil && finalModel.dryRun {
-		fmt.Println(scanHelpStyle.Render("  Run 'tidymymac clean --execute' to actually delete these files"))
+		fmt.Println(styles.Help.Render("  Run 'tidymymac clean --execute' to actually delete these files"))
 	}
 
 	return finalModel.err
@@ -355,7 +356,7 @@ type cleanModel struct {
 func newCleanModel(ctx context.Context, args []string, detailed bool, fromFile string, forceStaleScan bool, dryRun bool) cleanModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6B6B"))
+	s.Style = styles.Cursor
 
 	return cleanModel{
 		ctx:            ctx,
@@ -469,12 +470,12 @@ func (m cleanModel) View() string {
 
 	title := "🧹 cleaning your mac..."
 	statusText := "removing files you selected for cleanup..."
-	modeBanner := scanDoneStyle.Render("  EXECUTE MODE - Files are being deleted.")
+	modeBanner := styles.Size.Render("  EXECUTE MODE - Files are being deleted.")
 	helpText := " q to quit"
 	if m.dryRun {
 		title = "🧪 dry-run cleanup..."
 		statusText = "simulating cleanup without deleting files..."
-		modeBanner = scanHelpStyle.Render("  DRY RUN MODE - No files will be deleted. Run with --execute to actually clean.")
+		modeBanner = styles.Help.Render("  DRY RUN MODE - No files will be deleted. Run with --execute to actually clean.")
 		helpText = " q to quit | rerun with --execute to actually delete files"
 	}
 
@@ -484,25 +485,25 @@ func (m cleanModel) View() string {
 	b.WriteString("\n")
 
 	if m.cleaning {
-		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), scanDimStyle.Render(statusText)))
+		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), styles.Dim.Render(statusText)))
 		b.WriteString("\n")
 		if m.fromFile != "" {
 			b.WriteString("\n")
-			b.WriteString(scanDimStyle.Render("  using entries revalidated from the provided scan file"))
+			b.WriteString(styles.Dim.Render("  using entries revalidated from the provided scan file"))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
 		for _, cat := range m.categories {
 			if cat.err {
-				b.WriteString(fmt.Sprintf("  %s %s\n", scanErrorStyle.Render("✗"), scanDimStyle.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name)))
 			} else if cat.done {
-				b.WriteString(fmt.Sprintf("  %s %s\n", scanDoneStyle.Render("✓"), scanDimStyle.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Size.Render("✓"), styles.Dim.Render(cat.name)))
 			} else {
-				b.WriteString(fmt.Sprintf("  %s %s\n", scanDimStyle.Render("·"), scanDimStyle.Render(cat.name)))
+				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name)))
 			}
 		}
 		b.WriteString("\n")
-		b.WriteString(scanHelpStyle.Render(helpText))
+		b.WriteString(styles.Help.Render(helpText))
 		return b.String()
 	}
 
@@ -512,7 +513,7 @@ func (m cleanModel) View() string {
 
 	if m.revalidation != nil {
 		b.WriteString("\n")
-		b.WriteString(scanDimStyle.Render(fmt.Sprintf(
+		b.WriteString(styles.Dim.Render(fmt.Sprintf(
 			"  Revalidated %d files (%d missing, %d type-changed, %d empty categories)",
 			m.revalidation.RevalidatedFiles,
 			m.revalidation.MissingFiles,
@@ -533,7 +534,7 @@ func (m cleanModel) View() string {
 	tableWidth := colCategory + colFiles + colSize + 6
 
 	boldStyle := lipgloss.NewStyle().Bold(true)
-	sep := scanDimStyle.Render("  " + strings.Repeat("─", tableWidth))
+	sep := styles.Dim.Render("  " + strings.Repeat("─", tableWidth))
 
 	sizeLabel := "Reclaimed"
 	if m.dryRun {
@@ -552,11 +553,11 @@ func (m cleanModel) View() string {
 		var filesText, sizeText string
 
 		if cat.Err != nil {
-			filesText = scanErrorStyle.Render(fmt.Sprintf("%*s", colFiles, "─"))
-			sizeText = scanErrorStyle.Render(fmt.Sprintf("%*s", colSize, "error"))
+			filesText = styles.Error.Render(fmt.Sprintf("%*s", colFiles, "─"))
+			sizeText = styles.Error.Render(fmt.Sprintf("%*s", colSize, "error"))
 		} else {
-			filesText = scanDimStyle.Render(fmt.Sprintf("%*d", colFiles, cat.DeletedFiles))
-			sizeText = styledSize(cat.DeletedSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(cat.DeletedSize)))
+			filesText = styles.Dim.Render(fmt.Sprintf("%*d", colFiles, cat.DeletedFiles))
+			sizeText = styles.SizeStyled(cat.DeletedSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(cat.DeletedSize)))
 		}
 
 		b.WriteString(fmt.Sprintf("  %-*s  %s  %s\n",
@@ -570,14 +571,14 @@ func (m cleanModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Total")),
-		scanDimStyle.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
-		styledSize(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
+		styles.Dim.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
+		styles.SizeStyled(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
 	))
 	b.WriteString("\n")
 	if m.dryRun {
-		b.WriteString(scanHelpStyle.Render("  Preview only. Run 'tidymymac clean --execute' to actually delete these files."))
+		b.WriteString(styles.Help.Render("  Preview only. Run 'tidymymac clean --execute' to actually delete these files."))
 	} else {
-		b.WriteString(scanHelpStyle.Render("  Cleanup finished. You can run 'tidymymac history' to inspect previous cleanup sessions."))
+		b.WriteString(styles.Help.Render("  Cleanup finished. You can run 'tidymymac history' to inspect previous cleanup sessions."))
 	}
 
 	return b.String()

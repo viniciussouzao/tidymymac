@@ -147,7 +147,7 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 
 	out := os.Stdout
 	if save {
-		filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02"), format)
+		filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02-15-04-05"), format)
 		f, createErr := os.Create(filename)
 		if createErr != nil {
 			return fmt.Errorf("creating output file: %w", createErr)
@@ -245,10 +245,9 @@ func runScanInteractive(cmd *cobra.Command, args []string) error {
 
 var (
 	scanTitleStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#717171")).
-			MarginBottom(1)
+		Foreground(lipgloss.Color("#717171")).
+		MarginBottom(1)
 )
-
 
 type scanDoneMsg struct {
 	result  commands.ScanResult
@@ -315,7 +314,7 @@ func (m scanModel) Init() tea.Cmd {
 			}
 
 			if m.save {
-				filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02"), m.format)
+				filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02-15-04-05"), m.format)
 				f, createErr := os.Create(filename)
 				if createErr != nil {
 					if errors.Is(createErr, os.ErrPermission) {

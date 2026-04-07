@@ -417,10 +417,8 @@ func (m scanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 const (
-	colCategory = 24
-	colFiles    = 8
-	colSize     = 12
-	tableWidth  = colCategory + colFiles + colSize + 6
+	colFiles = 8
+	colSize  = 12
 )
 
 func (m scanModel) View() string {
@@ -457,10 +455,24 @@ func (m scanModel) View() string {
 		return b.String()
 	}
 
+	// compute colCategory dynamically from the widest visible name + sudo tag
+	colCategory := lipgloss.Width("Category")
+	for _, cat := range m.result.Categories {
+		w := lipgloss.Width(cat.Name)
+		if cat.RequireSudo {
+			w += lipgloss.Width(" (sudo)")
+		}
+		if w > colCategory {
+			colCategory = w
+		}
+	}
+	colCategory += 2
+	tableWidth := colCategory + colFiles + colSize + 6
+
 	boldStyle := lipgloss.NewStyle().Bold(true)
 	sep := scanDimStyle.Render("  " + strings.Repeat("─", tableWidth))
 
-	// header — pad plain text first, then apply style
+	// header
 	b.WriteString(fmt.Sprintf("\n  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Category")),
 		boldStyle.Render(fmt.Sprintf("%*s", colFiles, "Files")),
@@ -469,7 +481,7 @@ func (m scanModel) View() string {
 	b.WriteString(sep)
 	b.WriteString("\n")
 
-	// rows — pad plain text first, then apply style
+	// rows
 	for _, cat := range m.result.Categories {
 		var filesText, sizeText string
 
@@ -481,11 +493,17 @@ func (m scanModel) View() string {
 			sizeText = styledSize(cat.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(cat.TotalSize)))
 		}
 
-		b.WriteString(fmt.Sprintf("  %-*s  %s  %s\n",
-			colCategory, cat.Name,
-			filesText,
-			sizeText,
-		))
+		nameWithTag := cat.Name
+		if cat.RequireSudo {
+			nameWithTag += scanDimStyle.Render(" (sudo)")
+		}
+		pad := colCategory - lipgloss.Width(nameWithTag)
+		if pad < 0 {
+			pad = 0
+		}
+		nameCell := nameWithTag + strings.Repeat(" ", pad)
+
+		b.WriteString(fmt.Sprintf("  %s  %s  %s\n", nameCell, filesText, sizeText))
 	}
 
 	// total

@@ -22,6 +22,7 @@ type ScanOptions struct {
 type ScanCategoryResult struct {
 	Category       cleaner.Category    `json:"category"`
 	Name           string              `json:"name"`
+	RequireSudo    bool                `json:"requires_sudo"`
 	TotalFiles     int                 `json:"total_files"`
 	TotalSize      int64               `json:"total_size_bytes"`
 	TotalSizeHuman string              `json:"total_size_human"`
@@ -82,6 +83,7 @@ func RunScan(ctx context.Context, registry *cleaner.Registry, selected []string,
 			defer wg.Done()
 
 			name := c.Category().DisplayName()
+			requireSudo := c.RequiresSudo()
 
 			if onEvent != nil {
 				onEvent(ScanEvent{
@@ -103,9 +105,10 @@ func RunScan(ctx context.Context, registry *cleaner.Registry, selected []string,
 			})
 
 			item := ScanCategoryResult{
-				Category: c.Category(),
-				Name:     name,
-				Err:      scanErr,
+				Category:    c.Category(),
+				Name:        name,
+				Err:         scanErr,
+				RequireSudo: requireSudo,
 			}
 			if scanErr != nil {
 				item.ErrMsg = scanErr.Error()

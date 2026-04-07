@@ -522,6 +522,16 @@ func (m cleanModel) View() string {
 		b.WriteString("\n")
 	}
 
+	// compute colCategory dynamically from the widest visible name
+	colCategory := lipgloss.Width("Category")
+	for _, cat := range m.result.Categories {
+		if w := lipgloss.Width(cat.Name); w > colCategory {
+			colCategory = w
+		}
+	}
+	colCategory += 2
+	tableWidth := colCategory + colFiles + colSize + 6
+
 	boldStyle := lipgloss.NewStyle().Bold(true)
 	sep := scanDimStyle.Render("  " + strings.Repeat("─", tableWidth))
 

@@ -9,41 +9,54 @@
   Scan, review, and reclaim disk space — safely, transparently, and from the terminal.
 </p>
 
-## ✨ Features
+## Features
 
-- 🖥️ Interactive TUI to browse and select what to clean
-- 🛡️ Dry-run by default — nothing is deleted without your explicit confirmation
-- 🔌 Modular cleaners for different categories of junk
-- 📊 Progress reporting and summary of reclaimed space
-- 📤 Export scan results as JSON or CSV
-- 📝 Generate shell cleanup scripts from scan results
-- 🎯 Target specific categories in any command
+- Interactive TUI to browse and select what to clean
+- Dry-run by default — nothing is deleted without your explicit confirmation
+- Modular cleaners for different categories of junk
+- Progress reporting and summary of reclaimed space
+- Export scan results as JSON or CSV
+- Generate shell cleanup scripts from scan results
+- Target specific categories in any command
 
-### 🗂️ Cleaners
+### Cleaners
 
 | Category | What it targets |
 |---|---|
-| 🗑️ Temporary Files | `/tmp`, `/var/tmp`, user temp directories |
-| 📦 Application Caches | `~/Library/Caches` |
-| 📋 System Logs | `~/Library/Logs`, `/Library/Logs`, `/var/log` |
-| 🍺 Homebrew Cache | Packages cached by `brew` |
-| 🐳 Docker Artifacts | Stopped containers, untagged images, orphaned volumes |
-| 📱 iOS Backups | iPhone/iPad backups in `~/Library/Application Support/MobileSync/Backup` |
-| 🍎 macOS Updates | Old macOS update residues and installers |
-| 🗂️ Xcode | DerivedData, archives, simulators |
-| 👨‍💻 Development Artifacts | Go build cache and downloaded module cache |
-| 🕰️ Time Machine Snapshots | Local Time Machine snapshots stored on disk |
-| 🗑️ Trash | Files in the Trash waiting to be permanently removed |
+| Temporary Files | `/tmp`, `/var/tmp`, user temp directories |
+| Application Caches | `~/Library/Caches` |
+| System Logs | `~/Library/Logs`, `/Library/Logs`, `/var/log` |
+| Homebrew Cache | Packages cached by `brew` |
+| Docker Artifacts | Stopped containers, untagged images, orphaned volumes |
+| iOS Backups | iPhone/iPad backups in `~/Library/Application Support/MobileSync/Backup` |
+| macOS Updates | Old macOS update residues and installers |
+| Xcode | DerivedData, archives, simulators |
+| Development Artifacts | Go build cache and downloaded module cache |
+| Time Machine Snapshots | Local Time Machine snapshots stored on disk |
+| Trash | Files in the Trash waiting to be permanently removed |
 
 ## 🚀 Installation
 
+### Homebrew (recommended)
+
 ```bash
-# Clone and build
+brew install viniciussouzao/tap/tidymymac
+```
+
+### go install
+
+```bash
+go install github.com/viniciussouzao/tidymymac/cmd/tidymymac@latest
+```
+
+Make sure `$(go env GOPATH)/bin` is in your `PATH`.
+
+### Build from source
+
+```bash
 git clone https://github.com/viniciussouzao/tidymymac
 cd tidymymac
 make build
-
-# Run
 ./bin/tidymymac
 ```
 

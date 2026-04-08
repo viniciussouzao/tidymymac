@@ -145,6 +145,10 @@ TidyMyMac is designed with safety as the primary concern:
 - ✅ **No silent operations**: every file is shown before removal
 - ✅ **Errors are non-fatal**: a failure on one file won't stop the rest
 
+## 🩺 Troubleshooting
+
+Running into empty scan results, permission issues, or other surprises? Check [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — the most common one is a terminal missing **Full Disk Access** on macOS, which makes Trash and a few other categories report `0 B` even when they aren't empty.
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.

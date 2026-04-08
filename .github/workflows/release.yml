@@ -8,7 +8,7 @@ on:
 
 jobs:
   release:
-    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'release')
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'release'))
     runs-on: macos-latest
     permissions:
       contents: write
@@ -58,6 +58,13 @@ jobs:
                       -X github.com/viniciussouzao/tidymymac/internal/buildinfo.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/tidymymac-darwin-arm64 \
             ./cmd/tidymymac/
+
+      - name: Package binaries
+        run: |
+          cd dist
+          tar -czf tidymymac-${{ steps.version.outputs.version }}-darwin-amd64.tar.gz tidymymac-darwin-amd64
+          tar -czf tidymymac-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz tidymymac-darwin-arm64
+          rm tidymymac-darwin-amd64 tidymymac-darwin-arm64
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

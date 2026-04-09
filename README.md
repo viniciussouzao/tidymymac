@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.png" width="700"/>
+  <img src="docs/images/tidymymac.png" width="700" alt="TidyMyMac"/>
 </p>
 
 <h1 align="center">🧹 TidyMyMac</h1>
@@ -9,41 +9,54 @@
   Scan, review, and reclaim disk space — safely, transparently, and from the terminal.
 </p>
 
-## ✨ Features
+## Features
 
-- 🖥️ Interactive TUI to browse and select what to clean
-- 🛡️ Dry-run by default — nothing is deleted without your explicit confirmation
-- 🔌 Modular cleaners for different categories of junk
-- 📊 Progress reporting and summary of reclaimed space
-- 📤 Export scan results as JSON or CSV
-- 📝 Generate shell cleanup scripts from scan results
-- 🎯 Target specific categories in any command
+- Interactive TUI to browse and select what to clean
+- Dry-run by default — nothing is deleted without your explicit confirmation
+- Modular cleaners for different categories of junk
+- Progress reporting and summary of reclaimed space
+- Export scan results as JSON or CSV
+- Generate shell cleanup scripts from scan results
+- Target specific categories in any command
 
-### 🗂️ Cleaners
+### Cleaners
 
 | Category | What it targets |
 |---|---|
-| 🗑️ Temporary Files | `/tmp`, `/var/tmp`, user temp directories |
-| 📦 Application Caches | `~/Library/Caches` |
-| 📋 System Logs | `~/Library/Logs`, `/Library/Logs`, `/var/log` |
-| 🍺 Homebrew Cache | Packages cached by `brew` |
-| 🐳 Docker Artifacts | Stopped containers, untagged images, orphaned volumes |
-| 📱 iOS Backups | iPhone/iPad backups in `~/Library/Application Support/MobileSync/Backup` |
-| 🍎 macOS Updates | Old macOS update residues and installers |
-| 🗂️ Xcode | DerivedData, archives, simulators |
-| 👨‍💻 Development Artifacts | Go build cache and downloaded module cache |
-| 🕰️ Time Machine Snapshots | Local Time Machine snapshots stored on disk |
-| 🗑️ Trash | Files in the Trash waiting to be permanently removed |
+| Temporary Files | `/tmp`, `/var/tmp`, user temp directories |
+| Application Caches | `~/Library/Caches` |
+| System Logs | `~/Library/Logs`, `/Library/Logs`, `/var/log` |
+| Homebrew Cache | Packages cached by `brew` |
+| Docker Artifacts | Stopped containers, untagged images, orphaned volumes |
+| iOS Backups | iPhone/iPad backups in `~/Library/Application Support/MobileSync/Backup` |
+| macOS Updates | Old macOS update residues and installers |
+| Xcode | DerivedData, archives, simulators |
+| Development Artifacts | Go build cache and downloaded module cache |
+| Time Machine Snapshots | Local Time Machine snapshots stored on disk |
+| Trash | Files in the Trash waiting to be permanently removed |
 
 ## 🚀 Installation
 
+### Homebrew (recommended)
+
 ```bash
-# Clone and build
+brew install viniciussouzao/tap/tidymymac
+```
+
+### go install
+
+```bash
+go install github.com/viniciussouzao/tidymymac/cmd/tidymymac@latest
+```
+
+Make sure `$(go env GOPATH)/bin` is in your `PATH`.
+
+### Build from source
+
+```bash
 git clone https://github.com/viniciussouzao/tidymymac
 cd tidymymac
 make build
-
-# Run
 ./bin/tidymymac
 ```
 
@@ -58,6 +71,18 @@ tidymymac
 # Actually delete the selected files
 tidymymac --execute
 ```
+
+### TUI Demo
+
+<p align="center">
+  <img src="docs/images/tui-demo.gif" width="900" alt="TidyMyMac TUI demo"/>
+</p>
+
+### CLI Demo
+
+<p align="center">
+  <img src="docs/images/cli-demo.gif" width="900" alt="TidyMyMac CLI demo"/>
+</p>
 
 ### 📋 Commands
 
@@ -131,6 +156,10 @@ TidyMyMac is designed with safety as the primary concern:
 - ✅ **Explicit confirmation required**: deletion only happens with `--execute`
 - ✅ **No silent operations**: every file is shown before removal
 - ✅ **Errors are non-fatal**: a failure on one file won't stop the rest
+
+## 🩺 Troubleshooting
+
+Running into empty scan results, permission issues, or other surprises? Check [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — the most common one is a terminal missing **Full Disk Access** on macOS, which makes Trash and a few other categories report `0 B` even when they aren't empty.
 
 ## 📄 License
 

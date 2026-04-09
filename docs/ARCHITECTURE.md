@@ -17,7 +17,12 @@ This document describes the internal architecture of TidyMyMac: how the packages
 - [Package Breakdown](#package-breakdown)
   - [cmd/](#cmd)
   - [internal/cleaner/](#internalcleaner)
+  - [internal/commands/](#internalcommands)
   - [internal/tui/](#internaltui)
+  - [internal/history/](#internalhistory)
+  - [internal/explain/](#internalexplain)
+  - [internal/scriptgen/](#internalscriptgen)
+  - [internal/buildinfo/](#internalbuildinfo)
   - [pkg/utils/](#pkgutils)
 - [TUI Flow](#tui-flow)
   - [Screen State Machine](#screen-state-machine)
@@ -38,12 +43,17 @@ TidyMyMac is structured in three main layers:
 graph TD
     A[CLI — cobra] --> B[TUI — bubbletea]
     A --> C[Non-interactive commands]
-    B --> D[internal/cleaner]
-    C --> D
+    B --> CMD[internal/commands]
+    C --> CMD
+    CMD --> D[internal/cleaner]
+    B --> D
     D --> E[Filesystem / Docker / System APIs]
+    C --> H[internal/history]
+    C --> EXP[internal/explain]
+    C --> SG[internal/scriptgen]
 ```
 
-The **CLI layer** (`cmd/`) parses arguments and either launches the interactive TUI or runs a non-interactive command (like `scan`, `clean`, `history`). The **cleaner layer** (`internal/cleaner/`) is the core domain: it defines a common `Cleaner` interface and holds all individual implementations. The **TUI layer** (`internal/tui/`) drives the interactive experience, delegating all actual work back to the cleaner layer.
+The **CLI layer** (`cmd/`) parses arguments and either launches the interactive TUI or runs a non-interactive command (like `scan`, `clean`, `list`, `stats`, `explain`, `history`, `version`). The **cleaner layer** (`internal/cleaner/`) is the core domain: it defines a common `Cleaner` interface and holds all individual implementations. The **commands layer** (`internal/commands/`) wraps the cleaner layer with reusable scan/clean orchestration (fan-out, aggregation, JSON/CSV shaping) that both the CLI subcommands and the TUI consume. The **TUI layer** (`internal/tui/`) drives the interactive experience, delegating all actual work back to the cleaner and commands layers.
 
 ---
 
@@ -51,49 +61,75 @@ The **CLI layer** (`cmd/`) parses arguments and either launches the interactive 
 
 ```
 tidymymac/
-├── cmd/                    # CLI entry points (cobra commands)
-│   ├── tidymymac/          # main package — program entry point
-│   ├── root.go             # root command, launches TUI
-│   ├── scan.go             # `tidymymac scan`
-│   ├── clean.go            # `tidymymac clean`
-│   ├── explain.go          # `tidymymac explain`
-│   └── history.go          # `tidymymac history`
+├── cmd/                          # CLI entry points (cobra commands)
+│   ├── tidymymac/                # main package — program entry point
+│   ├── root.go                   # root command, launches TUI
+│   ├── scan.go                   # `tidymymac scan`
+│   ├── clean.go                  # `tidymymac clean`
+│   ├── list.go                   # `tidymymac list categories`
+│   ├── stats.go                  # `tidymymac stats [category]`
+│   ├── explain.go                # `tidymymac explain <profile>`
+│   ├── history.go                # `tidymymac history`
+│   └── version.go                # `tidymymac version`
 │
 ├── internal/
-│   ├── cleaner/            # core domain: interface, registry, implementations
-│   │   ├── registry.go     # Cleaner interface + Registry struct
-│   │   ├── category.go     # Category type and display names
-│   │   ├── results.go      # FileEntry, ScanResult, CleanResult, progress types
-│   │   ├── caches.go       # Application Caches cleaner
-│   │   ├── docker.go       # Docker artifacts cleaner
-│   │   ├── homebrew.go     # Homebrew cache cleaner
-│   │   ├── ios_backups.go  # iOS Backups cleaner
-│   │   ├── logs.go         # System Logs cleaner
-│   │   ├── temp.go         # Temporary Files cleaner
-│   │   ├── trash.go        # Trash cleaner
-│   │   ├── updates.go      # macOS Software Updates cleaner
-│   │   └── utils.go        # Shared helpers (walk, size calculation, etc.)
+│   ├── cleaner/                  # core domain: interface, registry, implementations
+│   │   ├── registry.go           # Cleaner interface + Registry struct
+│   │   ├── category.go           # Category type and display names
+│   │   ├── results.go            # FileEntry, ScanResult, CleanResult, progress types
+│   │   ├── caches.go             # Application Caches cleaner
+│   │   ├── development_artifacts.go # Go build/mod cache cleaner
+│   │   ├── docker.go             # Docker artifacts cleaner
+│   │   ├── homebrew.go           # Homebrew cache cleaner
+│   │   ├── ios_backups.go        # iOS Backups cleaner
+│   │   ├── logs.go               # System Logs cleaner
+│   │   ├── temp.go               # Temporary Files cleaner
+│   │   ├── time_machine.go       # Time Machine local snapshots cleaner
+│   │   ├── trash.go              # Trash cleaner
+│   │   ├── updates.go            # macOS Software Updates cleaner
+│   │   ├── xcode.go              # Xcode DerivedData/archives/simulators cleaner
+│   │   └── utils.go              # Shared helpers (walk, size calculation, etc.)
 │   │
-│   ├── tui/                # BubbleTea TUI application
-│   │   ├── app.go          # Root model — manages screen transitions
-│   │   ├── keys.go         # Keyboard bindings
-│   │   ├── styles.go       # Lipgloss styles, logo, tagline
-│   │   └── screens/        # Individual screen models
+│   ├── commands/                 # Reusable scan/clean orchestration shared by CLI and TUI
+│   │   ├── scan.go               # Parallel fan-out scan + JSON/CSV rendering
+│   │   ├── scan_input.go         # Category argument parsing/validation
+│   │   └── clean.go              # Sequential clean orchestration + result aggregation
+│   │
+│   ├── tui/                      # BubbleTea TUI application
+│   │   ├── app.go                # Root model — manages screen transitions
+│   │   ├── keys.go               # Keyboard bindings
+│   │   ├── styles/               # Lipgloss styles, logo, tagline
+│   │   └── screens/              # Individual screen models
 │   │       ├── dashboard.go
 │   │       ├── scanning.go
 │   │       ├── review.go
 │   │       ├── cleaning.go
 │   │       └── summary.go
 │   │
-│   └── scriptgen/          # (planned) Shell script generation feature
+│   ├── history/                  # Cleanup run history persisted at ~/.tidymymac/history.json
+│   │   ├── history.go            # Load/append/Stats/StatsByCategory
+│   │   └── utils.go              # File I/O helpers
+│   │
+│   ├── explain/                  # `explain` command: composes contributor data into storage profiles
+│   │   ├── profile.go            # Profile type (e.g. system-data)
+│   │   ├── registry.go           # Profile registry + ResolveProfile
+│   │   ├── contributors.go       # Per-category contributors (how each category feeds a profile)
+│   │   ├── wrapper.go            # Runs the profile and formats the result
+│   │   └── utils.go
+│   │
+│   ├── scriptgen/                # Shell cleanup script generation from scan results
+│   │   └── scriptgen.go
+│   │
+│   └── buildinfo/                # Version/commit/date ldflag variables for `version` command
+│       └── buildinfo.go
 │
 ├── pkg/
 │   └── utils/
-│       ├── disk.go         # Disk usage helpers
-│       └── format.go       # Human-readable size formatting
+│       ├── disk.go               # Disk usage helpers
+│       └── format.go             # Human-readable size formatting
 │
-├── docs/                   # Documentation and images
-├── bin/                    # Compiled binary (gitignored)
+├── docs/                         # Documentation and images
+├── bin/                          # Compiled binary (gitignored)
 ├── Makefile
 └── go.mod
 ```
@@ -152,16 +188,35 @@ func DefaultRegistry() *Registry {
     r.Register(NewTempCleaner())
     r.Register(NewHomebrewCleaner())
     r.Register(NewCachesCleaner())
+    r.Register(NewDevelopmentArtifactsCleaner())
     r.Register(NewLogsCleaner())
     r.Register(NewDockerCleaner())
     r.Register(NewIOSBackupsCleaner())
     r.Register(NewUpdatesCleaner())
     r.Register(NewTrashCleaner())
+    r.Register(NewXcodeCleaner())
+    r.Register(NewTimeMachineCleaner())
     return r
 }
 ```
 
-This makes it trivial to add new cleaners without touching any existing code — just implement the interface and register it.
+The built-in categories (see `internal/cleaner/category.go`) are:
+
+| Category constant | ID string | Display name |
+|---|---|---|
+| `CategoryTemp` | `temp` | Temporary Files |
+| `CategoryHomebrew` | `homebrew` | Homebrew Cache |
+| `CategoryApplicationCaches` | `app-caches` | Application Caches |
+| `CategoryDevelopmentArtifacts` | `development-artifacts` | Development Artifacts |
+| `CategoryLogs` | `logs` | System Logs |
+| `CategoryDocker` | `docker` | Docker |
+| `CategoryIOSBackups` | `ios-backups` | iOS Backups |
+| `CategoryUpdates` | `macos-updates` | macOS Updates |
+| `CategoryTrashBin` | `trash` | Trash Files |
+| `CategoryXcode` | `xcode` | Xcode |
+| `CategoryTimeMachineSnapshots` | `time-machine` | Time Machine Snapshots |
+
+Adding a new cleaner is purely additive — implement the interface, add a category constant, and register it (see [Extending TidyMyMac](#extending-tidymymac)).
 
 ### Results and Progress Types
 
@@ -183,20 +238,38 @@ Progress callbacks (`func(ScanProgress)` and `func(CleanProgress)`) allow cleane
 
 ### `cmd/`
 
-The `cmd/` package uses [Cobra](https://github.com/spf13/cobra) to define the CLI structure. The root command (`tidymymac`) launches the TUI. Subcommands (`scan`, `clean`, `explain`, `history`) provide non-interactive alternatives.
+The `cmd/` package uses [Cobra](https://github.com/spf13/cobra) to define the CLI structure. The root command (`tidymymac`) launches the TUI. Subcommands provide non-interactive alternatives:
+
+| Command | Purpose |
+|---|---|
+| `scan [categories...]` | Run scans and emit an interactive table or machine-readable JSON/CSV (with `--output`, `--detailed`, `--save`, `--quiet`, `--generate-script`). |
+| `clean [categories...]` | Delete scanned files. Dry-run by default; destructive only with `--execute`. Supports `--from-file` to reuse a previously saved detailed scan and `--output json`. |
+| `list categories` | Print all registered categories (add `--detailed` for descriptions). |
+| `stats [category]` | Aggregate all-time statistics from the local history store. |
+| `explain <profile>` | Explain a macOS storage profile (e.g. `system-data`) by composing contributor data from multiple cleaners. |
+| `history` | Show past cleanup runs. |
+| `version` | Print version, commit, build date, platform, and Go version (values come from `internal/buildinfo`). |
 
 The `--execute` flag is defined at the root level as a persistent flag, making it available to both the root command and any subcommand that performs deletions:
 
 ```go
 rootCmd.PersistentFlags().BoolVarP(&executeFlag, "execute", "e", false,
-    "Actually delete files (default is dry-run)")
+    "execute deletions; without this flag runs as a dry-run preview")
 ```
 
 ### `internal/cleaner/`
 
 This is the heart of the project. Each file in this package implements the `Cleaner` interface for a specific category. Implementations are self-contained: they know which paths to scan, how to calculate sizes, and how to safely delete their targets.
 
-Shared filesystem utilities (directory walking, size aggregation) live in `utils.go` and are used internally across implementations.
+Shared filesystem utilities (directory walking, size aggregation) live in `utils.go` and are used internally across implementations. Cleaners that shell out to external tools (e.g. `docker` for `docker.go`, `tmutil` for `time_machine.go`) gracefully degrade to an empty scan result when the tool is absent, so the TUI and the non-interactive commands remain usable on any Mac.
+
+### `internal/commands/`
+
+This package contains the reusable orchestration logic that both the Cobra subcommands and (increasingly) the TUI depend on. It exists so that the same behavior — argument parsing, category filtering, parallel scan fan-out, JSON/CSV shaping, sequential clean execution, error aggregation — is implemented exactly once.
+
+- `scan.go` — runs `Scan` across the registry concurrently using a `sync.WaitGroup`, then produces a `ScanCategoryResult` per category. Supports `Detailed` mode (which includes the full `[]FileEntry` list) and JSON/CSV writers.
+- `scan_input.go` — normalizes user-provided category arguments against the registry and returns a filtered subset (or a helpful error listing valid categories).
+- `clean.go` — runs `Clean` sequentially, aggregating per-category results into a single `CleanResult` structure suitable for the CLI or TUI summary.
 
 ### `internal/tui/`
 
@@ -204,7 +277,36 @@ The TUI is built on [BubbleTea](https://github.com/charmbracelet/bubbletea), whi
 
 The root model is `App` in `app.go`. It holds the current screen state, all screen sub-models, and the cleaner registry. Screen transitions happen inside the `Update` method based on keyboard messages and async results.
 
-Individual screens (`screens/`) are separate structs that expose a `View()` string and handler methods, but they do **not** implement `tea.Model` themselves — `App` owns the entire update loop and delegates to the appropriate screen based on `currentScreen`.
+Individual screens (`screens/`) are separate structs that expose a `View()` string and handler methods, but they do **not** implement `tea.Model` themselves — `App` owns the entire update loop and delegates to the appropriate screen based on `currentScreen`. Lipgloss styles, the logo and the tagline live in `internal/tui/styles/` so they can be reused by both the TUI and the CLI output (e.g. `list categories`, `stats`).
+
+### `internal/history/`
+
+`history` owns the persistent cleanup-run record stored at `~/.tidymymac/history.json`. It exposes:
+
+- `Load()` — read or create the history file.
+- `Append(run)` — append a new run after a successful cleanup.
+- `Stats(record)` / `StatsByCategory(record, category)` — reduce the record into an `AllTimeStats` structure (total runs, total files, total bytes, average, last run).
+
+The `history` and `stats` CLI commands and the TUI summary screen all consume this package; no other layer reads or writes the history file directly.
+
+### `internal/explain/`
+
+The `explain` command composes read-only information from multiple cleaners into a higher-level "storage profile" (today: `system-data`). Key types:
+
+- `Profile` — a profile identifier plus `DisplayName()`.
+- `Registry` / `ProfileDefinition` — maps a profile to the contributors that feed into it.
+- `Contributor` — a per-category adapter that produces narrative data for a profile (e.g. how Xcode and Docker contribute to "System Data").
+- `ResolveProfile`, `RunProfile`, `FormatProfileResult` — public entry points used by `cmd/explain.go`.
+
+Because contributors are read-only, `explain` never deletes anything and never needs the `--execute` flag.
+
+### `internal/scriptgen/`
+
+`scriptgen` takes a detailed `ScanResult` (or set of results) and produces a self-contained shell script that the user can review and run manually. This powers `scan --generate-script` and lets users decouple reviewing from executing: the script embeds the exact paths found, so there is no re-scan between preview and delete.
+
+### `internal/buildinfo/`
+
+A tiny package holding `Version`, `Commit`, `Date` variables populated at build time via `-ldflags`. `cmd/version.go` reads these to render the output of `tidymymac version`. Isolated into its own package so both the CLI and any tests can access it without pulling in Cobra.
 
 ### `pkg/utils/`
 
@@ -283,7 +385,11 @@ flowchart LR
     subgraph internal/cleaner
         CI[Cleaner Interface]
         REG[Registry]
-        IMPL[Implementations\ncaches · docker · homebrew\nlogs · temp · trash · ios · updates]
+        IMPL[Implementations\ncaches · docker · homebrew · logs\ntemp · trash · ios-backups · updates\nxcode · development-artifacts · time-machine]
+    end
+
+    subgraph internal/commands
+        CMDS[Scan / Clean orchestration\nfan-out · aggregation · JSON/CSV]
     end
 
     subgraph internal/tui
@@ -298,19 +404,26 @@ flowchart LR
     end
 
     CLI[cmd/ Cobra CLI]
+    HIST[(internal/history\n~/.tidymymac/history.json)]
 
     CLI -->|"NewApp(execute)"| APP
+    CLI -->|scan/clean subcommands| CMDS
+    CMDS --> REG
     APP -->|"DefaultRegistry()"| REG
     REG --> IMPL
     IMPL -->|Scan| FS
     FS -->|FileEntry| IMPL
+    IMPL -->|ScanResult| CMDS
     IMPL -->|ScanResult| APP
     APP --> DASH
     APP --> SCAN
     APP --> REV
     APP -->|"entries + dryRun"| CLEAN
     IMPL -->|CleanResult| APP
+    IMPL -->|CleanResult| CMDS
     APP --> SUM
+    APP --> HIST
+    CLI --> HIST
 ```
 
 ---
@@ -389,11 +502,15 @@ func (x *XcodeCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bo
 }
 ```
 
-**2. Add the category constant**
+**2. Add the category constant and display name**
 
 ```go
 // internal/cleaner/category.go
 const CategoryXcode Category = "xcode"
+
+// and in DisplayName():
+case CategoryXcode:
+    return "Xcode"
 ```
 
 **3. Register it in `DefaultRegistry()`**
@@ -402,4 +519,4 @@ const CategoryXcode Category = "xcode"
 r.Register(NewXcodeCleaner())
 ```
 
-The TUI, dashboard, scanning screen, and review screen will all pick it up automatically — no changes required elsewhere.
+The TUI (dashboard, scanning, review, cleaning, summary), the non-interactive `scan`/`clean` commands, `list categories`, and `stats <category>` will all pick it up automatically — no changes required elsewhere. If the new category should also participate in a higher-level `explain` profile, add a `Contributor` in `internal/explain/contributors.go` and wire it into the relevant `ProfileDefinition`.

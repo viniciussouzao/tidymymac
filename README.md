@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.png" width="700"/>
+  <img src="docs/images/tidymymac.png" width="700" alt="TidyMyMac"/>
 </p>
 
 <h1 align="center">🧹 TidyMyMac</h1>
@@ -71,6 +71,18 @@ tidymymac
 # Actually delete the selected files
 tidymymac --execute
 ```
+
+### TUI Demo
+
+<p align="center">
+  <img src="docs/images/tui-demo.gif" width="900" alt="TidyMyMac TUI demo"/>
+</p>
+
+### CLI Demo
+
+<p align="center">
+  <img src="docs/images/cli-demo.gif" width="900" alt="TidyMyMac CLI demo"/>
+</p>
 
 ### 📋 Commands
 

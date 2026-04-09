@@ -19,6 +19,16 @@
 - Generate shell cleanup scripts from scan results
 - Target specific categories in any command
 
+## Why TidyMyMac?
+
+macOS can accumulate large amounts of storage in places that are hard to inspect, especially caches, developer artifacts, logs, and vague categories like “System Data”.
+
+TidyMyMac was built to make cleanup transparent and safe:
+- inspect first
+- review before deleting
+- dry-run by default
+- stay fully terminal-native
+
 ### Cleaners
 
 | Category | What it targets |

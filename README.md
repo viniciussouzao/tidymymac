@@ -40,6 +40,7 @@ TidyMyMac was built to make cleanup transparent and safe:
 | Docker Artifacts | Stopped containers, untagged images, orphaned volumes |
 | iOS Backups | iPhone/iPad backups in `~/Library/Application Support/MobileSync/Backup` |
 | macOS Updates | Old macOS update residues and installers |
+| Downloads | Installer files (`.dmg`, `.pkg`) and large items in `~/Downloads` |
 | Xcode | DerivedData, archives, simulators |
 | Development Artifacts | Go build cache and downloaded module cache |
 | Time Machine Snapshots | Local Time Machine snapshots stored on disk |

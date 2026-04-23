@@ -15,6 +15,7 @@ func TestCategoryDisplayName(t *testing.T) {
 		{CategoryDocker, "Docker"},
 		{CategoryIOSBackups, "iOS Backups"},
 		{CategoryUpdates, "macOS Updates"},
+		{CategoryDownloads, "Downloads"},
 		{CategoryTrashBin, "Trash Files"},
 		{CategoryXcode, "Xcode"},
 	}

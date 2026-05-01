@@ -197,3 +197,57 @@ func createTempFile(t *testing.T, dir, name string, size int) string {
 	}
 	return path
 }
+
+// createSparseFile creates a sparse file reporting the given logical size via stat without allocating disk blocks.
+func createSparseFile(t *testing.T, dir, name string, size int64) string {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	defer f.Close()
+
+	if err := f.Truncate(size); err != nil {
+		t.Fatalf("failed to truncate file: %v", err)
+	}
+
+	return path
+}
+
+// createAllocatedFile creates a file with fully written content so du reports the actual size.
+func createAllocatedFile(t *testing.T, dir, name string, size int64) string {
+	t.Helper()
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("failed to create dir: %v", err)
+	}
+
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	defer f.Close()
+
+	chunk := make([]byte, 1024*1024)
+	remaining := size
+	for remaining > 0 {
+		writeSize := int64(len(chunk))
+		if remaining < writeSize {
+			writeSize = remaining
+		}
+
+		if _, err := f.Write(chunk[:writeSize]); err != nil {
+			t.Fatalf("failed to write file: %v", err)
+		}
+		remaining -= writeSize
+	}
+
+	return path
+}

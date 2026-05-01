@@ -86,7 +86,7 @@ func (c *TrashCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*
 			if isDir {
 				// Compute directory size to present accurate savings.
 				var dirSize int64
-				dirSize, err := getPathSize(path, ctx)
+				dirSize, err := getPathSize(ctx, path)
 				if err != nil {
 					result.Errors = append(result.Errors, err)
 					continue

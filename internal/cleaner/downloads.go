@@ -80,7 +80,7 @@ func (c *DownloadsCleaner) Scan(ctx context.Context, progress func(ScanProgress)
 		isDir := info.IsDir()
 		size := info.Size()
 		if isDir {
-			size, err = getPathSize(path, ctx)
+			size, err = getPathSize(ctx, path)
 			if err != nil {
 				result.Errors = append(result.Errors, err)
 				continue

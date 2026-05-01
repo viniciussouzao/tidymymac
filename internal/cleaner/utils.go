@@ -54,7 +54,7 @@ func parseDockerSize(s string) int64 {
 	return int64(val * float64(multiplier))
 }
 
-func getPathSize(path string, ctx context.Context) (int64, error) {
+func getPathSize(ctx context.Context, path string) (int64, error) {
 	if ctx.Err() != nil {
 		return 0, ctx.Err()
 	}

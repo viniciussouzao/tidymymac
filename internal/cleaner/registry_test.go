@@ -85,6 +85,7 @@ func TestDefaultRegistryHasAllCleaners(t *testing.T) {
 		CategoryIOSBackups,
 		CategoryUpdates,
 		CategoryDownloads,
+		CategoryAppOrphans,
 		CategoryTrashBin,
 		CategoryXcode,
 		CategoryTimeMachineSnapshots,

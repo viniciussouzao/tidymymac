@@ -16,6 +16,7 @@ import (
 var appOrphanLibraryDirs = []string{
 	"Application Support",
 	"Caches",
+	"Containers",
 	"Preferences",
 	"Logs",
 	"Saved Application State",
@@ -260,7 +261,6 @@ func defaultAppSearchRoots(homeDir string) []string {
 	if homeDir != "" {
 		roots = append(roots, filepath.Join(homeDir, "Applications"))
 	}
-	roots = append(roots, "/System/Applications")
 	return roots
 }
 

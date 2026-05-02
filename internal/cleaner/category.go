@@ -15,6 +15,7 @@ const (
 	CategoryDevelopmentArtifacts Category = "development-artifacts"
 	CategoryTimeMachineSnapshots Category = "time-machine"
 	CategoryDownloads            Category = "downloads"
+	CategoryAppOrphans           Category = "app-orphans"
 )
 
 func (c Category) DisplayName() string {
@@ -43,6 +44,8 @@ func (c Category) DisplayName() string {
 		return "Time Machine Snapshots"
 	case CategoryDownloads:
 		return "Downloads"
+	case CategoryAppOrphans:
+		return "App Orphans"
 	default:
 		return string(c)
 	}

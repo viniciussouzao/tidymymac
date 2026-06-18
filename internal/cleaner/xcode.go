@@ -48,6 +48,7 @@ func (c *XcodeCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*
 		filepath.Join(c.homeDir, "Library", "Developer", "Xcode", "Archives"),
 		filepath.Join(c.homeDir, "Library", "Developer", "Xcode", "iOS DeviceSupport"),
 		filepath.Join(c.homeDir, "Library", "Developer", "CoreSimulator", "Caches"),
+		filepath.Join(c.homeDir, "Library", "Developer", "CoreSimulator", "Devices"),
 	}
 
 	for _, root := range paths {

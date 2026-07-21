@@ -1,0 +1,55 @@
+# golangci-lint configuration for TidyMyMac
+# Run: golangci-lint run ./...   (auto-fix: golangci-lint run --fix ./...)
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck      # no silently ignored errors — a project invariant
+    - govet         # go vet, already part of the PR checklist
+    - staticcheck   # correctness + simplification
+    - ineffassign   # ineffectual assignments
+    - unused        # dead code
+    - unconvert     # redundant type conversions
+    - misspell      # spelling in comments/strings
+    - bodyclose     # unclosed HTTP bodies
+    - revive        # style + exported-symbol doc comments
+    - gocritic      # opinionated correctness/perf/style checks
+  settings:
+    revive:
+      # Note: the `exported` rule (GoDoc on every exported symbol) is intentionally
+      # NOT enabled — it flags every interface-implementation method (Category(),
+      # Name(), ...) where the Cleaner interface already documents the contract.
+      # GoDoc on genuinely new exported API is enforced via code review and the
+      # PR checklist instead.
+      rules:
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: unreachable-code
+    errcheck:
+      # We rely on os.UserHomeDir()'s zero-value fallback in constructors;
+      # everything else must be checked.
+      check-type-assertions: true
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    rules:
+      # Tests may ignore errors from helpers and skip exported-doc rules.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - revive
+          - gocritic
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/viniciussouzao/tidymymac

@@ -105,6 +105,11 @@ var (
 			Italic(true).
 			Underline(true)
 
+	HealthBox = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#626262")).
+			Padding(0, 1)
+
 	Logo = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#FF6B6B")).
 		Bold(true)

@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
+	"github.com/viniciussouzao/tidymymac/pkg/sysinfo"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -34,6 +35,9 @@ type DashboardModel struct {
 	DiskTotal  int64
 	DiskUsed   int64
 	ShowAll    bool // when false, only show categories that have been scanned and have size > 0
+
+	HealthInfo      *sysinfo.Info // nil until gathered
+	HealthGathering bool          // true from NewDashboard() until SetHealthInfo is called
 }
 
 // NewDashboard initializes the dashboard with all categories and default values
@@ -57,7 +61,15 @@ func NewDashboard() DashboardModel {
 		m.DiskUsed = used
 	}
 
+	m.HealthGathering = true
+
 	return m
+}
+
+// SetHealthInfo stores the result of an async sysinfo.Gather call.
+func (m *DashboardModel) SetHealthInfo(info sysinfo.Info) {
+	m.HealthInfo = &info
+	m.HealthGathering = false
 }
 
 // DashboardMsg handles messages from the dashboard, such as when the user presses enter to start scanning selected categories
@@ -212,6 +224,10 @@ func (m DashboardModel) View() string {
 			styles.Muted.Render(fmt.Sprintf("%s used of %s (%d%%) | %s free",
 				utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct, utils.FormatBytes(m.DiskTotal-m.DiskUsed)))))
 	}
+
+	// Machine health summary
+	b.WriteString(renderHealthBlock(m.HealthInfo, m.HealthGathering))
+	b.WriteString("\n\n")
 
 	// Title and instructions
 	b.WriteString(styles.Plain.Render("Review and select categories to clean"))

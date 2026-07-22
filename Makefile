@@ -24,6 +24,9 @@ test:
 run: build
 	./$(BINARY_PATH)
 
+run-execute: build
+	./$(BINARY_PATH) --execute
+
 clean:
 	rm -rf bin	
 

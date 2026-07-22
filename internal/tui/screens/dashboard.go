@@ -34,7 +34,8 @@ type DashboardModel struct {
 	Height     int
 	DiskTotal  int64
 	DiskUsed   int64
-	ShowAll    bool // when false, only show categories that have been scanned and have size > 0
+	ShowAll    bool   // when false, only show categories that have been scanned and have size > 0
+	Notice     string // transient validation message (e.g. nothing selected on enter); cleared on the next key press
 
 	HealthInfo      *sysinfo.Info // nil until gathered
 	HealthGathering bool          // true from NewDashboard() until SetHealthInfo is called
@@ -79,6 +80,7 @@ type DashboardMsg struct {
 
 func (m DashboardModel) HandleKey(keyStr, keyType string) (DashboardModel, interface{}) {
 	visible := m.visibleIndices()
+	m.Notice = ""
 
 	switch {
 	case keyType == "up" || keyType == "k":
@@ -123,6 +125,10 @@ func (m DashboardModel) HandleKey(keyStr, keyType string) (DashboardModel, inter
 			if m.Categories[idx].Selected {
 				selected = append(selected, m.Categories[idx].ID)
 			}
+		}
+		if len(selected) == 0 {
+			m.Notice = "Select at least one category with space before scanning"
+			return m, nil
 		}
 		return m, DashboardMsg{Selected: selected}
 	}
@@ -325,6 +331,11 @@ func (m DashboardModel) View() string {
 			"  space: toggle  a: select all  %s  r: re-run  q: quit",
 			viewToggleLabel,
 		)))
+	}
+
+	if m.Notice != "" {
+		b.WriteString(styles.Warning.Render("  " + m.Notice))
+		b.WriteString("\n")
 	}
 
 	healthBlock := renderHealthBlock(m.HealthInfo, m.HealthGathering)

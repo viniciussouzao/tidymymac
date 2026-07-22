@@ -4,53 +4,54 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/sysinfo"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
-// renderHealthBlock renders the machine health info box (OS, chip, memory,
-// and battery when running on a laptop). Unknown fields render as a dimmed
-// "unknown" rather than being omitted, except for battery which is only
-// shown at all when the host is known to be a laptop.
+// renderHealthBlock renders a single dimmed context line summarizing the
+// machine (OS, chip, memory, and battery when running on a laptop). It sits
+// near the top of the dashboard, framing the category list below it, rather
+// than competing for attention as an actionable element. Unknown fields
+// render as "unknown ..." rather than being silently omitted, except for
+// battery which is only shown at all when the host is known to be a laptop.
 func renderHealthBlock(info *sysinfo.Info, gathering bool) string {
 	if gathering || info == nil {
-		return styles.HealthBox.Render(styles.Dim.Render("Gathering machine info..."))
+		return styles.Muted.Render("Gathering machine info...")
 	}
 
-	var lines []string
+	var parts []string
 
 	if osInfo := formatOSInfo(*info); info.OSVersionKnown && osInfo != "" {
-		lines = append(lines, "OS: "+osInfo)
+		parts = append(parts, osInfo)
 	} else {
-		lines = append(lines, "OS: "+styles.Dim.Render("unknown"))
+		parts = append(parts, "unknown OS")
 	}
 
 	if info.ChipKnown {
-		lines = append(lines, fmt.Sprintf("Chip: %s", info.ChipModel))
+		parts = append(parts, info.ChipModel)
 	} else {
-		lines = append(lines, "Chip: "+styles.Dim.Render("unknown"))
+		parts = append(parts, "unknown chip")
 	}
 
 	if info.MemoryKnown {
-		lines = append(lines, fmt.Sprintf("Memory: %s", utils.FormatBytes(info.TotalMemory)))
+		parts = append(parts, utils.FormatBytes(info.TotalMemory))
 	} else {
-		lines = append(lines, "Memory: "+styles.Dim.Render("unknown"))
+		parts = append(parts, "unknown memory")
 	}
 
 	if info.IsLaptop {
 		switch {
 		case info.BatteryKnown && info.CycleCountKnown:
-			lines = append(lines, fmt.Sprintf("Battery: %d%% (%d cycles)", info.BatteryPercent, info.CycleCount))
+			parts = append(parts, fmt.Sprintf("Battery %d%% (%d cycles)", info.BatteryPercent, info.CycleCount))
 		case info.BatteryKnown:
-			lines = append(lines, fmt.Sprintf("Battery: %d%%", info.BatteryPercent))
+			parts = append(parts, fmt.Sprintf("Battery %d%%", info.BatteryPercent))
 		default:
-			lines = append(lines, "Battery: "+styles.Dim.Render("unknown"))
+			parts = append(parts, "unknown battery")
 		}
 	}
 
-	return styles.HealthBox.Render(strings.Join(lines, "\n"))
+	return styles.Muted.Render(strings.Join(parts, " · "))
 }
 
 func formatOSInfo(info sysinfo.Info) string {
@@ -70,22 +71,4 @@ func formatOSInfo(info sysinfo.Info) string {
 		return fmt.Sprintf("(%s)", info.OSBuild)
 	}
 	return fmt.Sprintf("%s (%s)", formatted, info.OSBuild)
-}
-
-// composeWithHealthPanel places the health block in the top-right corner of
-// the screen, to the right of the main content, when the terminal is wide
-// enough for both. Below that threshold (or when the width isn't known yet,
-// e.g. before the first tea.WindowSizeMsg) it falls back to stacking the
-// health block underneath the main content, since squeezing a fixed-width
-// side panel into a narrow terminal would just wrap/clip the category list.
-func composeWithHealthPanel(left, health string, totalWidth int) string {
-	leftWidth := lipgloss.Width(left)
-	healthWidth := lipgloss.Width(health)
-
-	if totalWidth <= 0 || totalWidth < leftWidth+healthWidth+2 {
-		return left + "\n\n" + health + "\n"
-	}
-
-	gap := strings.Repeat(" ", totalWidth-leftWidth-healthWidth)
-	return lipgloss.JoinHorizontal(lipgloss.Top, left, gap, health)
 }

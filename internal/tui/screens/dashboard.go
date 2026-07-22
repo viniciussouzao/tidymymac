@@ -231,6 +231,10 @@ func (m DashboardModel) View() string {
 				utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct, utils.FormatBytes(m.DiskTotal-m.DiskUsed)))))
 	}
 
+	// Machine health summary
+	b.WriteString(renderHealthBlock(m.HealthInfo, m.HealthGathering))
+	b.WriteString("\n\n")
+
 	// Title and instructions
 	b.WriteString(styles.Plain.Render("Review and select categories to clean"))
 	b.WriteString("\n\n")
@@ -338,8 +342,7 @@ func (m DashboardModel) View() string {
 		b.WriteString("\n")
 	}
 
-	healthBlock := renderHealthBlock(m.HealthInfo, m.HealthGathering)
-	return composeWithHealthPanel(b.String(), healthBlock, m.Width)
+	return b.String()
 }
 
 func (m *DashboardModel) SetSize(w, d int) {

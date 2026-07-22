@@ -21,8 +21,8 @@ func renderHealthBlock(info *sysinfo.Info, gathering bool) string {
 
 	var lines []string
 
-	if info.OSVersionKnown {
-		lines = append(lines, fmt.Sprintf("OS: %s %s (%s)", info.OSName, info.OSVersion, info.OSBuild))
+	if osInfo := formatOSInfo(*info); info.OSVersionKnown && osInfo != "" {
+		lines = append(lines, "OS: "+osInfo)
 	} else {
 		lines = append(lines, "OS: "+styles.Dim.Render("unknown"))
 	}
@@ -51,6 +51,25 @@ func renderHealthBlock(info *sysinfo.Info, gathering bool) string {
 	}
 
 	return styles.HealthBox.Render(strings.Join(lines, "\n"))
+}
+
+func formatOSInfo(info sysinfo.Info) string {
+	parts := make([]string, 0, 2)
+	if info.OSName != "" {
+		parts = append(parts, info.OSName)
+	}
+	if info.OSVersion != "" {
+		parts = append(parts, info.OSVersion)
+	}
+
+	formatted := strings.Join(parts, " ")
+	if info.OSBuild == "" {
+		return formatted
+	}
+	if formatted == "" {
+		return fmt.Sprintf("(%s)", info.OSBuild)
+	}
+	return fmt.Sprintf("%s (%s)", formatted, info.OSBuild)
 }
 
 // composeWithHealthPanel places the health block in the top-right corner of

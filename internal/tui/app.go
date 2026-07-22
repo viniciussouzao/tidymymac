@@ -13,6 +13,7 @@ import (
 	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
+	"github.com/viniciussouzao/tidymymac/pkg/sysinfo"
 )
 
 type screen int
@@ -39,6 +40,10 @@ type cleanCompleteMsg struct {
 
 type cleanProgressMsg struct {
 	progress cleaner.CleanProgress
+}
+
+type healthInfoMsg struct {
+	info sysinfo.Info
 }
 
 // App is the root bubbletea model that manages screens transitions
@@ -94,6 +99,7 @@ func NewApp(execute bool) App {
 func (a App) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		a.spinner.Tick,
+		gatherHealthInfoCmd(a.ctx),
 	}
 
 	for _, c := range a.registry.All() {
@@ -114,6 +120,12 @@ func scanCategoryCmd(ctx context.Context, c cleaner.Cleaner) tea.Cmd {
 			result:   result,
 			err:      err,
 		}
+	}
+}
+
+func gatherHealthInfoCmd(ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		return healthInfoMsg{info: sysinfo.Gather(ctx)}
 	}
 }
 
@@ -139,6 +151,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case scanCompleteMsg:
 		return a.handleScanComplete(msg)
+
+	case healthInfoMsg:
+		a.dashboard.SetHealthInfo(msg.info)
+		return a, nil
 
 	case cleanCompleteMsg:
 		return a.handleCleanComplete(msg)
@@ -360,7 +376,7 @@ func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.currentScreen = screenDashboard
 
 		// Re-scan all categories
-		cmds := []tea.Cmd{a.spinner.Tick}
+		cmds := []tea.Cmd{a.spinner.Tick, gatherHealthInfoCmd(a.ctx)}
 		for _, c := range a.registry.All() {
 			a.dashboard.SetCategoryScanning(string(c.Category()))
 			cmds = append(cmds, scanCategoryCmd(a.ctx, c))

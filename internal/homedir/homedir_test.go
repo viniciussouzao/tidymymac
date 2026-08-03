@@ -90,7 +90,10 @@ func TestResolve_ElevatedWithLookupErrorFallsBackToUserHomeDir(t *testing.T) {
 func TestIsElevatedWithoutSudoUser_NotElevated(t *testing.T) {
 	got := isElevatedWithoutSudoUser(
 		func() int { return 501 },
-		func(string) (*user.User, error) { t.Fatal("lookupUser should not be called when not elevated"); return nil, nil },
+		func(string) (*user.User, error) {
+			t.Fatal("lookupUser should not be called when not elevated")
+			return nil, nil
+		},
 		func(string) string { t.Fatal("getenv should not be called when not elevated"); return "" },
 	)
 	if got {
@@ -117,7 +120,10 @@ func TestIsElevatedWithoutSudoUser_ElevatedWithValidSudoUser(t *testing.T) {
 func TestIsElevatedWithoutSudoUser_ElevatedWithMissingSudoUser(t *testing.T) {
 	got := isElevatedWithoutSudoUser(
 		func() int { return 0 },
-		func(string) (*user.User, error) { t.Fatal("lookupUser should not be called without SUDO_USER"); return nil, nil },
+		func(string) (*user.User, error) {
+			t.Fatal("lookupUser should not be called without SUDO_USER")
+			return nil, nil
+		},
 		func(string) string { return "" },
 	)
 	if !got {

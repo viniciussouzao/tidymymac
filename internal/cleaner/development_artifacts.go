@@ -64,24 +64,34 @@ func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(Sc
 	result := &ScanResult{Category: CategoryDevelopmentArtifacts}
 
 	goCachePath, _ := c.goEnv(ctx, "GOCACHE")
-	goPath, _ := c.goEnv(ctx, "GOPATH")
+	goModCache, _ := c.goEnv(ctx, "GOMODCACHE")
 
-	// If GOCACHE or GOPATH are not set, use defaults.
+	// If GOCACHE is not set, use the default.
 	if goCachePath == "" {
 		goCachePath = filepath.Join(c.homeDir, "Library", "Caches", "go-build")
 	} else {
 		goCachePath = normalizeGoEnvPath(goCachePath)
 	}
 
-	if goPath == "" {
-		goPath = filepath.Join(c.homeDir, "go")
+	// Clean runs "go clean -modcache", which clears the effective GOMODCACHE
+	// -- so that is the directory the scan must enumerate. Only when "go env"
+	// is unavailable, derive it from GOPATH the way Go itself defaults it
+	// (GOPATH[0]/pkg/mod).
+	if goModCache == "" {
+		goPath, _ := c.goEnv(ctx, "GOPATH")
+		if goPath == "" {
+			goPath = filepath.Join(c.homeDir, "go")
+		} else {
+			goPath = normalizeGoEnvPath(goPath)
+		}
+		goModCache = filepath.Join(goPath, "pkg", "mod")
 	} else {
-		goPath = normalizeGoEnvPath(goPath)
+		goModCache = normalizeGoEnvPath(goModCache)
 	}
 
-	paths := []string{
-		goCachePath,
-		filepath.Join(goPath, "pkg", "mod"),
+	paths := []string{goCachePath}
+	if goModCache != goCachePath {
+		paths = append(paths, goModCache)
 	}
 
 	for _, root := range paths {

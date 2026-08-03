@@ -21,10 +21,10 @@ type wholeDomainMockCleaner struct {
 }
 
 func (m *wholeDomainMockCleaner) Category() cleaner.Category { return m.category }
-func (m *wholeDomainMockCleaner) Name() string                { return "Mock Whole Domain" }
-func (m *wholeDomainMockCleaner) Description() string         { return "mock" }
-func (m *wholeDomainMockCleaner) RequiresSudo() bool           { return false }
-func (m *wholeDomainMockCleaner) DeletesWholeDomain() bool     { return true }
+func (m *wholeDomainMockCleaner) Name() string               { return "Mock Whole Domain" }
+func (m *wholeDomainMockCleaner) Description() string        { return "mock" }
+func (m *wholeDomainMockCleaner) RequiresSudo() bool         { return false }
+func (m *wholeDomainMockCleaner) DeletesWholeDomain() bool   { return true }
 
 func (m *wholeDomainMockCleaner) Scan(_ context.Context, _ func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
 	return &cleaner.ScanResult{Category: m.category}, nil

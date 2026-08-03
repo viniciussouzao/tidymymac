@@ -45,10 +45,12 @@ func (c *TrashCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*
 	start := time.Now()
 	result := &ScanResult{Category: CategoryTrashBin}
 
-	// Candidate trash locations:
+	// Scanned trash locations:
 	// - ~/.Trash (boot volume)
 	// - iCloud Drive Trash (if present): ~/Library/Mobile Documents/com~apple~CloudDocs/.Trash
-	// - /Volumes/*/.Trashes/<uid> (external/removable volumes)
+	// External/removable volumes (/Volumes/*/.Trashes/<uid>) are intentionally
+	// out of scope for the scan; note that the no-FDA Finder fallback in Clean
+	// may still affect them (see the comment there).
 	roots := []string{filepath.Join(c.homeDir, ".Trash")}
 
 	// iCloud Drive Trash
@@ -165,6 +167,11 @@ func (c *TrashCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bo
 	if !hasAccess.FullDiskAccess {
 		// If we don't have Full Disk Access, we use osascript to empty the Trash as a fallback.
 		// In tradeoff, we won't be able to report progress or handle individual entry errors, but at least we can attempt to free up space.
+		// Finder's "empty trash" is global to the user's Trash and may also
+		// remove trashed items on external volumes that the scan does not
+		// enumerate. This is an accepted residual risk: protected_paths cannot
+		// see (and therefore cannot block) items outside the scanned scope --
+		// within it, DeletesWholeDomain already forces a category skip.
 		cmd := exec.CommandContext(ctx, "osascript", "-e", `tell application "Finder" to empty trash with security`)
 		err := cmd.Run()
 		if err != nil {

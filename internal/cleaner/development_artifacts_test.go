@@ -98,6 +98,98 @@ func TestDevelopmentArtifactsCleanerScanFindsGoTargets(t *testing.T) {
 	}
 }
 
+// TestDevelopmentArtifactsCleanerScanUsesGoModCache verifies that the scan
+// enumerates the effective GOMODCACHE -- the directory "go clean -modcache"
+// actually clears -- rather than inferring GOPATH/pkg/mod, so protected
+// paths inside a custom GOMODCACHE are seen and can trigger the
+// whole-domain category skip.
+func TestDevelopmentArtifactsCleanerScanUsesGoModCache(t *testing.T) {
+	dir := t.TempDir()
+	goCacheDir := filepath.Join(dir, "go-cache")
+	goModCacheDir := filepath.Join(dir, "custom-modcache")
+	inferredModDir := filepath.Join(dir, "gopath", "pkg", "mod")
+
+	for _, d := range []string{goCacheDir, goModCacheDir, inferredModDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	createTempFile(t, goCacheDir, "build-cache", 128)
+	realModFile := createTempFile(t, goModCacheDir, "module.zip", 512)
+	createTempFile(t, inferredModDir, "stale-module.zip", 1024)
+
+	c := &DevelopmentArtifactsCleaner{
+		homeDir: dir,
+		goEnv: func(_ context.Context, key string) (string, error) {
+			switch key {
+			case "GOCACHE":
+				return goCacheDir, nil
+			case "GOMODCACHE":
+				return goModCacheDir, nil
+			case "GOPATH":
+				return filepath.Join(dir, "gopath"), nil
+			}
+			return "", nil
+		},
+	}
+
+	result, err := c.Scan(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	if result.TotalFiles != 2 {
+		t.Fatalf("TotalFiles = %d, want 2 (GOCACHE + GOMODCACHE only)", result.TotalFiles)
+	}
+	foundReal := false
+	for _, entry := range result.Entries {
+		if entry.Path == realModFile {
+			foundReal = true
+		}
+		if filepath.Dir(entry.Path) == inferredModDir {
+			t.Errorf("scan must not enumerate the inferred GOPATH/pkg/mod when GOMODCACHE is set, got %q", entry.Path)
+		}
+	}
+	if !foundReal {
+		t.Error("expected the file inside the custom GOMODCACHE to be scanned")
+	}
+}
+
+// TestDevelopmentArtifactsCleanerScanDedupesEqualRoots verifies that when
+// GOMODCACHE resolves to the same directory as GOCACHE, its files are not
+// counted twice.
+func TestDevelopmentArtifactsCleanerScanDedupesEqualRoots(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "shared-cache")
+	if err := os.MkdirAll(shared, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createTempFile(t, shared, "cache.bin", 256)
+
+	c := &DevelopmentArtifactsCleaner{
+		homeDir: dir,
+		goEnv: func(_ context.Context, key string) (string, error) {
+			switch key {
+			case "GOCACHE", "GOMODCACHE":
+				return shared, nil
+			}
+			return "", nil
+		},
+	}
+
+	result, err := c.Scan(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+	if result.TotalFiles != 1 {
+		t.Errorf("TotalFiles = %d, want 1 (equal roots must be deduplicated)", result.TotalFiles)
+	}
+	if result.TotalSize != 256 {
+		t.Errorf("TotalSize = %d, want 256", result.TotalSize)
+	}
+}
+
 func TestDevelopmentArtifactsCleanerScanFallsBackToDefaultGoPath(t *testing.T) {
 	dir := t.TempDir()
 	goBuildDir := filepath.Join(dir, "Library", "Caches", "go-build")

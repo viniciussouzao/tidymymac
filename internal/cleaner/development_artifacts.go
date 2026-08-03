@@ -45,6 +45,11 @@ func (c *DevelopmentArtifactsCleaner) Description() string {
 
 func (c *DevelopmentArtifactsCleaner) RequiresSudo() bool { return false }
 
+// DeletesWholeDomain is true: Clean tries "go clean -cache -modcache" first,
+// which is not scoped to the entries it was given, before falling back to a
+// per-entry loop only if that command fails.
+func (c *DevelopmentArtifactsCleaner) DeletesWholeDomain() bool { return true }
+
 // Scan looks for Go build and module caches in known locations.
 func (c *DevelopmentArtifactsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if c.homeDir == "" {

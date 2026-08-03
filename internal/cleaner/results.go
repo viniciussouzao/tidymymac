@@ -9,6 +9,10 @@ type FileEntry struct {
 	IsDir    bool
 	ModTime  time.Time
 	Category Category
+
+	// Protected is set exclusively by internal/config's tagging layer; no
+	// Cleaner.Scan implementation should ever set it.
+	Protected bool
 }
 
 // ScanProgress reports the scanning progress back to the TUI

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
@@ -71,12 +72,16 @@ type App struct {
 	cancel         context.CancelFunc
 	cleanMsgCh     <-chan tea.Msg
 	cleanStartTime time.Time
+	cfg            *config.Config
 
 	// scriptMessage will support the generate-script-only flow.
 }
 
-// NewApp initializes the TUI application with default values and a spinner
-func NewApp(execute bool) App {
+// NewApp initializes the TUI application with default values and a spinner.
+// Categories disabled via cfg.DisabledCategories are excluded from the
+// registry entirely -- the TUI has no equivalent of an explicit CLI category
+// override, so disabled categories simply never appear.
+func NewApp(execute bool, cfg *config.Config) App {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 
@@ -86,12 +91,13 @@ func NewApp(execute bool) App {
 		currentScreen: screenDashboard,
 		executeMode:   execute,
 		dashboard:     screens.NewDashboard(),
-		registry:      cleaner.DefaultRegistry(),
+		registry:      config.FilterRegistry(cleaner.DefaultRegistry(), cfg),
 		scanResults:   make(map[cleaner.Category]*cleaner.ScanResult),
 		spinner:       s,
 		isElevated:    os.Geteuid() == 0,
 		ctx:           ctx,
 		cancel:        cancel,
+		cfg:           cfg,
 	}
 }
 
@@ -192,6 +198,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a App) handleScanComplete(msg scanCompleteMsg) (tea.Model, tea.Cmd) {
 	if msg.result != nil {
+		msg.result.Entries = a.cfg.Tag(msg.result.Entries)
 		a.scanResults[msg.category] = msg.result
 	}
 	a.dashboard.UpdateCategoryResult(string(msg.category), msg.result)
@@ -404,8 +411,21 @@ func (a App) startNextClean() (tea.Model, tea.Cmd) {
 			continue
 		}
 
+		if protected := config.CountProtected(next.Entries); protected > 0 && c.DeletesWholeDomain() {
+			// This cleaner cannot honor a filtered entry list (it shells out
+			// to a command that clears its entire domain), so there's no way
+			// to run it without also deleting protected paths. Skip the
+			// category entirely rather than silently ignoring the protection.
+			a.cleaningScr.SkipCategory(next.Category, fmt.Sprintf("%d protected path(s) found in this category, and %s cannot selectively clean around them.", protected, c.Category().DisplayName()))
+			if a.cleaningScr.Done {
+				return a, nil
+			}
+			continue
+		}
+
 		dryRun := !a.executeMode
-		cmd, msgCh := cleanCategoryStreamCmd(a.ctx, c, next.Entries, dryRun)
+		entries := config.StripProtected(next.Entries)
+		cmd, msgCh := cleanCategoryStreamCmd(a.ctx, c, entries, dryRun)
 		a.cleanMsgCh = msgCh
 		return a, cmd
 	}

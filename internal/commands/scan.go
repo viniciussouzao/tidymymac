@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
 // ScanOptions defines options for the scanning process.
 type ScanOptions struct {
 	Detailed bool
+	Config   *config.Config
 }
 
 // ScanCategoryResult represents the result of scanning a specific category, including metadata and any errors encountered.
@@ -62,7 +64,7 @@ type ScanEvent struct {
 
 // RunScan executes the scanning process for the specified categories and returns a ScanResult summarizing the findings.
 func RunScan(ctx context.Context, registry *cleaner.Registry, selected []string, opts ScanOptions, onEvent func(ScanEvent)) (ScanResult, error) {
-	cleaners, err := resolveCleaners(registry, selected)
+	cleaners, err := resolveCleaners(registry, selected, opts.Config)
 	if err != nil {
 		return ScanResult{}, err
 	}
@@ -103,6 +105,10 @@ func RunScan(ctx context.Context, registry *cleaner.Registry, selected []string,
 					})
 				}
 			})
+
+			if scanErr == nil && scanResult != nil {
+				scanResult.Entries = opts.Config.Tag(scanResult.Entries)
+			}
 
 			item := ScanCategoryResult{
 				Category:    c.Category(),
@@ -167,9 +173,16 @@ func RunScan(ctx context.Context, registry *cleaner.Registry, selected []string,
 }
 
 // resolveCleaners is a helper function that takes a registry of cleaners and a list of selected category strings, and returns a slice of Cleaner instances corresponding to the selected categories.
-func resolveCleaners(registry *cleaner.Registry, selected []string) ([]cleaner.Cleaner, error) {
+// When selected is empty, categories disabled via cfg.DisabledCategories are excluded from the default set;
+// an explicit selection always wins over cfg, since it reflects the user's direct intent.
+func resolveCleaners(registry *cleaner.Registry, selected []string, cfg *config.Config) ([]cleaner.Cleaner, error) {
 	if len(selected) == 0 {
-		return registry.All(), nil
+		all := registry.All()
+		cleaners := config.FilterRegistry(registry, cfg).All()
+		if len(cleaners) == 0 && len(all) > 0 {
+			return nil, fmt.Errorf("all categories are disabled by config; pass explicit categories to override")
+		}
+		return cleaners, nil
 	}
 
 	cleaners := make([]cleaner.Cleaner, 0, len(selected))

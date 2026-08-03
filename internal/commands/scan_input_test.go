@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 )
 
 func TestLoadScanResult_DecodesJSON(t *testing.T) {
@@ -77,7 +78,7 @@ func TestPrepareScanResultForClean_RevalidatesAndSkipsMissing(t *testing.T) {
 		},
 	}
 
-	prepared, err := PrepareScanResultForClean(r, scan, nil)
+	prepared, err := PrepareScanResultForClean(r, scan, nil, nil)
 	if err != nil {
 		t.Fatalf("PrepareScanResultForClean() error: %v", err)
 	}
@@ -105,6 +106,51 @@ func TestPrepareScanResultForClean_RevalidatesAndSkipsMissing(t *testing.T) {
 	}
 }
 
+func TestPrepareScanResultForClean_ReappliesCurrentConfigNotSavedFileState(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "secret.log")
+	if err := os.WriteFile(secret, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() error: %v", err)
+	}
+
+	r := cleaner.NewRegistry()
+	r.Register(&mockCleaner{category: cleaner.Category("temp_files"), name: "Temp Files"})
+
+	// The saved scan file predates protecting `dir`; nothing in it is tagged.
+	scan := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Category:   cleaner.Category("temp_files"),
+				Name:       "Temp Files",
+				TotalFiles: 1,
+				Files: []cleaner.FileEntry{
+					{Path: secret, Size: 1, IsDir: false},
+				},
+			},
+		},
+	}
+
+	cfg, err := config.New([]string{dir}, nil)
+	if err != nil {
+		t.Fatalf("config.New() error: %v", err)
+	}
+
+	prepared, err := PrepareScanResultForClean(r, scan, nil, cfg)
+	if err != nil {
+		t.Fatalf("PrepareScanResultForClean() error: %v", err)
+	}
+
+	// PrepareScanResultForClean tags against the current config but does not
+	// strip -- the hard-block gate (including the DeletesWholeDomain skip
+	// decision) lives solely in runClean, which needs to see the true
+	// protected count. Here we just confirm the now-protected file is
+	// correctly re-tagged rather than trusted from the stale saved file.
+	files := prepared.Result.Categories[0].Files
+	if len(files) != 1 || !files[0].Protected {
+		t.Fatalf("expected the now-protected file to be tagged (not stripped) here, got %+v", files)
+	}
+}
+
 func TestPrepareScanResultForClean_RejectsSummaryOnlyScan(t *testing.T) {
 	r := cleaner.NewRegistry()
 	r.Register(&mockCleaner{category: cleaner.Category("temp_files"), name: "Temp Files"})
@@ -119,7 +165,7 @@ func TestPrepareScanResultForClean_RejectsSummaryOnlyScan(t *testing.T) {
 		},
 	}
 
-	prepared, err := PrepareScanResultForClean(r, scan, nil)
+	prepared, err := PrepareScanResultForClean(r, scan, nil, nil)
 	if err != nil {
 		t.Fatalf("PrepareScanResultForClean() error: %v", err)
 	}
@@ -154,7 +200,7 @@ func TestPrepareScanResultForClean_SkipsTypeChangedEntries(t *testing.T) {
 		},
 	}
 
-	prepared, err := PrepareScanResultForClean(r, scan, nil)
+	prepared, err := PrepareScanResultForClean(r, scan, nil, nil)
 	if err != nil {
 		t.Fatalf("PrepareScanResultForClean() error: %v", err)
 	}

@@ -1,13 +1,39 @@
 package tui
 
 import (
+	"context"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
 )
+
+// wholeDomainMockCleaner is a test double for a Cleaner that cannot honor a
+// filtered entry list (e.g. it shells out to a command that clears its
+// entire domain), used to verify startNextClean skips it when protected
+// paths are present rather than invoking it with a partial list.
+type wholeDomainMockCleaner struct {
+	category    cleaner.Category
+	cleanCalled bool
+}
+
+func (m *wholeDomainMockCleaner) Category() cleaner.Category { return m.category }
+func (m *wholeDomainMockCleaner) Name() string                { return "Mock Whole Domain" }
+func (m *wholeDomainMockCleaner) Description() string         { return "mock" }
+func (m *wholeDomainMockCleaner) RequiresSudo() bool           { return false }
+func (m *wholeDomainMockCleaner) DeletesWholeDomain() bool     { return true }
+
+func (m *wholeDomainMockCleaner) Scan(_ context.Context, _ func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
+	return &cleaner.ScanResult{Category: m.category}, nil
+}
+
+func (m *wholeDomainMockCleaner) Clean(_ context.Context, entries []cleaner.FileEntry, dryRun bool, _ func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	m.cleanCalled = true
+	return &cleaner.CleanResult{Category: m.category, DryRun: dryRun, FilesDeleted: len(entries)}, nil
+}
 
 func TestUpdateReviewRequiresSudoAndExecuteConfirmationsInSequence(t *testing.T) {
 	registry := cleaner.NewRegistry()
@@ -59,5 +85,48 @@ func TestUpdateReviewRequiresSudoAndExecuteConfirmationsInSequence(t *testing.T)
 	}
 	if app.currentScreen != screenCleaning {
 		t.Fatalf("third enter currentScreen = %v, want screenCleaning", app.currentScreen)
+	}
+}
+
+func TestStartNextClean_SkipsWholeDomainCleanerWhenAnyEntryProtected(t *testing.T) {
+	mock := &wholeDomainMockCleaner{category: "cat_a"}
+	registry := cleaner.NewRegistry()
+	registry.Register(mock)
+
+	cfg, err := config.New([]string{"/Users/vini/Secrets"}, nil)
+	if err != nil {
+		t.Fatalf("config.New() error: %v", err)
+	}
+
+	entries := []cleaner.FileEntry{
+		{Path: "/Users/vini/Secrets/file.txt", Size: 100, Category: "cat_a"},
+		{Path: "/Users/vini/Downloads/file.txt", Size: 200, Category: "cat_a"},
+	}
+	entries = cfg.Tag(entries)
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		"cat_a": {Category: "cat_a", TotalFiles: len(entries), TotalSize: 300, Entries: entries},
+	}
+
+	app := App{
+		currentScreen: screenCleaning,
+		executeMode:   true,
+		registry:      registry,
+		cleaningScr:   screens.NewCleaningModel(results, false),
+		cfg:           cfg,
+		ctx:           context.Background(),
+	}
+
+	model, _ := app.startNextClean()
+	app = model.(App)
+
+	if mock.cleanCalled {
+		t.Fatal("a whole-domain cleaner must never be invoked by the TUI when any of its entries are protected")
+	}
+	if !app.cleaningScr.Done {
+		t.Fatal("the single category should have been skipped, leaving nothing pending")
+	}
+	if app.cleaningScr.Categories[0].Status != "skipped" {
+		t.Errorf("Status = %q, want skipped", app.cleaningScr.Categories[0].Status)
 	}
 }

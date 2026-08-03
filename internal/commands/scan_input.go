@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -32,14 +33,17 @@ func LoadScanResult(r io.Reader) (ScanResult, error) {
 // PrepareScanResultForClean takes a ScanResult and prepares it for the cleaning process by revalidating file entries and categorizing them according to the provided registry and selected categories.
 // It returns a PreparedScanResult that includes the original ScanResult along with metadata about the revalidation process, such as the number of revalidated files, missing files, type-changed files, and empty categories.
 // If any errors occur during preparation, they are returned as well.
-func PrepareScanResultForClean(registry *cleaner.Registry, scan ScanResult, selected []string) (PreparedScanResult, error) {
+func PrepareScanResultForClean(registry *cleaner.Registry, scan ScanResult, selected []string, cfg *config.Config) (PreparedScanResult, error) {
 	if len(selected) == 0 {
 		for _, cat := range scan.Categories {
+			if cfg.IsCategoryDisabled(string(cat.Category)) {
+				continue
+			}
 			selected = append(selected, string(cat.Category))
 		}
 	}
 
-	cleaners, err := resolveCleaners(registry, selected)
+	cleaners, err := resolveCleaners(registry, selected, cfg)
 	if err != nil {
 		return PreparedScanResult{}, err
 	}
@@ -84,6 +88,16 @@ func PrepareScanResultForClean(registry *cleaner.Registry, scan ScanResult, sele
 		for i := range revalidated {
 			revalidated[i].Category = item.Category
 		}
+		// Re-tag against the current config rather than trusting anything
+		// from the saved scan file: protected_paths/disabled_categories may
+		// have changed since the file was written. This intentionally does
+		// NOT strip: the actual hard-block gate (including the
+		// DeletesWholeDomain skip decision) lives solely in runClean, which
+		// re-tags and strips these same entries unconditionally before
+		// Clean is ever called. Stripping here too would hide from runClean
+		// how many entries were protected, defeating that check for the
+		// --from-file path.
+		revalidated = cfg.Tag(revalidated)
 		prepared.RevalidatedFiles += len(revalidated)
 		prepared.MissingFiles += missing
 		prepared.TypeChangedFiles += typeChanged
@@ -142,7 +156,7 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 // RunCleanWithScanResult takes a ScanResult, prepares it for cleaning, and then executes the cleaning process while emitting events through the provided onEvent callback.
 // It returns a CleanResult summarizing the outcome of the cleaning operation or an error if any step fails.
 func RunCleanWithScanResult(ctx context.Context, registry *cleaner.Registry, scan ScanResult, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {
-	prepared, err := PrepareScanResultForClean(registry, scan, selected)
+	prepared, err := PrepareScanResultForClean(registry, scan, selected, opts.Config)
 	if err != nil {
 		return CleanResult{}, err
 	}

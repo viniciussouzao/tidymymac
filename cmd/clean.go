@@ -106,6 +106,7 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 	opts := commands.CleanerOptions{
 		Detailed: detailed,
 		DryRun:   dryRun,
+		Config:   loadedConfig,
 	}
 
 	var (
@@ -203,7 +204,7 @@ func executeClean(
 			return commands.CleanResult{}, nil, fmt.Errorf("scan file is %s old; rerun the scan or use --force-stale-scan with --execute", roundAge(age))
 		}
 
-		prepared, prepErr := commands.PrepareScanResultForClean(registry, scanResult, args)
+		prepared, prepErr := commands.PrepareScanResultForClean(registry, scanResult, args, opts.Config)
 		if prepErr != nil {
 			return commands.CleanResult{}, nil, prepErr
 		}
@@ -396,6 +397,7 @@ func (m cleanModel) Init() tea.Cmd {
 				commands.CleanerOptions{
 					Detailed: m.detailed,
 					DryRun:   m.dryRun,
+					Config:   loadedConfig,
 				},
 				func(event commands.CleanEvent) {
 					m.eventCh <- event

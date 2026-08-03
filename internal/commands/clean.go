@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -16,6 +17,7 @@ import (
 type CleanerOptions struct {
 	Detailed bool
 	DryRun   bool
+	Config   *config.Config
 }
 
 // CleanCategoryResult represents the result of cleaning a specific category.
@@ -79,7 +81,7 @@ func RunClean(ctx context.Context, registry *cleaner.Registry, selected []string
 
 // runClean is the internal implementation of the cleaning process, allowing for optional use of a prepared scan result.
 func runClean(ctx context.Context, registry *cleaner.Registry, selected []string, opts CleanerOptions, preparedScan ScanResult, usePreparedScan bool, onEvent func(CleanEvent)) (CleanResult, error) {
-	cleaners, err := resolveCleaners(registry, selected)
+	cleaners, err := resolveCleaners(registry, selected, opts.Config)
 	if err != nil {
 		return CleanResult{}, err
 	}
@@ -114,6 +116,20 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 			scanResult, scanErr := buildCleanScanResult(c, preparedScan, usePreparedScan)
 			if !usePreparedScan {
 				scanResult, scanErr = c.Scan(ctx, nil)
+			}
+
+			if scanErr == nil && scanResult != nil {
+				scanResult.Entries = opts.Config.Tag(scanResult.Entries)
+				if protected := config.CountProtected(scanResult.Entries); protected > 0 && c.DeletesWholeDomain() {
+					// This cleaner cannot honor a filtered entry list (it
+					// shells out to a command that clears its entire
+					// domain), so there's no way to run it without also
+					// deleting protected paths. Skip the category entirely
+					// rather than silently ignoring the protection.
+					scanErr = fmt.Errorf("skipped: %d protected path(s) found in this category, and %s cannot selectively clean around them", protected, name)
+				} else {
+					scanResult.Entries = config.StripProtected(scanResult.Entries)
+				}
 			}
 
 			var cleanRunResult *cleaner.CleanResult

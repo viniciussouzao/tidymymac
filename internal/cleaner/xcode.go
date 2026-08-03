@@ -30,6 +30,8 @@ func (c *XcodeCleaner) Description() string { return "DerivedData, archives, sim
 
 func (c *XcodeCleaner) RequiresSudo() bool { return false }
 
+func (c *XcodeCleaner) DeletesWholeDomain() bool { return false }
+
 // Scan looks for Xcode-related files in common locations and calculates their total size.
 func (c *XcodeCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if c.homeDir == "" {

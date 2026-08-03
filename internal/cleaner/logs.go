@@ -22,10 +22,11 @@ func NewLogsCleaner() *LogsCleaner {
 	return &LogsCleaner{homeDir: home}
 }
 
-func (c *LogsCleaner) Category() Category  { return CategoryLogs }
-func (c *LogsCleaner) Name() string        { return "System Logs" }
-func (c *LogsCleaner) Description() string { return "Application and system log files" }
-func (c *LogsCleaner) RequiresSudo() bool  { return true }
+func (c *LogsCleaner) Category() Category       { return CategoryLogs }
+func (c *LogsCleaner) Name() string             { return "System Logs" }
+func (c *LogsCleaner) Description() string      { return "Application and system log files" }
+func (c *LogsCleaner) RequiresSudo() bool       { return true }
+func (c *LogsCleaner) DeletesWholeDomain() bool { return false }
 
 // Scan walks through common log directories and collects information about log files.
 func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {

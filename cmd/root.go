@@ -7,10 +7,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/internal/tui"
 )
 
 var executeFlag bool
+var loadedConfig *config.Config
 
 var rootCmd = &cobra.Command{
 	Use:   "tidymymac",
@@ -19,8 +21,16 @@ var rootCmd = &cobra.Command{
 
 Running without a subcommand opens the interactive TUI where you can browse
 and select categories to clean. Use subcommands for non-interactive workflows.`,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.Load()
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+		loadedConfig = cfg
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p := tea.NewProgram(tui.NewApp(executeFlag), tea.WithAltScreen())
+		p := tea.NewProgram(tui.NewApp(executeFlag, loadedConfig), tea.WithAltScreen())
 		_, err := p.Run()
 		return err
 	},

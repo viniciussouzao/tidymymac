@@ -21,9 +21,10 @@ const (
 )
 
 type fileSummary struct {
-	Path  string
-	Size  int64
-	IsDir bool
+	Path      string
+	Size      int64
+	IsDir     bool
+	Protected bool
 }
 
 // ReviewCategory represents a category of files to review, with its total size, file count, and lists of files.
@@ -89,9 +90,10 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 			// to-do: implement friendly name for docker
 			//
 			allFiles = append(allFiles, fileSummary{
-				Path:  path,
-				Size:  entry.Size,
-				IsDir: entry.IsDir,
+				Path:      path,
+				Size:      entry.Size,
+				IsDir:     entry.IsDir,
+				Protected: entry.Protected,
 			})
 		}
 
@@ -145,13 +147,11 @@ func (m ReviewModel) ShouldWarnAboutSudo() bool {
 }
 
 func (m ReviewModel) actionableTotals() (int64, int) {
-	if !m.ShouldWarnAboutSudo() {
-		return m.TotalSize, m.TotalFiles
-	}
-
 	blocked := make(map[cleaner.Category]struct{}, len(m.SudoCategories))
-	for _, cat := range m.SudoCategories {
-		blocked[cat] = struct{}{}
+	if m.ShouldWarnAboutSudo() {
+		for _, cat := range m.SudoCategories {
+			blocked[cat] = struct{}{}
+		}
 	}
 
 	var totalSize int64
@@ -160,8 +160,13 @@ func (m ReviewModel) actionableTotals() (int64, int) {
 		if _, isBlocked := blocked[cat.Category]; isBlocked {
 			continue
 		}
-		totalSize += cat.Size
-		totalFiles += cat.Files
+		for _, f := range cat.AllFiles {
+			if f.Protected {
+				continue
+			}
+			totalSize += f.Size
+			totalFiles++
+		}
 	}
 
 	return totalSize, totalFiles
@@ -439,9 +444,13 @@ func (m ReviewModel) View() string {
 			if !cat.SizeKnown {
 				sizeText = "unknown"
 			}
-			line := fmt.Sprintf("    %s (%s)", styles.Dim.Render(short), sizeText)
+			lockedTag := ""
+			if f.Protected {
+				lockedTag = styles.SafetyBadgeDoNotTouch.Render("LOCKED") + " "
+			}
+			line := fmt.Sprintf("    %s%s (%s)", lockedTag, styles.Dim.Render(short), sizeText)
 			if globalFileIdx == m.Cursor {
-				line = fmt.Sprintf("  > %s (%s)", styles.Highlight.Render(short), sizeText)
+				line = fmt.Sprintf("  > %s%s (%s)", lockedTag, styles.Highlight.Render(short), sizeText)
 			}
 			lines = append(lines, line)
 			globalFileIdx++

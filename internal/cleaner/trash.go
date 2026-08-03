@@ -32,6 +32,11 @@ func (c *TrashCleaner) Description() string { return "Empty the Trash" }
 
 func (c *TrashCleaner) RequiresSudo() bool { return false } // try to empty the user's Trash without sudo using osascript
 
+// DeletesWholeDomain is true: without Full Disk Access, Clean falls back to
+// "osascript ... empty trash", which empties the entire Trash regardless of
+// the entries it was given.
+func (c *TrashCleaner) DeletesWholeDomain() bool { return true }
+
 func (c *TrashCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

@@ -37,10 +37,11 @@ func NewDockerCleaner() *DockerCleaner {
 	return &DockerCleaner{}
 }
 
-func (c *DockerCleaner) Category() Category  { return CategoryDocker }
-func (c *DockerCleaner) Name() string        { return "Docker" }
-func (c *DockerCleaner) Description() string { return "Unused Docker images and stopped containers" }
-func (c *DockerCleaner) RequiresSudo() bool  { return false }
+func (c *DockerCleaner) Category() Category       { return CategoryDocker }
+func (c *DockerCleaner) Name() string             { return "Docker" }
+func (c *DockerCleaner) Description() string      { return "Unused Docker images and stopped containers" }
+func (c *DockerCleaner) RequiresSudo() bool       { return false }
+func (c *DockerCleaner) DeletesWholeDomain() bool { return false }
 
 func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	start := time.Now()

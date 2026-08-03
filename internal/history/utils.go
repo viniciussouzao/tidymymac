@@ -5,30 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/user"
 	"path/filepath"
 	"syscall"
+
+	"github.com/viniciussouzao/tidymymac/internal/homedir"
 )
 
-func historyHomeDir(geteuid func() int, userHomeDir func() (string, error), lookupUser func(string) (*user.User, error), getenv func(string) string) (string, error) {
-	// in case the user runs as root because of sudo required for some categories
-	if geteuid() == 0 {
-		if sudoUser := getenv("SUDO_USER"); sudoUser != "" {
-			if sudoProfile, err := lookupUser(sudoUser); err == nil && sudoProfile.HomeDir != "" {
-				return sudoProfile.HomeDir, nil
-			}
-		}
-	}
-	return userHomeDir()
-}
-
 func path() (appDir string, err error) {
-	home, err := historyHomeDir(os.Geteuid, os.UserHomeDir, user.Lookup, os.Getenv)
+	dir, err := homedir.AppDir()
 	if err != nil {
 		return "", err
 	}
 
-	return filepath.Join(home, ".tidymymac", "history.json"), nil
+	return filepath.Join(dir, "history.json"), nil
 }
 
 func loadAtPath(p string) (Record, error) {

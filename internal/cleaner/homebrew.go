@@ -26,6 +26,10 @@ func (c *HomebrewCleaner) Description() string { return "Old formula versions an
 
 func (c *HomebrewCleaner) RequiresSudo() bool { return false }
 
+// DeletesWholeDomain is true: Clean runs "brew cleanup" unconditionally,
+// which is not scoped to the entries it was given.
+func (c *HomebrewCleaner) DeletesWholeDomain() bool { return true }
+
 func (c *HomebrewCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	start := time.Now()
 	result := &ScanResult{

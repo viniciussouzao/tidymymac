@@ -17,6 +17,7 @@ import (
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/internal/scriptgen"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
@@ -129,7 +130,7 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 		ctx,
 		cleaner.DefaultRegistry(),
 		args,
-		commands.ScanOptions{Detailed: detailed || generateScript},
+		commands.ScanOptions{Detailed: detailed || generateScript, Config: loadedConfig},
 		func(event commands.ScanEvent) {
 			switch event.Type {
 			case commands.ScanEventStarted:
@@ -205,11 +206,14 @@ func scanResultToCleanerResults(result commands.ScanResult) map[cleaner.Category
 		if cat.Err != nil || cat.TotalFiles == 0 {
 			continue
 		}
+		// --generate-script produces a deletion script the user runs
+		// unsupervised later; it must never contain a protected path.
+		files := config.StripProtected(cat.Files)
 		converted[cat.Category] = &cleaner.ScanResult{
 			Category:   cat.Category,
-			Entries:    cat.Files,
+			Entries:    files,
 			TotalSize:  cat.TotalSize,
-			TotalFiles: cat.TotalFiles,
+			TotalFiles: len(files),
 		}
 	}
 	return converted
@@ -318,7 +322,7 @@ func (m scanModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{Detailed: m.detailed || m.generateScript}, func(event commands.ScanEvent) {
+			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{Detailed: m.detailed || m.generateScript, Config: loadedConfig}, func(event commands.ScanEvent) {
 				m.eventCh <- event
 			})
 			close(m.eventCh)

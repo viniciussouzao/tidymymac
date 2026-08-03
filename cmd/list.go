@@ -57,7 +57,11 @@ func returnCategories(opts listOptions) string {
 
 	categories := cleaner.DefaultRegistry()
 	for _, c := range categories.All() {
-		b.WriteString("  " + string(c.Category()) + "\n")
+		line := "  " + string(c.Category())
+		if loadedConfig.IsCategoryDisabled(string(c.Category())) {
+			line += styles.Dim.Render(" (disabled by config)")
+		}
+		b.WriteString(line + "\n")
 		if opts.detailed {
 			b.WriteString("    " + styles.Dim.Render(c.Description()) + "\n")
 		}

@@ -29,6 +29,8 @@ func (c *TimeMachineCleaner) Description() string {
 
 func (c *TimeMachineCleaner) RequiresSudo() bool { return true }
 
+func (c *TimeMachineCleaner) DeletesWholeDomain() bool { return false }
+
 func (c *TimeMachineCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	start := time.Now()
 	result := &ScanResult{

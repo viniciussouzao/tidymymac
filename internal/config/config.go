@@ -1,24 +1,26 @@
 // Package config loads TidyMyMac's persistent safety configuration
-// (~/.tidymymac/config.toml): protected paths that no cleaner may ever
+// (~/.tidymymac/config.yaml): protected paths that no cleaner may ever
 // delete, and categories disabled by default.
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/homedir"
+	"gopkg.in/yaml.v3"
 )
 
 // Config holds user-configurable safety settings.
 type Config struct {
-	ProtectedPaths     []string `toml:"protected_paths"`
-	DisabledCategories []string `toml:"disabled_categories"`
+	ProtectedPaths     []string `yaml:"protected_paths"`
+	DisabledCategories []string `yaml:"disabled_categories"`
 
 	normalizedProtected []string
 	disabledSet         map[string]struct{}
@@ -29,13 +31,13 @@ func path() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "config.toml"), nil
+	return filepath.Join(dir, "config.yaml"), nil
 }
 
-// Load reads and validates the config file at ~/.tidymymac/config.toml.
+// Load reads and validates the config file at ~/.tidymymac/config.yaml.
 //
 // A missing file is not an error: it yields a zero-value Config (no
-// protection, no disabled categories). A malformed file -- invalid TOML, an
+// protection, no disabled categories). A malformed file -- invalid YAML, an
 // unrecognized key, or an invalid protected_paths entry -- IS an error, and
 // callers must abort rather than fall back to an unprotected config: silently
 // running as if protected_paths were empty while the user believes it's
@@ -76,16 +78,32 @@ func loadFrom(p string) (*Config, error) {
 		return nil, fmt.Errorf("reading config file %s: %w", p, err)
 	}
 
-	var cfg Config
-	meta, err := toml.Decode(string(data), &cfg)
+	cfg, err := decodeConfig(data)
 	if err != nil {
-		return nil, fmt.Errorf("parsing config file %s: %w", p, err)
-	}
-	if undecoded := meta.Undecoded(); len(undecoded) > 0 {
-		return nil, fmt.Errorf("config file %s: unrecognized key(s): %v", p, undecoded)
+		if errors.Is(err, io.EOF) {
+			// Empty (zero-byte or whitespace-only) file: treat like a
+			// missing file, not an error.
+			return &Config{}, nil
+		}
+		return nil, fmt.Errorf("config file %s: unrecognized or malformed content: %w", p, err)
 	}
 	if err := cfg.normalize(); err != nil {
 		return nil, fmt.Errorf("config file %s: %w", p, err)
+	}
+	return cfg, nil
+}
+
+// decodeConfig decodes YAML bytes into a Config, hard-failing on any key not
+// recognized by the Config struct (KnownFields(true)) -- the direct
+// replacement for TOML's meta.Undecoded() check this package used to rely
+// on. A typo like "protected_path" (singular) must never silently produce
+// zero protection.
+func decodeConfig(data []byte) (*Config, error) {
+	var cfg Config
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, err
 	}
 	return &cfg, nil
 }
@@ -102,18 +120,9 @@ func (c *Config) normalize() error {
 
 	seen := make(map[string]struct{}, len(c.ProtectedPaths))
 	for _, raw := range c.ProtectedPaths {
-		if strings.TrimSpace(raw) == "" {
-			return fmt.Errorf("protected_paths contains an empty entry")
-		}
-
-		expanded, err := expandTilde(raw)
+		clean, err := validateProtectedPathEntry(raw)
 		if err != nil {
-			return fmt.Errorf("protected_paths entry %q: %w", raw, err)
-		}
-
-		clean := filepath.Clean(expanded)
-		if !filepath.IsAbs(clean) {
-			return fmt.Errorf("protected_paths entry %q must be an absolute path", raw)
+			return err
 		}
 
 		norm := strings.ToLower(clean)
@@ -177,6 +186,30 @@ func firmlinkAliases(clean string) []string {
 		}
 	}
 	return aliases
+}
+
+// validateProtectedPathEntry validates a single protected_paths entry the
+// same way at load time (normalize's loop) and at write time (write.go's
+// AddProtectedPath/RemoveProtectedPath), so the two can't drift. Returns the
+// tilde-expanded, cleaned, absolute form -- the caller decides what to store
+// (the normalized form for comparison, or the original raw string when
+// writing back to disk).
+func validateProtectedPathEntry(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("protected_paths contains an empty entry")
+	}
+
+	expanded, err := expandTilde(raw)
+	if err != nil {
+		return "", fmt.Errorf("protected_paths entry %q: %w", raw, err)
+	}
+
+	clean := filepath.Clean(expanded)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("protected_paths entry %q must be an absolute path", raw)
+	}
+
+	return clean, nil
 }
 
 func expandTilde(p string) (string, error) {

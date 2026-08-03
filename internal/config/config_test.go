@@ -12,7 +12,7 @@ import (
 func writeConfig(t *testing.T, contents string) string {
 	t.Helper()
 	dir := t.TempDir()
-	p := filepath.Join(dir, "config.toml")
+	p := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(p, []byte(contents), 0o600); err != nil {
 		t.Fatalf("writing test config: %v", err)
 	}
@@ -20,7 +20,7 @@ func writeConfig(t *testing.T, contents string) string {
 }
 
 func TestLoad_MissingFileReturnsZeroValueConfig(t *testing.T) {
-	cfg, err := loadFrom(filepath.Join(t.TempDir(), "does-not-exist.toml"))
+	cfg, err := loadFrom(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -35,21 +35,32 @@ func TestLoad_MissingFileReturnsZeroValueConfig(t *testing.T) {
 	}
 }
 
-func TestLoad_MalformedTOMLReturnsError(t *testing.T) {
-	p := writeConfig(t, "this is not [valid toml")
+func TestLoad_EmptyFileReturnsZeroValueConfig(t *testing.T) {
+	p := writeConfig(t, "")
+	cfg, err := loadFrom(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.IsProtected("/anything") {
+		t.Error("empty config should not protect anything")
+	}
+}
+
+func TestLoad_MalformedYAMLReturnsError(t *testing.T) {
+	p := writeConfig(t, "protected_paths: [unterminated")
 	if _, err := loadFrom(p); err == nil {
-		t.Fatal("expected an error for malformed TOML")
+		t.Fatal("expected an error for malformed YAML")
 	}
 }
 
 func TestLoad_UnknownKeyReturnsError(t *testing.T) {
-	p := writeConfig(t, `protected_path = ["/Users/vini/Secrets"]`)
+	p := writeConfig(t, `protected_path: ["/Users/vini/Secrets"]`)
 	_, err := loadFrom(p)
 	if err == nil {
 		t.Fatal("expected an error for unrecognized key")
 	}
-	if !strings.Contains(err.Error(), "unrecognized key") {
-		t.Errorf("error %q does not mention unrecognized key", err)
+	if !strings.Contains(err.Error(), "unrecognized or malformed content") {
+		t.Errorf("error %q does not mention unrecognized/malformed content", err)
 	}
 }
 
@@ -58,7 +69,7 @@ func TestLoad_ExpandsTilde(t *testing.T) {
 	if err != nil {
 		t.Skipf("cannot resolve home dir: %v", err)
 	}
-	p := writeConfig(t, `protected_paths = ["~/Secrets"]`)
+	p := writeConfig(t, `protected_paths: ["~/Secrets"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -70,28 +81,28 @@ func TestLoad_ExpandsTilde(t *testing.T) {
 }
 
 func TestLoad_RejectsEmptyProtectedPathEntry(t *testing.T) {
-	p := writeConfig(t, "protected_paths = [\"/Users/vini/Secrets\", \"\"]")
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Secrets", ""]`)
 	if _, err := loadFrom(p); err == nil {
 		t.Fatal("expected an error for an empty protected_paths entry")
 	}
 }
 
 func TestLoad_RejectsWhitespaceOnlyProtectedPathEntry(t *testing.T) {
-	p := writeConfig(t, "protected_paths = [\"   \"]")
+	p := writeConfig(t, `protected_paths: ["   "]`)
 	if _, err := loadFrom(p); err == nil {
 		t.Fatal("expected an error for a whitespace-only protected_paths entry")
 	}
 }
 
 func TestLoad_RejectsRelativeProtectedPathEntry(t *testing.T) {
-	p := writeConfig(t, `protected_paths = ["Documents/Secrets"]`)
+	p := writeConfig(t, `protected_paths: ["Documents/Secrets"]`)
 	if _, err := loadFrom(p); err == nil {
 		t.Fatal("expected an error for a relative protected_paths entry")
 	}
 }
 
 func TestLoad_ValidConfigLoadsDisabledCategories(t *testing.T) {
-	p := writeConfig(t, `disabled_categories = ["docker", "logs"]`)
+	p := writeConfig(t, `disabled_categories: ["docker", "logs"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -105,7 +116,7 @@ func TestLoad_ValidConfigLoadsDisabledCategories(t *testing.T) {
 }
 
 func TestIsProtected_ExactMatch(t *testing.T) {
-	p := writeConfig(t, `protected_paths = ["/Users/vini/Secrets/file.txt"]`)
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Secrets/file.txt"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -116,7 +127,7 @@ func TestIsProtected_ExactMatch(t *testing.T) {
 }
 
 func TestIsProtected_DirectoryPrefixMatch(t *testing.T) {
-	p := writeConfig(t, `protected_paths = ["/Users/vini/Projects"]`)
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Projects"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -127,7 +138,7 @@ func TestIsProtected_DirectoryPrefixMatch(t *testing.T) {
 }
 
 func TestIsProtected_DoesNotMatchSiblingWithCommonStringPrefix(t *testing.T) {
-	p := writeConfig(t, `protected_paths = ["/Users/vini/Projects"]`)
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Projects"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -138,7 +149,7 @@ func TestIsProtected_DoesNotMatchSiblingWithCommonStringPrefix(t *testing.T) {
 }
 
 func TestIsProtected_CaseInsensitive(t *testing.T) {
-	p := writeConfig(t, `protected_paths = ["/Users/vini/Secrets"]`)
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Secrets"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -151,7 +162,7 @@ func TestIsProtected_CaseInsensitive(t *testing.T) {
 func TestIsProtected_FirmlinkAliasBothDirections(t *testing.T) {
 	// Config written in the /var/tmp shortcut form must also protect the
 	// /private/var/tmp backing form that some tooling reports paths in.
-	p := writeConfig(t, `protected_paths = ["/var/tmp/keepme"]`)
+	p := writeConfig(t, `protected_paths: ["/var/tmp/keepme"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -165,7 +176,7 @@ func TestIsProtected_FirmlinkAliasBothDirections(t *testing.T) {
 
 	// And the reverse: config written in the /private form must also
 	// protect the /var shortcut form that cleaners actually emit.
-	p2 := writeConfig(t, `protected_paths = ["/private/var/tmp/keepme"]`)
+	p2 := writeConfig(t, `protected_paths: ["/private/var/tmp/keepme"]`)
 	cfg2, err := loadFrom(p2)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -176,7 +187,7 @@ func TestIsProtected_FirmlinkAliasBothDirections(t *testing.T) {
 }
 
 func TestIsProtected_UnrelatedPathNotProtected(t *testing.T) {
-	p := writeConfig(t, `protected_paths = ["/Users/vini/Secrets"]`)
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Secrets"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -210,7 +221,7 @@ func TestNilConfig_TagReturnsEntriesUnchanged(t *testing.T) {
 }
 
 func TestTag_SetsProtectedWithoutRemovingEntries(t *testing.T) {
-	p := writeConfig(t, `protected_paths = ["/Users/vini/Secrets"]`)
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Secrets"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -245,7 +256,7 @@ func TestStripProtected_RemovesOnlyTaggedEntries(t *testing.T) {
 
 func TestFilterRegistry_ExcludesDisabledCategories(t *testing.T) {
 	r := cleaner.DefaultRegistry()
-	p := writeConfig(t, `disabled_categories = ["docker"]`)
+	p := writeConfig(t, `disabled_categories: ["docker"]`)
 	cfg, err := loadFrom(p)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

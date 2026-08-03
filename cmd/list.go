@@ -74,8 +74,58 @@ func returnCategories(opts listOptions) string {
 
 }
 
+var listProtectedCmd = &cobra.Command{
+	Use:   "protected",
+	Short: "List protected paths and disabled categories from the config file",
+	Long: `List the current safety configuration loaded from
+~/.tidymymac/config.yaml: paths that are hard-blocked from deletion, and
+categories disabled by default.
+
+Example:
+$ tidymymac list protected
+`,
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Fprint(cmd.OutOrStdout(), returnProtected())
+	},
+}
+
+func returnProtected() string {
+	var b strings.Builder
+	sep := styles.Dim.Render("  " + strings.Repeat("─", 40))
+
+	b.WriteString("\n")
+	b.WriteString(styles.CategoryHeader.Render("  Protected paths"))
+	b.WriteString("\n")
+	b.WriteString(sep)
+	b.WriteString("\n")
+	if len(loadedConfig.ProtectedPaths) == 0 {
+		b.WriteString(styles.Dim.Render("  (none configured)") + "\n")
+	}
+	for _, p := range loadedConfig.ProtectedPaths {
+		b.WriteString("  " + p + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(styles.CategoryHeader.Render("  Disabled categories"))
+	b.WriteString("\n")
+	b.WriteString(sep)
+	b.WriteString("\n")
+	if len(loadedConfig.DisabledCategories) == 0 {
+		b.WriteString(styles.Dim.Render("  (none configured)") + "\n")
+	}
+	for _, c := range loadedConfig.DisabledCategories {
+		b.WriteString("  " + c + "\n")
+	}
+
+	b.WriteString(styles.Help.Render("  run tidymymac protect --path <path> to add a protected path"))
+	b.WriteString("\n")
+
+	return b.String()
+}
+
 func init() {
 	rootCmd.AddCommand(listCmd)
 	listCmd.AddCommand(listCategoriesCmd)
+	listCmd.AddCommand(listProtectedCmd)
 	listCategoriesCmd.Flags().Bool("detailed", false, "show a description for each category")
 }

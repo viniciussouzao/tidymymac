@@ -13,7 +13,9 @@
 
 - Interactive TUI to browse and select what to clean
 - Dry-run by default — nothing is deleted without your explicit confirmation
+- Protected paths that no cleaner can ever touch, whatever flags you pass
 - Modular cleaners for different categories of junk
+- Named profiles bundling the categories and project directories you clean together
 - Progress reporting and summary of reclaimed space
 - Export scan results as JSON or CSV
 - Generate shell cleanup scripts from scan results
@@ -44,6 +46,7 @@ TidyMyMac was built to make cleanup transparent and safe:
 | App Orphans | High-confidence leftovers from apps no longer installed |
 | Xcode | DerivedData, archives, simulators |
 | Development Artifacts | Go build cache and downloaded module cache |
+| Project Artifacts | `node_modules`, `dist`, `target`, `.venv` … and files over 500MB, in the project paths a [profile](docs/CONFIGURATION.md#profiles--named-cleanup-bundles) points at |
 | Time Machine Snapshots | Local Time Machine snapshots stored on disk |
 | Trash | Files in the Trash waiting to be permanently removed |
 
@@ -107,6 +110,9 @@ tidymymac scan
 # Scan specific categories only
 tidymymac scan docker caches xcode
 
+# Scan everything a profile bundles (categories + project paths)
+tidymymac scan --profile dev
+
 # Output as JSON or CSV
 tidymymac scan --output json
 tidymymac scan --output csv
@@ -136,6 +142,13 @@ tidymymac clean --execute
 # Clean specific categories
 tidymymac clean docker caches --execute
 
+# Clean everything a profile bundles
+tidymymac clean --profile dev --execute
+
+# Also delete the >500MB files found in a profile's project paths
+# (reported by default, but never deleted without this flag)
+tidymymac clean --profile dev --include-large-files --execute
+
 # Use a previously saved detailed scan instead of re-scanning
 tidymymac clean --from-file scan.json --execute
 
@@ -143,12 +156,47 @@ tidymymac clean --from-file scan.json --execute
 tidymymac clean --output json
 ```
 
+#### `profile` — bundle categories and project paths
+
+A profile groups the categories you clean together with project directories to sweep for
+regenerable junk (`node_modules`, `dist`, `target`, …) and oversized files.
+
+```bash
+# Build a profile
+tidymymac profile create dev
+tidymymac profile add-category dev development-artifacts
+tidymymac profile add-path dev ~/projects/my-app
+
+# Use it
+tidymymac scan --profile dev
+tidymymac clean --profile dev --execute
+
+# Inspect and edit
+tidymymac list profiles
+tidymymac profile remove-path dev ~/projects/my-app
+tidymymac profile delete dev
+```
+
+#### `protect` — paths no cleaner may ever delete
+
+```bash
+# Never delete anything under this path, whatever flags are passed
+tidymymac protect --path ~/Documents/Work
+
+tidymymac unprotect --path ~/Documents/Work
+tidymymac list protected
+```
+
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full `~/.tidymymac/config.yaml`
+reference — path matching rules, disabling categories by default, and profile behavior.
+
 #### Other commands
 
 ```bash
-tidymymac version   # Print version, commit, build date, platform, and Go version
-tidymymac explain   # Explain what each category contains
-tidymymac history   # Show past cleanup runs
+tidymymac version          # Print version, commit, build date, platform, and Go version
+tidymymac explain <topic>  # Explain a macOS storage topic (e.g. system-data)
+tidymymac list categories  # List every category that can be scanned or cleaned
+tidymymac history          # Show past cleanup runs
 ```
 
 ## 🏗️ Development
@@ -166,8 +214,13 @@ TidyMyMac is designed with safety as the primary concern:
 
 - ✅ **Dry-run by default**: scanning and reviewing never touches your files
 - ✅ **Explicit confirmation required**: deletion only happens with `--execute`
+- ✅ **Protected paths are a hard block**: anything in `protected_paths` is never deleted, and no CLI flag overrides it
 - ✅ **No silent operations**: every file is shown before removal
 - ✅ **Errors are non-fatal**: a failure on one file won't stop the rest
+
+## ⚙️ Configuration
+
+Protected paths, categories disabled by default, and cleanup profiles all live in `~/.tidymymac/config.yaml`. The file is optional — see [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the full reference.
 
 ## 🩺 Troubleshooting
 

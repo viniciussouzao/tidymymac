@@ -32,6 +32,8 @@ func (c *UpdatesCleaner) Description() string { return "Old macOS update residue
 
 func (c *UpdatesCleaner) RequiresSudo() bool { return true }
 
+func (c *UpdatesCleaner) DeletesWholeDomain() bool { return false }
+
 func (c *UpdatesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if ctx.Err() != nil {
 		return &ScanResult{Category: CategoryUpdates}, ctx.Err()

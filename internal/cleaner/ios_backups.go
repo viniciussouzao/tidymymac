@@ -33,6 +33,8 @@ func (c *IOSBackupsCleaner) Description() string { return "Old iPhone/iPad backu
 
 func (c *IOSBackupsCleaner) RequiresSudo() bool { return false }
 
+func (c *IOSBackupsCleaner) DeletesWholeDomain() bool { return false }
+
 // Scan identifies top-level iOS backup directories, calculating each one's total size.
 // Each backup is represented as a single FileEntry with IsDir=true so that Clean
 // can remove the entire directory at once instead of individual files.

@@ -73,3 +73,48 @@ jobs:
           files: dist/*
           generate_release_notes: true
           make_latest: true
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: viniciussouzao/homebrew-tap
+          ref: main
+          path: homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update Homebrew formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        working-directory: homebrew-tap
+        run: |
+          FORMULA_VERSION="${VERSION#v}"
+          ARM_URL="https://github.com/viniciussouzao/tidymymac/releases/download/${VERSION}/tidymymac-${VERSION}-darwin-arm64.tar.gz"
+          AMD_URL="https://github.com/viniciussouzao/tidymymac/releases/download/${VERSION}/tidymymac-${VERSION}-darwin-amd64.tar.gz"
+
+          ARM_SHA=$(curl --fail --location --silent --show-error "$ARM_URL" | shasum -a 256 | awk '{print $1}')
+          AMD_SHA=$(curl --fail --location --silent --show-error "$AMD_URL" | shasum -a 256 | awk '{print $1}')
+
+          ruby - "$FORMULA_VERSION" "$VERSION" "$ARM_SHA" "$AMD_SHA" <<'RUBY'
+          version, tag, arm_sha, amd_sha = ARGV
+          path = "Formula/tidymymac.rb"
+          formula = File.read(path)
+
+          formula.sub!(/^  version ".*"$/, %(  version "#{version}"))
+          formula.sub!(/(on_arm do.*?sha256 ")[^"]+(")/m, "\\1#{arm_sha}\\2")
+          formula.sub!(/(on_intel do.*?sha256 ")[^"]+(")/m, "\\1#{amd_sha}\\2")
+          formula.gsub!(
+            %r{releases/download/[^/]+/tidymymac-[^"]+-darwin-},
+            "releases/download/#{tag}/tidymymac-#{tag}-darwin-"
+          )
+
+          File.write(path, formula)
+          RUBY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet -- Formula/tidymymac.rb; then
+            git add Formula/tidymymac.rb
+            git commit -m "Update tidymymac formula to ${VERSION}"
+            git push origin main
+          fi

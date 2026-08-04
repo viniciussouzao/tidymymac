@@ -16,6 +16,7 @@ func (s stubCleaner) Category() cleaner.Category { return s.category }
 func (s stubCleaner) Name() string               { return "stub" }
 func (s stubCleaner) Description() string        { return "" }
 func (s stubCleaner) RequiresSudo() bool         { return false }
+func (s stubCleaner) DeletesWholeDomain() bool   { return false }
 
 func (s stubCleaner) Scan(_ context.Context, _ func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
 	return s.scanResult, s.scanErr

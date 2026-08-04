@@ -10,7 +10,7 @@ import (
 )
 
 var explainCmd = &cobra.Command{
-	Use:   "explain <profile>",
+	Use:   "explain <topic>",
 	Short: "Explain a macOS storage category using supported TidyMyMac contributors",
 	Long: `Explain a macOS storage category using supported TidyMyMac contributors.
 
@@ -20,17 +20,17 @@ $ tidymymac explain system-data
 `,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		profile, err := explain.ResolveProfile(explain.Profile(args[0]), cleaner.DefaultRegistry())
+		topic, err := explain.ResolveTopic(explain.Topic(args[0]), cleaner.DefaultRegistry())
 		if err != nil {
 			return err
 		}
 
-		result, err := explain.RunProfile(cmd.Context(), profile)
+		result, err := explain.RunTopic(cmd.Context(), topic)
 		if err != nil {
 			return err
 		}
 
-		if _, err := fmt.Fprint(cmd.OutOrStdout(), explain.FormatProfileResult(result)); err != nil {
+		if _, err := fmt.Fprint(cmd.OutOrStdout(), explain.FormatTopicResult(result)); err != nil {
 			return err
 		}
 

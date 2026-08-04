@@ -57,6 +57,8 @@ func (c *AppOrphansCleaner) Description() string {
 
 func (c *AppOrphansCleaner) RequiresSudo() bool { return false }
 
+func (c *AppOrphansCleaner) DeletesWholeDomain() bool { return false }
+
 func (c *AppOrphansCleaner) setDefaults() {
 	if len(c.appSearchRoots) == 0 {
 		c.appSearchRoots = defaultAppSearchRoots(c.homeDir)

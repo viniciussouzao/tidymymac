@@ -17,6 +17,10 @@ Every change must preserve it:
   moves, or writes.
 - Dry-run is the **default**. Deletion happens only with `--execute`.
 - `Clean` receives only the `[]FileEntry` the user reviewed and confirmed.
+- `protected_paths` is a **hard block**: `config.StripProtected` runs immediately
+  before every `Clean` and before every generated script, and no CLI flag may ever
+  override it. If your cleaner cannot honor a filtered entry list, say so with
+  `DeletesWholeDomain() = true` so the category is skipped instead.
 - Long-running scans and cleans honor `ctx.Done()`.
 
 If a change could weaken any of these, it will not be merged.
@@ -39,6 +43,7 @@ Requires **Go 1.26+**.
 | `cmd/` | Cobra CLI commands (thin adapters) |
 | `internal/cleaner/` | Core domain: `Cleaner` interface, registry, implementations |
 | `internal/commands/` | Reusable scan/clean orchestration shared by CLI and TUI |
+| `internal/config/` | Safety config (`~/.tidymymac/config.yaml`): protected paths, disabled categories, profiles |
 | `internal/tui/` | BubbleTea TUI (Elm architecture) + `styles/` |
 | `internal/history`, `explain`, `scriptgen`, `buildinfo` | Supporting packages |
 | `pkg/utils/` | Public disk/format helpers |
@@ -65,9 +70,15 @@ Adding a category is purely additive (full walkthrough in
 [ARCHITECTURE.md → Extending TidyMyMac](docs/ARCHITECTURE.md#extending-tidymymac)):
 
 1. Implement the `Cleaner` interface in `internal/cleaner/<name>.go`.
-2. Add the `Category` constant and its `DisplayName()` case in `category.go`.
-3. Register it in `DefaultRegistry()`.
-4. Add it to the cleaner table in `README.md`.
+2. Answer `DeletesWholeDomain()` honestly — `false` when `Clean` deletes exactly the
+   entries it was given (the normal case), `true` when it may delete beyond them
+   (e.g. shelling out to `brew cleanup`). Getting this wrong is a safety bug: a
+   `false` here means `protected_paths` is enforced by filtering entries, which a
+   whole-domain cleaner would silently ignore.
+3. Add the `Category` constant and its `DisplayName()` case in `category.go`.
+4. Register it in `DefaultRegistry()`.
+5. Add it to the cleaner table in `README.md` **and** the category table in
+   `docs/ARCHITECTURE.md`.
 
 Cleaners that shell out (docker, brew, tmutil) must **degrade gracefully** to an
 empty `ScanResult` when the tool is absent.

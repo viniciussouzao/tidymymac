@@ -127,27 +127,27 @@ func TestScannerContributorRunScanPartialResult(t *testing.T) {
 	}
 }
 
-// RunProfile
+// RunTopic
 
-func TestRunProfileEmptyProfiles(t *testing.T) {
-	_, err := RunProfile(t.Context(), ProfileDefinition{})
+func TestRunTopicNoAliases(t *testing.T) {
+	_, err := RunTopic(t.Context(), TopicDefinition{})
 	if err == nil {
-		t.Fatal("RunProfile() expected error for empty Profile slice, got nil")
+		t.Fatal("RunTopic() expected error for empty Topic slice, got nil")
 	}
 }
 
-func TestRunProfileContributorErrorDoesNotAbort(t *testing.T) {
-	def := ProfileDefinition{
-		Profile: []Profile{ProfileSystemData},
+func TestRunTopicContributorErrorDoesNotAbort(t *testing.T) {
+	def := TopicDefinition{
+		Aliases: []Topic{TopicSystemData},
 		Contributors: []Contributor{
 			stubContributor{name: ContributorCaches, err: errors.New("scan failed")},
 			stubContributor{name: ContributorLogs, result: ContributorResult{TotalSize: 500}},
 		},
 	}
 
-	result, err := RunProfile(t.Context(), def)
+	result, err := RunTopic(t.Context(), def)
 	if err != nil {
-		t.Fatalf("RunProfile() error: %v", err)
+		t.Fatalf("RunTopic() error: %v", err)
 	}
 	if len(result.Contributors) != 2 {
 		t.Fatalf("len(Contributors) = %d, want 2", len(result.Contributors))
@@ -163,9 +163,9 @@ func TestRunProfileContributorErrorDoesNotAbort(t *testing.T) {
 	}
 }
 
-func TestRunProfileAggregatesSize(t *testing.T) {
-	def := ProfileDefinition{
-		Profile: []Profile{ProfileSystemData},
+func TestRunTopicAggregatesSize(t *testing.T) {
+	def := TopicDefinition{
+		Aliases: []Topic{TopicSystemData},
 		Contributors: []Contributor{
 			stubContributor{name: ContributorCaches, result: ContributorResult{TotalSize: 1000}},
 			stubContributor{name: ContributorLogs, result: ContributorResult{TotalSize: 2000}},
@@ -173,9 +173,9 @@ func TestRunProfileAggregatesSize(t *testing.T) {
 		},
 	}
 
-	result, err := RunProfile(t.Context(), def)
+	result, err := RunTopic(t.Context(), def)
 	if err != nil {
-		t.Fatalf("RunProfile() error: %v", err)
+		t.Fatalf("RunTopic() error: %v", err)
 	}
 	if result.TotalSize != 3000 {
 		t.Errorf("TotalSize = %d, want 3000 (errored contributor excluded)", result.TotalSize)
@@ -185,29 +185,29 @@ func TestRunProfileAggregatesSize(t *testing.T) {
 	}
 }
 
-func TestRunProfileHasErrorsSetWhenContributorErrors(t *testing.T) {
-	def := ProfileDefinition{
-		Profile: []Profile{ProfileSystemData},
+func TestRunTopicHasErrorsSetWhenContributorErrors(t *testing.T) {
+	def := TopicDefinition{
+		Aliases: []Topic{TopicSystemData},
 		Contributors: []Contributor{
 			stubContributor{name: ContributorCaches, result: ContributorResult{HasError: true, ErrorMessage: "oops"}},
 		},
 	}
 
-	result, err := RunProfile(t.Context(), def)
+	result, err := RunTopic(t.Context(), def)
 	if err != nil {
-		t.Fatalf("RunProfile() error: %v", err)
+		t.Fatalf("RunTopic() error: %v", err)
 	}
 	if !result.HasErrors {
 		t.Error("HasErrors = false, want true")
 	}
 }
 
-func TestRunProfileScannedAtIsUTC(t *testing.T) {
-	def := ProfileDefinition{Profile: []Profile{ProfileSystemData}}
+func TestRunTopicScannedAtIsUTC(t *testing.T) {
+	def := TopicDefinition{Aliases: []Topic{TopicSystemData}}
 
-	result, err := RunProfile(t.Context(), def)
+	result, err := RunTopic(t.Context(), def)
 	if err != nil {
-		t.Fatalf("RunProfile() error: %v", err)
+		t.Fatalf("RunTopic() error: %v", err)
 	}
 	if result.ScannedAt.Location() != time.UTC {
 		t.Errorf("ScannedAt.Location() = %v, want UTC", result.ScannedAt.Location())

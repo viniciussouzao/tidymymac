@@ -20,6 +20,14 @@ type Cleaner interface {
 
 	// RequiresSudo indicates whether the cleaner requires elevated permissions to perform its operations.
 	RequiresSudo() bool
+
+	// DeletesWholeDomain reports whether Clean may perform a destructive
+	// action that is NOT scoped to the entries it was given (e.g. shelling
+	// out to "brew cleanup" or "go clean -cache", which clear their entire
+	// domain regardless of the entries slice). Callers must never invoke
+	// Clean for such a cleaner when any entry in its category was withheld
+	// (e.g. by protected_paths) -- there'd be no way to honor the omission.
+	DeletesWholeDomain() bool
 }
 
 // Registry is a struct that holds registered cleaners and provides methods to manage them.
@@ -58,6 +66,10 @@ func DefaultRegistry() *Registry {
 	r.Register(NewHomebrewCleaner())
 	r.Register(NewCachesCleaner())
 	r.Register(NewDevelopmentArtifactsCleaner())
+	// No paths by default: project-artifacts only ever has roots when a
+	// profile supplies them (see config.ResolveProfile), so a bare
+	// "scan project-artifacts" is inert rather than broken.
+	r.Register(NewProjectArtifactsCleaner(nil, 0, false))
 	r.Register(NewLogsCleaner())
 	r.Register(NewDockerCleaner())
 	r.Register(NewIOSBackupsCleaner())

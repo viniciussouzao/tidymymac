@@ -48,6 +48,12 @@ $ tidymymac clean --output json
 
 # Use a previous scan file and output the cleanup result as JSON
 $ tidymymac clean --from-file scan.json --output json
+
+# Clean everything a profile bundles (categories + project paths)
+$ tidymymac clean --profile dev --execute
+
+# Also delete the oversized files a profile's project paths turned up
+$ tidymymac clean --profile dev --include-large-files --execute
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		detailed, _ := cmd.Flags().GetBool("detailed")
@@ -55,16 +61,25 @@ $ tidymymac clean --from-file scan.json --output json
 		forceStaleScan, _ := cmd.Flags().GetBool("force-stale-scan")
 		output, _ := cmd.Flags().GetString("output")
 		quiet, _ := cmd.Flags().GetBool("quiet")
+		profileName, _ := cmd.Flags().GetString("profile")
+		includeLargeFiles, _ := cmd.Flags().GetBool("include-large-files")
 
 		if output != "" && output != "json" {
 			return fmt.Errorf("invalid --output value %q: must be json", output)
 		}
 
-		if output != "" {
-			return runCleanNonInteractive(cmd.Context(), args, detailed, fromFile, forceStaleScan, output, quiet)
+		// Resolved once here so every path below works in terms of a plain
+		// (categories, registry) pair, profile or not.
+		categories, registry, err := resolveSelection(args, profileName, includeLargeFiles)
+		if err != nil {
+			return err
 		}
 
-		return runCleanInteractive(cmd, args, detailed, fromFile, forceStaleScan)
+		if output != "" {
+			return runCleanNonInteractive(cmd.Context(), registry, categories, detailed, fromFile, forceStaleScan, output, quiet)
+		}
+
+		return runCleanInteractive(cmd, registry, categories, detailed, fromFile, forceStaleScan)
 	},
 	SilenceUsage: true,
 }
@@ -72,6 +87,8 @@ $ tidymymac clean --from-file scan.json --output json
 func init() {
 	rootCmd.AddCommand(cleanCmd)
 	cleanCmd.Flags().StringP("output", "o", "", "output format for results: json (omit for interactive table)")
+	cleanCmd.Flags().String("profile", "", "clean the categories and project paths bundled by a configured profile")
+	cleanCmd.Flags().Bool("include-large-files", false, "also delete the oversized files found in a profile's project paths (they are reported but never deleted without this)")
 	cleanCmd.Flags().Bool("detailed", false, "include individual file paths in the cleanup result")
 	cleanCmd.Flags().String("from-file", "", "load a JSON scan file (from 'scan --output json --detailed') and revalidate its entries before cleaning")
 	cleanCmd.Flags().Bool("force-stale-scan", false, "allow --from-file scan results older than 24 hours when used with --execute")
@@ -83,7 +100,7 @@ const (
 	cleanScanMaxAge  = 24 * time.Hour
 )
 
-func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, fromFile string, forceStaleScan bool, output string, quiet bool) error {
+func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, categories []string, detailed bool, fromFile string, forceStaleScan bool, output string, quiet bool) error {
 	start := time.Now()
 
 	stderr := func(format string, a ...any) {
@@ -102,10 +119,10 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 		b.WriteString("🧹 cleaning your mac...\n")
 	}
 
-	registry := cleaner.DefaultRegistry()
 	opts := commands.CleanerOptions{
 		Detailed: detailed,
 		DryRun:   dryRun,
+		Config:   loadedConfig,
 	}
 
 	var (
@@ -114,7 +131,7 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 		revalidation *commands.RevalidationSummary
 	)
 
-	result, revalidation, err = executeClean(ctx, registry, args, fromFile, forceStaleScan, opts, cleanProgressPrinter(stderr), stderr)
+	result, revalidation, err = executeClean(ctx, registry, categories, fromFile, forceStaleScan, opts, cleanProgressPrinter(stderr), stderr)
 	if err != nil {
 		return err
 	}
@@ -203,7 +220,7 @@ func executeClean(
 			return commands.CleanResult{}, nil, fmt.Errorf("scan file is %s old; rerun the scan or use --force-stale-scan with --execute", roundAge(age))
 		}
 
-		prepared, prepErr := commands.PrepareScanResultForClean(registry, scanResult, args)
+		prepared, prepErr := commands.PrepareScanResultForClean(registry, scanResult, args, opts.Config)
 		if prepErr != nil {
 			return commands.CleanResult{}, nil, prepErr
 		}
@@ -300,8 +317,8 @@ func roundAge(age time.Duration) time.Duration {
 	return age.Round(time.Hour)
 }
 
-func runCleanInteractive(cmd *cobra.Command, args []string, detailed bool, fromFile string, forceStaleScan bool) error {
-	m := newCleanModel(cmd.Context(), args, detailed, fromFile, forceStaleScan, !executeFlag)
+func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categories []string, detailed bool, fromFile string, forceStaleScan bool) error {
+	m := newCleanModel(cmd.Context(), registry, categories, detailed, fromFile, forceStaleScan, !executeFlag)
 	p := tea.NewProgram(m)
 
 	final, err := p.Run()
@@ -350,6 +367,7 @@ type cleanCategoryProgress struct {
 
 type cleanModel struct {
 	ctx            context.Context
+	registry       *cleaner.Registry
 	args           []string
 	detailed       bool
 	fromFile       string
@@ -364,13 +382,14 @@ type cleanModel struct {
 	eventCh        chan commands.CleanEvent
 }
 
-func newCleanModel(ctx context.Context, args []string, detailed bool, fromFile string, forceStaleScan bool, dryRun bool) cleanModel {
+func newCleanModel(ctx context.Context, registry *cleaner.Registry, args []string, detailed bool, fromFile string, forceStaleScan bool, dryRun bool) cleanModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = styles.Cursor
 
 	return cleanModel{
 		ctx:            ctx,
+		registry:       registry,
 		args:           args,
 		detailed:       detailed,
 		fromFile:       fromFile,
@@ -389,13 +408,14 @@ func (m cleanModel) Init() tea.Cmd {
 			start := time.Now()
 			result, revalidation, err := executeClean(
 				m.ctx,
-				cleaner.DefaultRegistry(),
+				m.registry,
 				m.args,
 				m.fromFile,
 				m.forceStaleScan,
 				commands.CleanerOptions{
 					Detailed: m.detailed,
 					DryRun:   m.dryRun,
+					Config:   loadedConfig,
 				},
 				func(event commands.CleanEvent) {
 					m.eventCh <- event

@@ -7,8 +7,8 @@ import (
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
 
-// FormatProfileResult renders an explain profile result as styled text.
-func FormatProfileResult(result ProfileResult) string {
+// FormatTopicResult renders an explain topic result as styled text.
+func FormatTopicResult(result TopicResult) string {
 	var b strings.Builder
 
 	b.WriteString(styles.Title.Render(result.Name.DisplayName()))

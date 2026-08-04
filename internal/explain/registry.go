@@ -6,8 +6,8 @@ import (
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 )
 
-type ProfileDefinition struct {
-	Profile      []Profile
+type TopicDefinition struct {
+	Aliases      []Topic
 	Description  string
 	Summary      string
 	CoverageNote string
@@ -15,50 +15,50 @@ type ProfileDefinition struct {
 }
 
 type Registry struct {
-	profiles []ProfileDefinition
-	byID     map[Profile]ProfileDefinition
+	topics []TopicDefinition
+	byID   map[Topic]TopicDefinition
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		byID: make(map[Profile]ProfileDefinition),
+		byID: make(map[Topic]TopicDefinition),
 	}
 }
 
-func (r *Registry) Register(def ProfileDefinition) {
-	r.profiles = append(r.profiles, def)
-	for _, name := range def.Profile {
+func (r *Registry) Register(def TopicDefinition) {
+	r.topics = append(r.topics, def)
+	for _, name := range def.Aliases {
 		r.byID[name] = def
 	}
 }
 
-func (r *Registry) Get(profile Profile) (ProfileDefinition, bool) {
-	def, ok := r.byID[profile]
+func (r *Registry) Get(topic Topic) (TopicDefinition, bool) {
+	def, ok := r.byID[topic]
 	return def, ok
 }
 
-func (r *Registry) All() []ProfileDefinition {
-	return r.profiles
+func (r *Registry) All() []TopicDefinition {
+	return r.topics
 }
 
 func DefaultRegistry(cleanerRegistry *cleaner.Registry) *Registry {
 	r := NewRegistry()
-	r.Register(systemDataProfile(cleanerRegistry))
+	r.Register(systemDataTopic(cleanerRegistry))
 	return r
 }
 
-func ResolveProfile(profile Profile, cleanerRegistry *cleaner.Registry) (ProfileDefinition, error) {
+func ResolveTopic(topic Topic, cleanerRegistry *cleaner.Registry) (TopicDefinition, error) {
 	r := DefaultRegistry(cleanerRegistry)
-	def, ok := r.Get(profile)
+	def, ok := r.Get(topic)
 	if !ok {
-		return ProfileDefinition{}, fmt.Errorf("unknown profile %q", profile)
+		return TopicDefinition{}, fmt.Errorf("unknown topic %q", topic)
 	}
 	return def, nil
 }
 
-func systemDataProfile(registry *cleaner.Registry) ProfileDefinition {
-	return ProfileDefinition{
-		Profile:      []Profile{ProfileSystemData},
+func systemDataTopic(registry *cleaner.Registry) TopicDefinition {
+	return TopicDefinition{
+		Aliases:      []Topic{TopicSystemData},
 		Description:  "Explains what macOS groups under System Data in Storage settings.",
 		Summary:      "System Data is a broad macOS storage category that often includes caches, logs, temporary files, local snapshots and update leftovers.",
 		CoverageNote: "This explanation covers the System Data contributors currently detectable by TidyMyMac. macOS may include additional internal data not shown here.",

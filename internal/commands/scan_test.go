@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
+	"github.com/viniciussouzao/tidymymac/internal/config"
 )
 
 // mockCleaner is a test double implementing the cleaner.Cleaner interface.
@@ -18,12 +19,17 @@ type mockCleaner struct {
 	name     string
 	entries  []cleaner.FileEntry
 	err      error
+
+	// cleanedEntries records whatever was actually passed to Clean, so tests
+	// can assert on what reached deletion (e.g. that protected entries never do).
+	cleanedEntries []cleaner.FileEntry
 }
 
 func (m *mockCleaner) Category() cleaner.Category { return m.category }
 func (m *mockCleaner) Name() string               { return m.name }
 func (m *mockCleaner) Description() string        { return "mock cleaner" }
 func (m *mockCleaner) RequiresSudo() bool         { return false }
+func (m *mockCleaner) DeletesWholeDomain() bool   { return false }
 
 func (m *mockCleaner) Scan(_ context.Context, _ func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
 	if m.err != nil {
@@ -41,8 +47,9 @@ func (m *mockCleaner) Scan(_ context.Context, _ func(cleaner.ScanProgress)) (*cl
 	}, nil
 }
 
-func (m *mockCleaner) Clean(_ context.Context, _ []cleaner.FileEntry, dryRun bool, _ func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
-	return &cleaner.CleanResult{Category: m.category, DryRun: dryRun}, nil
+func (m *mockCleaner) Clean(_ context.Context, entries []cleaner.FileEntry, dryRun bool, _ func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	m.cleanedEntries = entries
+	return &cleaner.CleanResult{Category: m.category, DryRun: dryRun, FilesDeleted: len(entries)}, nil
 }
 
 func newMockRegistry(mocks ...*mockCleaner) *cleaner.Registry {
@@ -60,7 +67,7 @@ func TestResolveCleaners_EmptySelectedReturnsAll(t *testing.T) {
 		&mockCleaner{category: "cat_a"},
 		&mockCleaner{category: "cat_b"},
 	)
-	got, err := resolveCleaners(r, nil)
+	got, err := resolveCleaners(r, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +82,7 @@ func TestResolveCleaners_SpecificCategories(t *testing.T) {
 		&mockCleaner{category: "cat_b"},
 		&mockCleaner{category: "cat_c"},
 	)
-	got, err := resolveCleaners(r, []string{"cat_a", "cat_c"})
+	got, err := resolveCleaners(r, []string{"cat_a", "cat_c"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,12 +99,62 @@ func TestResolveCleaners_SpecificCategories(t *testing.T) {
 
 func TestResolveCleaners_InvalidCategoryReturnsError(t *testing.T) {
 	r := newMockRegistry(&mockCleaner{category: "cat_a"})
-	_, err := resolveCleaners(r, []string{"nonexistent"})
+	_, err := resolveCleaners(r, []string{"nonexistent"}, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown category, got nil")
 	}
 	if !containsString(err.Error(), "nonexistent") {
 		t.Errorf("error %q should mention the unknown category", err.Error())
+	}
+}
+
+func TestResolveCleaners_SkipsDisabledCategoriesWhenSelectedEmpty(t *testing.T) {
+	r := newMockRegistry(
+		&mockCleaner{category: "cat_a"},
+		&mockCleaner{category: "cat_b"},
+	)
+	cfg, err := config.New(nil, []string{"cat_b"})
+	if err != nil {
+		t.Fatalf("config.New() error: %v", err)
+	}
+
+	got, err := resolveCleaners(r, nil, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Category() != "cat_a" {
+		t.Errorf("got %v, want only cat_a", got)
+	}
+}
+
+func TestResolveCleaners_ExplicitSelectionIgnoresDisabled(t *testing.T) {
+	r := newMockRegistry(
+		&mockCleaner{category: "cat_a"},
+		&mockCleaner{category: "cat_b"},
+	)
+	cfg, err := config.New(nil, []string{"cat_b"})
+	if err != nil {
+		t.Fatalf("config.New() error: %v", err)
+	}
+
+	got, err := resolveCleaners(r, []string{"cat_b"}, cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Category() != "cat_b" {
+		t.Errorf("explicit selection must win over disabled_categories, got %v", got)
+	}
+}
+
+func TestResolveCleaners_AllDisabledWithNoSelectionErrors(t *testing.T) {
+	r := newMockRegistry(&mockCleaner{category: "cat_a"})
+	cfg, err := config.New(nil, []string{"cat_a"})
+	if err != nil {
+		t.Fatalf("config.New() error: %v", err)
+	}
+
+	if _, err := resolveCleaners(r, nil, cfg); err == nil {
+		t.Fatal("expected an error when all categories are disabled with no explicit selection")
 	}
 }
 
@@ -252,6 +309,33 @@ func TestRunScan_DetailedPopulatesFiles(t *testing.T) {
 	}
 	if len(summary.Categories[0].Files) != 0 {
 		t.Errorf("Files should be empty without Detailed, got %d entries", len(summary.Categories[0].Files))
+	}
+}
+
+func TestRunScan_TagsProtectedEntriesWithoutRemovingThem(t *testing.T) {
+	entries := []cleaner.FileEntry{
+		{Path: "/Users/vini/Secrets/file.txt", Size: 100},
+		{Path: "/Users/vini/Downloads/file.txt", Size: 200},
+	}
+	r := newMockRegistry(&mockCleaner{category: "cat_a", entries: entries})
+	cfg, err := config.New([]string{"/Users/vini/Secrets"}, nil)
+	if err != nil {
+		t.Fatalf("config.New() error: %v", err)
+	}
+
+	result, err := RunScan(t.Context(), r, nil, ScanOptions{Detailed: true, Config: cfg}, nil)
+	if err != nil {
+		t.Fatalf("RunScan() error: %v", err)
+	}
+	files := result.Categories[0].Files
+	if len(files) != 2 {
+		t.Fatalf("Tag must not remove entries, got %d want 2", len(files))
+	}
+	if !files[0].Protected {
+		t.Error("expected the secrets file to be tagged protected")
+	}
+	if files[1].Protected {
+		t.Error("expected the downloads file to remain unprotected")
 	}
 }
 

@@ -28,6 +28,8 @@ func (c *TempCleaner) Description() string { return "System and user temporary f
 
 func (c *TempCleaner) RequiresSudo() bool { return true }
 
+func (c *TempCleaner) DeletesWholeDomain() bool { return false }
+
 func (c *TempCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	start := time.Now()
 	result := &ScanResult{

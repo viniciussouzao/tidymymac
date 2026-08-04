@@ -35,6 +35,8 @@ func (c *DownloadsCleaner) Description() string {
 
 func (c *DownloadsCleaner) RequiresSudo() bool { return false }
 
+func (c *DownloadsCleaner) DeletesWholeDomain() bool { return false }
+
 func (c *DownloadsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if c.homeDir == "" {
 		return &ScanResult{Category: CategoryDownloads}, nil

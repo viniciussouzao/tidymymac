@@ -30,6 +30,8 @@ func (c *CachesCleaner) Description() string { return "Browser and application c
 
 func (c *CachesCleaner) RequiresSudo() bool { return false }
 
+func (c *CachesCleaner) DeletesWholeDomain() bool { return false }
+
 // Scan walks through the user's Library/Caches directory and collects information about cache files.
 func (c *CachesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if c.homeDir == "" {

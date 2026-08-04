@@ -113,17 +113,16 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 			b.WriteString("# NOTE: Some of these paths may require sudo\n")
 		}
 
-		// For command-based cleaners (homebrew, docker), emit their CLI commands.
+		// For command-based cleaners (docker), emit their CLI commands.
+		//
+		// Homebrew and Development Artifacts are deliberately NOT special-cased
+		// here to "brew cleanup" / "go clean -cache -modcache": those commands
+		// clear their entire domain regardless of which entries are in
+		// result.Entries, so they would silently delete any protected_paths
+		// entry that scanResultToCleanerResults already stripped out of this
+		// list. They fall through to the generic per-file safe_rm/safe_rm_rf
+		// loop below instead, which only ever touches what's in result.Entries.
 		switch c.Category() {
-		case cleaner.CategoryHomebrew:
-			b.WriteString("if command -v brew &>/dev/null; then\n")
-			b.WriteString("  echo \"Running brew cleanup...\"\n")
-			b.WriteString("  brew cleanup\n")
-			b.WriteString("else\n")
-			b.WriteString("  echo -e \"${YELLOW}[SKIP]${NC} Homebrew not installed\"\n")
-			b.WriteString("fi\n\n")
-			continue
-
 		case cleaner.CategoryDocker:
 			b.WriteString("if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then\n")
 			// Parse docker:// paths and emit specific rm/rmi/volume rm commands.
@@ -147,17 +146,6 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 			}
 			b.WriteString("else\n")
 			b.WriteString("  echo -e \"${YELLOW}[SKIP]${NC} Docker not available\"\n")
-			b.WriteString("fi\n\n")
-			continue
-
-		case cleaner.CategoryDevelopmentArtifacts:
-			b.WriteString("if command -v go &>/dev/null; then\n")
-			b.WriteString("  echo \"Running go clean -cache...\"\n")
-			b.WriteString("  go clean -cache\n")
-			b.WriteString("  echo \"Running go clean -modcache...\"\n")
-			b.WriteString("  go clean -modcache\n")
-			b.WriteString("else\n")
-			b.WriteString("  echo -e \"${YELLOW}[SKIP]${NC} Go not installed\"\n")
 			b.WriteString("fi\n\n")
 			continue
 

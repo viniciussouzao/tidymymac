@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/viniciussouzao/tidymymac/internal/celebration"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
@@ -12,14 +13,15 @@ import (
 
 // SummaryModel is the final screen showing cleanup results.
 type SummaryModel struct {
-	Results    []*cleaner.CleanResult
-	TotalFreed int64
-	TotalFiles int
-	TotalTime  time.Duration
-	ErrorCount int
-	DryRun     bool
-	Width      int
-	Height     int
+	Results     []*cleaner.CleanResult
+	TotalFreed  int64
+	TotalFiles  int
+	TotalTime   time.Duration
+	ErrorCount  int
+	DryRun      bool
+	Celebration string
+	Width       int
+	Height      int
 }
 
 // NewSummary creates a summary from clean results.
@@ -30,6 +32,9 @@ func NewSummary(results []*cleaner.CleanResult, dryRun bool) SummaryModel {
 	}
 
 	for _, r := range results {
+		if r == nil {
+			continue
+		}
 		if r.Skipped {
 			continue
 		}
@@ -39,7 +44,26 @@ func NewSummary(results []*cleaner.CleanResult, dryRun bool) SummaryModel {
 		m.ErrorCount += len(r.Errors)
 	}
 
+	if !dryRun {
+		m.Celebration = celebration.Message(celebrationResults(results))
+	}
+
 	return m
+}
+
+func celebrationResults(results []*cleaner.CleanResult) []celebration.Result {
+	converted := make([]celebration.Result, 0, len(results))
+	for _, result := range results {
+		if result == nil || result.Skipped {
+			continue
+		}
+		converted = append(converted, celebration.Result{
+			Category:   result.Category,
+			BytesFreed: result.BytesFreed,
+			Failed:     len(result.Errors) > 0,
+		})
+	}
+	return converted
 }
 
 // SetSize updates dimensions.
@@ -97,6 +121,10 @@ func (m SummaryModel) View() string {
 	totalLine := fmt.Sprintf("  %-22s %12s %10d", "Total", utils.FormatBytes(m.TotalFreed), m.TotalFiles)
 	b.WriteString(styles.Success.Render(totalLine))
 	b.WriteString("\n\n")
+	if m.Celebration != "" {
+		b.WriteString(styles.Success.Render("  " + m.Celebration))
+		b.WriteString("\n\n")
+	}
 
 	b.WriteString(styles.Dim.Render(fmt.Sprintf("  Time elapsed: %s", m.TotalTime.Round(time.Millisecond))))
 	b.WriteString("\n")

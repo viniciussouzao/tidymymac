@@ -19,6 +19,7 @@ This document describes the internal architecture of TidyMyMac: how the packages
   - [internal/cleaner/](#internalcleaner)
   - [internal/commands/](#internalcommands)
   - [internal/config/](#internalconfig)
+  - [internal/celebration/](#internalcelebration)
   - [internal/tui/](#internaltui)
   - [internal/history/](#internalhistory)
   - [internal/explain/](#internalexplain)
@@ -106,6 +107,9 @@ tidymymac/
 │   │   ├── config.go             # Load/normalize, protected-path matching, ResolveProfile
 │   │   ├── write.go              # yaml.Node surgery for protected_paths + atomic write
 │   │   └── write_profiles.go     # Same, for the profiles tree
+│   │
+│   ├── celebration/              # Post-cleanup celebration message selection
+│   │   └── celebration.go        # Winner selection, random template, size analogy
 │   │
 │   ├── tui/                      # BubbleTea TUI application
 │   │   ├── app.go                # Root model — manages screen transitions
@@ -323,6 +327,10 @@ The safety layer, backed by `~/.tidymymac/config.yaml` (see [docs/CONFIGURATION.
 **Profile resolution.** `ResolveProfile(base, name, includeLargeFiles)` returns the `(categories, registry)` pair described above. When a profile has project paths, it rebuilds the registry from `base.All()` with a configured `ProjectArtifactsCleaner` substituted in place — rebuilt rather than re-`Register`ed, because `Register` replaces the `byID` entry but *appends* to the ordered slice, which would leave `All()` returning the cleaner twice. Profile paths are re-validated here, so a hand-edited entry fails only that profile.
 
 **Writing.** `write.go` and `write_profiles.go` edit the file as a `yaml.Node` tree rather than re-marshalling a struct, which is what preserves hand-written comments. Every write is atomic (temp file + rename, mirroring `internal/history`) and is followed by a reload that must still satisfy `Load`'s invariants — catching a node-surgery bug at `protect`/`profile` time instead of on the next real clean. An already-invalid file is refused rather than patched around.
+
+### `internal/celebration/`
+
+`celebration` picks the single celebration message shown after a real (non-dry-run) cleanup, both in the CLI (`cmd/clean.go`) and in the TUI summary screen. `Message(results)` selects the successful category that reclaimed the most space — failed categories and zero-byte results are excluded, so space is never celebrated when it wasn't actually freed — and renders a random template with the freed size plus an approximate real-world analogy ("about 4 HD TV episodes at ~500.0 MB each") derived from a sorted table of reference sizes. It returns an empty string when there is nothing worth celebrating, and callers simply skip rendering in that case.
 
 ### `internal/tui/`
 

@@ -35,6 +35,9 @@ func TestWriteCleanOutput_JSON(t *testing.T) {
 			t.Errorf("output missing %q\n%s", want, got)
 		}
 	}
+	if strings.Contains(got, "celebration") {
+		t.Errorf("JSON output must not include a celebration message\n%s", got)
+	}
 }
 
 func TestWriteCleanOutput_UnsupportedFormat(t *testing.T) {

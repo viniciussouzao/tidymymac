@@ -277,3 +277,82 @@ func TestFilterRegistry_NilConfigReturnsSameRegistry(t *testing.T) {
 		t.Error("expected nil config to return the same registry unchanged")
 	}
 }
+
+func TestContainsProtected(t *testing.T) {
+	cfg, err := New([]string{"/Users/vini/proj/node_modules/my-patch"}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/Users/vini/proj/node_modules", true},
+		{"/Users/vini/proj", true},
+		{"/Users/vini/PROJ", true}, // APFS is case-insensitive by default
+		{"/Users/vini/proj/node_modules/", true},
+		{"/Users/vini/proj/node_modules/my-patch", false}, // the root itself is not strictly inside itself
+		{"/Users/vini/proj/node_modules/my-patch/deep", false},
+		{"/Users/vini/other", false},
+		{"/Users/vini/proj/node_modules-2", false}, // prefix without a separator must not match
+	}
+
+	for _, tc := range tests {
+		if got := cfg.ContainsProtected(tc.path); got != tc.want {
+			t.Errorf("ContainsProtected(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestContainsProtected_NilSafe(t *testing.T) {
+	var cfg *Config
+	if cfg.ContainsProtected("/anything") {
+		t.Error("ContainsProtected on a nil Config must be false")
+	}
+}
+
+func TestTag_MarksDirectoryContainingProtectedPath(t *testing.T) {
+	cfg, err := New([]string{"/Users/vini/proj/node_modules/my-patch"}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	entries := []cleaner.FileEntry{
+		// Recorded as a whole unit: deleting it would take the protected
+		// path inside it along.
+		{Path: "/Users/vini/proj/node_modules", IsDir: true},
+		// Same path as a file entry: containment cannot apply, a file has
+		// nothing inside it.
+		{Path: "/Users/vini/proj/node_modules", IsDir: false},
+		{Path: "/Users/vini/proj/dist", IsDir: true},
+	}
+
+	tagged := cfg.Tag(entries)
+	if !tagged[0].Protected {
+		t.Error("directory entry containing a protected path must be tagged Protected")
+	}
+	if tagged[1].Protected {
+		t.Error("file entry must not be tagged by containment")
+	}
+	if tagged[2].Protected {
+		t.Error("unrelated directory entry must not be tagged")
+	}
+}
+
+func TestTag_StillMarksEntriesUnderAProtectedRoot(t *testing.T) {
+	cfg, err := New([]string{"/Users/vini/proj"}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tagged := cfg.Tag([]cleaner.FileEntry{
+		{Path: "/Users/vini/proj/node_modules", IsDir: true},
+		{Path: "/Users/vini/proj/big.bin"},
+	})
+	for i, e := range tagged {
+		if !e.Protected {
+			t.Errorf("entry %d (%s) under a protected root must stay tagged", i, e.Path)
+		}
+	}
+}

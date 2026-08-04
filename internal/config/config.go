@@ -241,6 +241,31 @@ func (c *Config) IsProtected(path string) bool {
 	return false
 }
 
+// ContainsProtected reports whether a protected path lies strictly *inside*
+// path -- IsProtected's containment check, reversed. nil-safe.
+//
+// Cleaners that record a directory as a single whole unit without descending
+// into it (downloads' folders, and any future cleaner that does the same)
+// need this: such an entry is not itself under any protected root, so
+// IsProtected returns false, yet deleting it with os.RemoveAll would take the
+// protected path nested inside it along too. Only meaningful for directory
+// entries -- see Tag.
+func (c *Config) ContainsProtected(path string) bool {
+	if c == nil {
+		return false
+	}
+	prefix := strings.ToLower(filepath.Clean(path))
+	if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
+		prefix += string(os.PathSeparator)
+	}
+	for _, root := range c.normalizedProtected {
+		if strings.HasPrefix(root, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsCategoryDisabled reports whether category is listed in
 // disabled_categories. nil-safe.
 func (c *Config) IsCategoryDisabled(category string) bool {
@@ -255,13 +280,18 @@ func (c *Config) IsCategoryDisabled(category string) bool {
 // protected_paths. It never removes entries: scan output and dry-run
 // previews must show protected files, not hide them. nil-safe (returns
 // entries unchanged).
+//
+// A directory entry is also tagged when it *contains* a protected path
+// (ContainsProtected): deleting it would remove the protected path with it,
+// and a cleaner that records a directory as a whole unit has no way to spare
+// just the part inside.
 func (c *Config) Tag(entries []cleaner.FileEntry) []cleaner.FileEntry {
 	if c == nil || len(c.normalizedProtected) == 0 {
 		return entries
 	}
 	tagged := make([]cleaner.FileEntry, len(entries))
 	for i, e := range entries {
-		e.Protected = c.IsProtected(e.Path)
+		e.Protected = c.IsProtected(e.Path) || (e.IsDir && c.ContainsProtected(e.Path))
 		tagged[i] = e
 	}
 	return tagged

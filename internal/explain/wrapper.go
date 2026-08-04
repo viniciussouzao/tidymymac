@@ -86,14 +86,14 @@ func (c scannerContributor) Run(ctx context.Context) (ContributorResult, error) 
 	return result, nil
 }
 
-// RunProfile executes all contributors in the given profile definition and aggregates the results.
-func RunProfile(ctx context.Context, def ProfileDefinition) (ProfileResult, error) {
-	if len(def.Profile) == 0 {
-		return ProfileResult{}, fmt.Errorf("profile definition has no profile names")
+// RunTopic executes all contributors in the given topic definition and aggregates the results.
+func RunTopic(ctx context.Context, def TopicDefinition) (TopicResult, error) {
+	if len(def.Aliases) == 0 {
+		return TopicResult{}, fmt.Errorf("topic definition has no names")
 	}
 
-	result := ProfileResult{
-		Name:         def.Profile[0],
+	result := TopicResult{
+		Name:         def.Aliases[0],
 		Description:  def.Description,
 		Summary:      def.Summary,
 		CoverageNote: def.CoverageNote,

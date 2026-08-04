@@ -18,45 +18,45 @@ func TestNewRegistryIsEmpty(t *testing.T) {
 
 func TestRegistryRegisterAndGet(t *testing.T) {
 	r := NewRegistry()
-	def := ProfileDefinition{Profile: []Profile{ProfileSystemData}}
+	def := TopicDefinition{Aliases: []Topic{TopicSystemData}}
 	r.Register(def)
 
-	got, ok := r.Get(ProfileSystemData)
+	got, ok := r.Get(TopicSystemData)
 	if !ok {
-		t.Fatal("Get(ProfileSystemData) returned false after Register")
+		t.Fatal("Get(TopicSystemData) returned false after Register")
 	}
-	if len(got.Profile) == 0 || got.Profile[0] != ProfileSystemData {
-		t.Errorf("Get returned unexpected profile: %v", got.Profile)
+	if len(got.Aliases) == 0 || got.Aliases[0] != TopicSystemData {
+		t.Errorf("Get returned unexpected topic: %v", got.Aliases)
 	}
 }
 
 func TestRegistryGetMissing(t *testing.T) {
 	r := NewRegistry()
-	_, ok := r.Get(ProfileSystemData)
+	_, ok := r.Get(TopicSystemData)
 	if ok {
-		t.Error("Get(ProfileSystemData) returned true on empty registry")
+		t.Error("Get(TopicSystemData) returned true on empty registry")
 	}
 }
 
 func TestRegistryAllPreservesOrder(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ProfileDefinition{Profile: []Profile{"first"}})
-	r.Register(ProfileDefinition{Profile: []Profile{"second"}})
+	r.Register(TopicDefinition{Aliases: []Topic{"first"}})
+	r.Register(TopicDefinition{Aliases: []Topic{"second"}})
 
 	all := r.All()
 	if len(all) != 2 {
 		t.Fatalf("All() returned %d definitions, want 2", len(all))
 	}
-	if all[0].Profile[0] != "first" || all[1].Profile[0] != "second" {
+	if all[0].Aliases[0] != "first" || all[1].Aliases[0] != "second" {
 		t.Error("All() did not preserve registration order")
 	}
 }
 
 func TestRegistryRegisterMultipleAliases(t *testing.T) {
 	r := NewRegistry()
-	r.Register(ProfileDefinition{Profile: []Profile{"alias-one", "alias-two"}})
+	r.Register(TopicDefinition{Aliases: []Topic{"alias-one", "alias-two"}})
 
-	for _, alias := range []Profile{"alias-one", "alias-two"} {
+	for _, alias := range []Topic{"alias-one", "alias-two"} {
 		if _, ok := r.Get(alias); !ok {
 			t.Errorf("Get(%q) returned false, want true", alias)
 		}
@@ -65,30 +65,30 @@ func TestRegistryRegisterMultipleAliases(t *testing.T) {
 
 func TestDefaultRegistryContainsSystemData(t *testing.T) {
 	r := DefaultRegistry(cleaner.DefaultRegistry())
-	if _, ok := r.Get(ProfileSystemData); !ok {
-		t.Error("DefaultRegistry does not contain ProfileSystemData")
+	if _, ok := r.Get(TopicSystemData); !ok {
+		t.Error("DefaultRegistry does not contain TopicSystemData")
 	}
 }
 
-// ResolveProfile
+// ResolveTopic
 
-func TestResolveProfileKnown(t *testing.T) {
-	def, err := ResolveProfile(ProfileSystemData, cleaner.DefaultRegistry())
+func TestResolveTopicKnown(t *testing.T) {
+	def, err := ResolveTopic(TopicSystemData, cleaner.DefaultRegistry())
 	if err != nil {
-		t.Fatalf("ResolveProfile() error: %v", err)
+		t.Fatalf("ResolveTopic() error: %v", err)
 	}
-	if len(def.Profile) == 0 || def.Profile[0] != ProfileSystemData {
-		t.Errorf("unexpected profile: %v", def.Profile)
+	if len(def.Aliases) == 0 || def.Aliases[0] != TopicSystemData {
+		t.Errorf("unexpected topic: %v", def.Aliases)
 	}
 }
 
-func TestResolveProfileUnknown(t *testing.T) {
-	_, err := ResolveProfile("nonexistent", cleaner.NewRegistry())
+func TestResolveTopicUnknown(t *testing.T) {
+	_, err := ResolveTopic("nonexistent", cleaner.NewRegistry())
 	if err == nil {
-		t.Fatal("ResolveProfile() expected error for unknown profile, got nil")
+		t.Fatal("ResolveTopic() expected error for unknown topic, got nil")
 	}
 	if !strings.Contains(err.Error(), "nonexistent") {
-		t.Errorf("error %q does not mention the unknown profile name", err.Error())
+		t.Errorf("error %q does not mention the unknown topic name", err.Error())
 	}
 }
 

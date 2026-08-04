@@ -75,8 +75,8 @@ type ContributorResult struct {
 	ErrorMessage   string
 }
 
-type ProfileResult struct {
-	Name           Profile
+type TopicResult struct {
+	Name           Topic
 	Description    string
 	Summary        string
 	ScannedAt      time.Time

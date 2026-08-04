@@ -66,6 +66,10 @@ func DefaultRegistry() *Registry {
 	r.Register(NewHomebrewCleaner())
 	r.Register(NewCachesCleaner())
 	r.Register(NewDevelopmentArtifactsCleaner())
+	// No paths by default: project-artifacts only ever has roots when a
+	// profile supplies them (see config.ResolveProfile), so a bare
+	// "scan project-artifacts" is inert rather than broken.
+	r.Register(NewProjectArtifactsCleaner(nil, 0, false))
 	r.Register(NewLogsCleaner())
 	r.Register(NewDockerCleaner())
 	r.Register(NewIOSBackupsCleaner())

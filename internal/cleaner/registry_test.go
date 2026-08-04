@@ -80,6 +80,7 @@ func TestDefaultRegistryHasAllCleaners(t *testing.T) {
 		CategoryHomebrew,
 		CategoryApplicationCaches,
 		CategoryDevelopmentArtifacts,
+		CategoryProjectArtifacts,
 		CategoryLogs,
 		CategoryDocker,
 		CategoryIOSBackups,

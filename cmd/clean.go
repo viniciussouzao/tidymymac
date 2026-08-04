@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/viniciussouzao/tidymymac/internal/celebration"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
 	"github.com/viniciussouzao/tidymymac/internal/history"
@@ -380,6 +381,7 @@ type cleanModel struct {
 	cleaning       bool
 	categories     []cleanCategoryProgress
 	eventCh        chan commands.CleanEvent
+	celebration    string
 }
 
 func newCleanModel(ctx context.Context, registry *cleaner.Registry, args []string, detailed bool, fromFile string, forceStaleScan bool, dryRun bool) cleanModel {
@@ -489,6 +491,9 @@ func (m cleanModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.revalidation = msg.revalidation
 		if m.err == nil {
 			m.result = &msg.result
+			if !m.dryRun {
+				m.celebration = cleanCelebration(msg.result)
+			}
 		}
 		return m, tea.Quit
 	}
@@ -604,6 +609,10 @@ func (m cleanModel) View() string {
 		styles.Dim.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
 		styles.SizeStyled(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))))
 	b.WriteString("\n")
+	if m.celebration != "" {
+		b.WriteString(styles.Success.Render("  " + m.celebration))
+		b.WriteString("\n")
+	}
 	if m.dryRun {
 		b.WriteString(styles.Help.Render("  Preview only. Run 'tidymymac clean --execute' to actually delete these files."))
 	} else {
@@ -615,6 +624,18 @@ func (m cleanModel) View() string {
 
 func actionSize(size int64) string {
 	return utils.FormatBytes(size)
+}
+
+func cleanCelebration(result commands.CleanResult) string {
+	converted := make([]celebration.Result, 0, len(result.Categories))
+	for _, category := range result.Categories {
+		converted = append(converted, celebration.Result{
+			Category:   category.Category,
+			BytesFreed: category.DeletedSize,
+			Failed:     category.Err != nil,
+		})
+	}
+	return celebration.Message(converted)
 }
 
 func buildRunRecord(result commands.CleanResult, durationMs int64) history.RunRecord {

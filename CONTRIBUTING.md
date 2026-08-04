@@ -45,7 +45,7 @@ Requires **Go 1.26+**.
 | `internal/commands/` | Reusable scan/clean orchestration shared by CLI and TUI |
 | `internal/config/` | Safety config (`~/.tidymymac/config.yaml`): protected paths, disabled categories, profiles |
 | `internal/tui/` | BubbleTea TUI (Elm architecture) + `styles/` |
-| `internal/history`, `explain`, `scriptgen`, `buildinfo` | Supporting packages |
+| `internal/history`, `celebration`, `explain`, `scriptgen`, `buildinfo` | Supporting packages |
 | `pkg/utils/` | Public disk/format helpers |
 
 ## Coding standards

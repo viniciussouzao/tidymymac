@@ -24,32 +24,23 @@ type Result struct {
 	Failed     bool
 }
 
-type tier uint8
-
-const (
-	tierSmall     tier = iota // >0 through 100 MiB
-	tierMedium                // >100 MiB through <1 GiB
-	tierLarge                 // 1 GiB through <5 GiB
-	tierVeryLarge             // 5 GiB through <10 GiB
-	tierHuge                  // 10 GiB and above
-)
-
 type reference struct {
-	plural   string
-	singular string
-	bytes    int64
+	plural string
+	bytes  int64
 }
 
+// references must stay sorted ascending by bytes: the exceptionally-large
+// fallback in comparisonFor relies on the last entry being the largest.
 var references = []reference{
-	{plural: "compressed images", singular: "compressed image", bytes: 512 * kiB},
-	{plural: "high-resolution photos", singular: "high-resolution photo", bytes: 4 * miB},
-	{plural: "app downloads", singular: "app download", bytes: 25 * miB},
-	{plural: "music albums", singular: "music album", bytes: 100 * miB},
-	{plural: "HD TV episodes", singular: "HD TV episode", bytes: 500 * miB},
-	{plural: "HD movies", singular: "HD movie", bytes: 2 * giB},
-	{plural: "device backups", singular: "device backup", bytes: 10 * giB},
-	{plural: "large device backups", singular: "large device backup", bytes: 50 * giB},
-	{plural: "media libraries", singular: "media library", bytes: 250 * giB},
+	{plural: "compressed images", bytes: 512 * kiB},
+	{plural: "high-resolution photos", bytes: 4 * miB},
+	{plural: "app downloads", bytes: 25 * miB},
+	{plural: "music albums", bytes: 100 * miB},
+	{plural: "HD TV episodes", bytes: 500 * miB},
+	{plural: "HD movies", bytes: 2 * giB},
+	{plural: "device backups", bytes: 10 * giB},
+	{plural: "large device backups", bytes: 50 * giB},
+	{plural: "media libraries", bytes: 250 * giB},
 }
 
 type comparisonKind uint8
@@ -57,50 +48,21 @@ type comparisonKind uint8
 const (
 	comparisonDirect comparisonKind = iota
 	comparisonCount
-	comparisonProportion
 )
 
 type comparison struct {
 	kind      comparisonKind
 	count     int64
 	reference reference
-	ratio     float64
 }
 
-// catalog contains two messages for each supported category and size tier.
-// The comparisons are deliberately phrased as estimates because file sizes vary.
-var catalog = buildCatalog()
-
-var supportedCategories = []cleaner.Category{
-	cleaner.CategoryTemp,
-	cleaner.CategoryHomebrew,
-	cleaner.CategoryApplicationCaches,
-	cleaner.CategoryLogs,
-	cleaner.CategoryDocker,
-	cleaner.CategoryIOSBackups,
-	cleaner.CategoryUpdates,
-	cleaner.CategoryTrashBin,
-	cleaner.CategoryXcode,
-	cleaner.CategoryDevelopmentArtifacts,
-	cleaner.CategoryProjectArtifacts,
-	cleaner.CategoryTimeMachineSnapshots,
-	cleaner.CategoryDownloads,
-	cleaner.CategoryAppOrphans,
-}
-
-func buildCatalog() map[cleaner.Category]map[tier][]string {
-	catalog := make(map[cleaner.Category]map[tier][]string, len(supportedCategories))
-	for _, category := range supportedCategories {
-		byTier := make(map[tier][]string, tierHuge-tierSmall+1)
-		for currentTier := tierSmall; currentTier <= tierHuge; currentTier++ {
-			byTier[currentTier] = []string{
-				"%s was the cleanup champion, reclaiming %s%s.",
-				"%s took the biggest bite out of clutter: %s%s.",
-			}
-		}
-		catalog[category] = byTier
-	}
-	return catalog
+// messages are the celebration templates. Each must take exactly three verbs,
+// in this order: category display name, formatted freed size, comparison
+// suffix. The comparisons are deliberately phrased as estimates because file
+// sizes vary.
+var messages = []string{
+	"%s was the cleanup champion, reclaiming %s%s.",
+	"%s took the biggest bite out of clutter: %s%s.",
 }
 
 // Message returns a randomized celebration for the successful category that
@@ -112,20 +74,12 @@ func Message(results []Result) string {
 		return ""
 	}
 
-	currentTier := tierFor(winner.BytesFreed)
-	comparison := comparisonFor(winner.BytesFreed)
-
-	messages := catalog[winner.Category][currentTier]
-	if len(messages) == 0 {
-		messages = fallbackMessages()
-	}
-
 	template := messages[rand.IntN(len(messages))]
 	return fmt.Sprintf(
 		template,
 		winner.Category.DisplayName(),
 		utils.FormatBytes(winner.BytesFreed),
-		comparison.suffix(),
+		comparisonFor(winner.BytesFreed).suffix(),
 	)
 }
 
@@ -144,46 +98,19 @@ func largestSuccessfulResult(results []Result) (Result, bool) {
 	return winner, found
 }
 
-func tierFor(bytes int64) tier {
-	switch {
-	case bytes <= 100*miB:
-		return tierSmall
-	case bytes < giB:
-		return tierMedium
-	case bytes < 5*giB:
-		return tierLarge
-	case bytes < 10*giB:
-		return tierVeryLarge
-	default:
-		return tierHuge
-	}
-}
-
 func comparisonFor(bytes int64) comparison {
-	return comparisonForReferences(bytes, references)
-}
-
-func comparisonForReferences(bytes int64, candidates []reference) comparison {
-	if bytes < miB || len(candidates) == 0 {
+	if bytes < miB {
 		return comparison{kind: comparisonDirect}
 	}
 
-	if ref, count, ok := bestCountReference(bytes, candidates); ok {
+	if ref, count, ok := bestCountReference(bytes); ok {
 		return comparison{kind: comparisonCount, count: count, reference: ref}
 	}
 
-	if ref, ok := smallestLargerReference(bytes, candidates); ok {
-		return comparison{
-			kind:      comparisonProportion,
-			reference: ref,
-			ratio:     float64(bytes) / float64(ref.bytes),
-		}
-	}
-
-	// An exceptionally large cleanup can outgrow every candidate. Keeping the
-	// largest reference still gives a useful approximate comparison, even when
-	// the resulting count is above the preferred 2–20 range.
-	ref := candidates[len(candidates)-1]
+	// An exceptionally large cleanup can outgrow every reference. Keeping the
+	// largest one still gives a useful approximate comparison, even when the
+	// resulting count is above the preferred 2–20 range.
+	ref := references[len(references)-1]
 	return comparison{
 		kind:      comparisonCount,
 		count:     roundedCount(bytes, ref.bytes),
@@ -191,13 +118,13 @@ func comparisonForReferences(bytes int64, candidates []reference) comparison {
 	}
 }
 
-func bestCountReference(bytes int64, candidates []reference) (reference, int64, bool) {
+func bestCountReference(bytes int64) (reference, int64, bool) {
 	const idealCount int64 = 5
 
 	var best reference
 	var bestCount, bestDistance int64
 	found := false
-	for _, candidate := range candidates {
+	for _, candidate := range references {
 		count := roundedCount(bytes, candidate.bytes)
 		if count < 2 || count > 20 {
 			continue
@@ -211,15 +138,6 @@ func bestCountReference(bytes int64, candidates []reference) (reference, int64, 
 	return best, bestCount, found
 }
 
-func smallestLargerReference(bytes int64, candidates []reference) (reference, bool) {
-	for _, candidate := range candidates {
-		if candidate.bytes > bytes {
-			return candidate, true
-		}
-	}
-	return reference{}, false
-}
-
 func roundedCount(bytes, referenceBytes int64) int64 {
 	if referenceBytes <= 0 {
 		return 0
@@ -228,32 +146,8 @@ func roundedCount(bytes, referenceBytes int64) int64 {
 }
 
 func (c comparison) suffix() string {
-	switch c.kind {
-	case comparisonCount:
+	if c.kind == comparisonCount {
 		return fmt.Sprintf(" — about %d %s at ~%s each", c.count, c.reference.plural, utils.FormatBytes(c.reference.bytes))
-	case comparisonProportion:
-		return fmt.Sprintf(" — %s the size of a %s (~%s)", proportionLabel(c.ratio), c.reference.singular, utils.FormatBytes(c.reference.bytes))
-	default:
-		return ""
 	}
-}
-
-func proportionLabel(ratio float64) string {
-	switch {
-	case ratio < 0.375:
-		return "roughly one quarter"
-	case ratio < 0.625:
-		return "about half"
-	case ratio < 0.875:
-		return "about three-quarters"
-	default:
-		return "almost"
-	}
-}
-
-func fallbackMessages() []string {
-	return []string{
-		"%s led the cleanup with %s%s.",
-		"The biggest cleanup win was %s at %s%s.",
-	}
+	return ""
 }

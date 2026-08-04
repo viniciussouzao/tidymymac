@@ -74,3 +74,17 @@ func TestNewSummaryCelebratesOnlySuccessfulCategoriesInPartialCleanup(t *testing
 		t.Errorf("Celebration = %q, must not use failed category", summary.Celebration)
 	}
 }
+
+func TestNewSummaryIgnoresNilResults(t *testing.T) {
+	summary := NewSummary([]*cleaner.CleanResult{
+		nil,
+		{Category: cleaner.CategoryLogs, BytesFreed: 200 << 20, FilesDeleted: 3},
+	}, false)
+
+	if summary.TotalFreed != 200<<20 || summary.TotalFiles != 3 {
+		t.Errorf("totals = %d bytes / %d files, want only the non-nil result", summary.TotalFreed, summary.TotalFiles)
+	}
+	if !strings.Contains(summary.Celebration, cleaner.CategoryLogs.DisplayName()) {
+		t.Errorf("Celebration = %q, want it to use the non-nil category", summary.Celebration)
+	}
+}

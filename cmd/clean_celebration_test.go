@@ -59,6 +59,12 @@ func TestCleanModelOmitsCelebrationForDryRunZeroSpaceAndFailure(t *testing.T) {
 				Category: cleaner.CategoryDocker, DeletedSize: 2 << 30, Err: errors.New("clean failed"),
 			}}},
 		},
+		{
+			name: "all with partial errors",
+			result: commands.CleanResult{Categories: []commands.CleanCategoryResult{{
+				Category: cleaner.CategoryDocker, DeletedSize: 2 << 30, PartialErrors: 1,
+			}}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -83,5 +89,19 @@ func TestCleanCelebrationIgnoresFailedCategoriesInPartialCleanup(t *testing.T) {
 	}
 	if strings.Contains(message, cleaner.CategoryDocker.DisplayName()) {
 		t.Errorf("celebration = %q, must not use failed category", message)
+	}
+}
+
+func TestCleanCelebrationIgnoresCategoriesWithPartialErrors(t *testing.T) {
+	message := cleanCelebration(commands.CleanResult{Categories: []commands.CleanCategoryResult{
+		{Category: cleaner.CategoryDocker, DeletedSize: 8 << 30, PartialErrors: 2},
+		{Category: cleaner.CategoryLogs, DeletedSize: 200 << 20},
+	}})
+
+	if !strings.Contains(message, cleaner.CategoryLogs.DisplayName()) {
+		t.Errorf("celebration = %q, want fully successful category", message)
+	}
+	if strings.Contains(message, cleaner.CategoryDocker.DisplayName()) {
+		t.Errorf("celebration = %q, must not use category with partial errors", message)
 	}
 }

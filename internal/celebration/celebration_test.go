@@ -1,37 +1,12 @@
 package celebration
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 )
-
-func TestTierForBoundaries(t *testing.T) {
-	tests := []struct {
-		name  string
-		bytes int64
-		want  tier
-	}{
-		{"one byte", 1, tierSmall},
-		{"100 MiB", 100 * miB, tierSmall},
-		{"just above 100 MiB", 100*miB + 1, tierMedium},
-		{"just below 1 GiB", giB - 1, tierMedium},
-		{"1 GiB", giB, tierLarge},
-		{"just below 5 GiB", 5*giB - 1, tierLarge},
-		{"5 GiB", 5 * giB, tierVeryLarge},
-		{"just below 10 GiB", 10*giB - 1, tierVeryLarge},
-		{"10 GiB", 10 * giB, tierHuge},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tierFor(tt.bytes); got != tt.want {
-				t.Errorf("tierFor(%d) = %v, want %v", tt.bytes, got, tt.want)
-			}
-		})
-	}
-}
 
 func TestLargestSuccessfulResultUsesLargestAndInputOrderForTies(t *testing.T) {
 	results := []Result{
@@ -119,17 +94,6 @@ func TestMessageBelowOneMiBDoesNotIncludeAnAnalogy(t *testing.T) {
 	}
 }
 
-func TestComparisonForUsesProportionWhenNoCountIsPlausible(t *testing.T) {
-	candidates := []reference{{plural: "high-resolution photos", singular: "high-resolution photo", bytes: 4 * miB}}
-	comparison := comparisonForReferences(2*miB, candidates)
-	if comparison.kind != comparisonProportion {
-		t.Fatalf("comparison kind = %v, want proportion", comparison.kind)
-	}
-	if got := comparison.suffix(); !strings.Contains(got, "about half the size of a high-resolution photo") {
-		t.Errorf("suffix = %q, want an approximate half-size comparison", got)
-	}
-}
-
 func TestComparisonNeverRoundsSubReferenceSpaceUpToOneItem(t *testing.T) {
 	comparison := comparisonFor(11 * giB / 10)
 	if comparison.kind == comparisonCount && comparison.count == 1 {
@@ -147,27 +111,32 @@ func TestComparisonForUsesLargestReferenceForExceptionallyLargeCleanup(t *testin
 	}
 }
 
-func TestCatalogCoversEveryCategoryAndTier(t *testing.T) {
-	if len(catalog) != len(supportedCategories) {
-		t.Fatalf("catalog has %d categories, want %d", len(catalog), len(supportedCategories))
+func TestMessageNamesUnknownCategory(t *testing.T) {
+	message := Message([]Result{{Category: "future-category", BytesFreed: giB}})
+	if !strings.Contains(message, "future-category") {
+		t.Errorf("message %q does not name the unknown category", message)
 	}
-
-	for _, category := range supportedCategories {
-		for currentTier := tierSmall; currentTier <= tierHuge; currentTier++ {
-			messages := catalog[category][currentTier]
-			if len(messages) < 2 {
-				t.Errorf("catalog[%q][%v] has %d messages, want at least 2", category, currentTier, len(messages))
-			}
-		}
+	if !strings.Contains(message, "about") {
+		t.Errorf("message %q does not make its comparison approximate", message)
 	}
 }
 
-func TestMessageUsesFallbackForUnknownCategory(t *testing.T) {
-	message := Message([]Result{{Category: "future-category", BytesFreed: giB}})
-	if !strings.Contains(message, "future-category") {
-		t.Errorf("fallback message %q does not name the unknown category", message)
-	}
-	if !strings.Contains(message, "about") && !strings.Contains(message, "roughly") {
-		t.Errorf("fallback message %q does not make its comparison approximate", message)
+func TestMessageTemplatesAreWellFormed(t *testing.T) {
+	const (
+		category   = "Docker"
+		size       = "2.0 GB"
+		comparison = " — about 4 HD TV episodes at ~500.0 MB each"
+	)
+
+	for _, template := range messages {
+		rendered := fmt.Sprintf(template, category, size, comparison)
+		if strings.Contains(rendered, "%!") {
+			t.Errorf("template %q renders verb errors: %q", template, rendered)
+		}
+		for _, arg := range []string{category, size, comparison} {
+			if !strings.Contains(rendered, arg) {
+				t.Errorf("template %q renders %q, which is missing %q", template, rendered, arg)
+			}
+		}
 	}
 }

@@ -632,7 +632,9 @@ func cleanCelebration(result commands.CleanResult) string {
 		converted = append(converted, celebration.Result{
 			Category:   category.Category,
 			BytesFreed: category.DeletedSize,
-			Failed:     category.Err != nil,
+			// Mirror the TUI summary: a category with any error, fatal or
+			// partial, is not celebrated even if it reclaimed some space.
+			Failed: category.Err != nil || category.PartialErrors > 0,
 		})
 	}
 	return celebration.Message(converted)

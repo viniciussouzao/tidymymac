@@ -29,6 +29,10 @@ type CleanCategoryResult struct {
 	Files        []cleaner.FileEntry `json:"files,omitempty"`
 	Err          error               `json:"-"`
 	ErrMsg       string              `json:"error,omitempty"`
+	// PartialErrors counts non-fatal per-file errors collected by the cleaner
+	// while it still reclaimed some space. Kept out of the JSON output to
+	// preserve the machine-readable schema.
+	PartialErrors int `json:"-"`
 }
 
 // CleanResult represents the overall result of the cleaning process.
@@ -159,6 +163,7 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 			if cleanRunResult != nil {
 				item.DeletedFiles = cleanRunResult.FilesDeleted
 				item.DeletedSize = cleanRunResult.BytesFreed
+				item.PartialErrors = len(cleanRunResult.Errors)
 			}
 
 			if scanErr != nil {

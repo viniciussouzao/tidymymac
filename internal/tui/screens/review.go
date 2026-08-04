@@ -206,15 +206,16 @@ func (m *ReviewModel) scrollIntoView(ci, fi int) {
 	focusedLine := m.fileLineIndex(ci, fi)
 	visibleEnd := m.ScrollPos + viewHeight - 1
 
-	if focusedLine >= m.ScrollPos && focusedLine <= visibleEnd {
+	switch {
+	case focusedLine >= m.ScrollPos && focusedLine <= visibleEnd:
 		// Already visible — don't scroll.
-	} else if focusedLine > visibleEnd {
+	case focusedLine > visibleEnd:
 		// Below viewport: scroll down minimally.
 		m.ScrollPos = focusedLine - viewHeight + 2
 		if m.ScrollPos < 0 {
 			m.ScrollPos = 0
 		}
-	} else {
+	default:
 		// Above viewport: scroll up to show the category header.
 		m.ScrollPos = headerLine
 	}
@@ -259,15 +260,6 @@ func (m *ReviewModel) ToggleFullPath() {
 func (m *ReviewModel) SetSize(w, h int) {
 	m.Width = w
 	m.Height = h
-}
-
-// totalFiles returns the total number of files across all categories.
-func (m ReviewModel) totalFiles() int {
-	n := 0
-	for _, c := range m.Categories {
-		n += len(c.AllFiles)
-	}
-	return n
 }
 
 // globalFileIndexFor returns the global file index across all categories for (ci, fi).
@@ -561,7 +553,8 @@ func (m ReviewModel) View() string {
 		b.WriteString(styles.Muted.Render(catPos) + "\n")
 	}
 
-	if m.ConfirmState != ConfirmNone {
+	switch {
+	case m.ConfirmState != ConfirmNone:
 		totalSize, totalFiles := m.actionableTotals()
 		message := fmt.Sprintf(
 			"  !! Permanently delete %s across %d files? Press enter to confirm or esc to cancel.",
@@ -577,13 +570,13 @@ func (m ReviewModel) View() string {
 			)
 		}
 		b.WriteString(styles.Error.Bold(true).Render(message))
-	} else if m.ExecuteMode {
+	case m.ExecuteMode:
 		if switchListHintTxt != "" {
 			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
 			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt)))
 		}
-	} else {
+	default:
 		if switchListHintTxt != "" {
 			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
 		} else {
@@ -625,10 +618,6 @@ func displayPath(category string, f fileSummary, showFull bool) string {
 	// Special formatting for caches: ~/Library/Caches/<APP>/<...>/<name>
 	if category == string(cleaner.CategoryApplicationCaches) {
 		p := path
-		// Ensure we have a consistent base prefix with ~ if under home
-		if strings.HasPrefix(p, "~/") {
-			// ok
-		}
 
 		// Split on '/'
 		parts := strings.Split(p, "/")

@@ -31,12 +31,12 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 	b.WriteString(strings.Repeat("#", 50))
 	b.WriteString("\n")
 	b.WriteString("# TidyMyMac Cleanup Script\n")
-	b.WriteString(fmt.Sprintf("# Generated on: %s\n", time.Now().Format("2006-01-02 15:04:05")))
+	fmt.Fprintf(&b, "# Generated on: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 	b.WriteString(strings.Repeat("#", 50))
 	b.WriteString("#\n")
 	b.WriteString("# Usage:\n")
-	b.WriteString(fmt.Sprintf("#   chmod +x %s\n", filename))
-	b.WriteString(fmt.Sprintf("#   ./%s\n", filename))
+	fmt.Fprintf(&b, "#   chmod +x %s\n", filename)
+	fmt.Fprintf(&b, "#   ./%s\n", filename)
 	b.WriteString("#\n")
 	b.WriteString("# Some paths may require sudo. The script will warn you.\n")
 	b.WriteString("#\n\n")
@@ -83,7 +83,7 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 
 	// Confirmation prompt.
 	b.WriteString("echo -e \"${YELLOW}TidyMyMac Cleanup Script${NC}\"\n")
-	b.WriteString(fmt.Sprintf("echo \"This will delete %d files (%s)\"\n", totalFiles(results), utils.FormatBytes(totalBytes(results))))
+	fmt.Fprintf(&b, "echo \"This will delete %d files (%s)\"\n", totalFiles(results), utils.FormatBytes(totalBytes(results)))
 	b.WriteString("echo \"\"\n")
 	b.WriteString("read -p \"Are you sure? (y/N) \" confirm\n")
 	b.WriteString("if [[ \"$confirm\" != \"y\" && \"$confirm\" != \"Y\" ]]; then\n")
@@ -100,13 +100,13 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 			continue
 		}
 
-		b.WriteString(fmt.Sprintf("# === %s (%s, %d files) ===\n",
+		fmt.Fprintf(&b, "# === %s (%s, %d files) ===\n",
 			c.Name(),
 			utils.FormatBytes(result.TotalSize),
 			result.TotalFiles,
-		))
-		b.WriteString(fmt.Sprintf("echo -e \"${GREEN}[%s]${NC} Cleaning %d files (%s)...\"\n",
-			c.Name(), result.TotalFiles, utils.FormatBytes(result.TotalSize)))
+		)
+		fmt.Fprintf(&b, "echo -e \"${GREEN}[%s]${NC} Cleaning %d files (%s)...\"\n",
+			c.Name(), result.TotalFiles, utils.FormatBytes(result.TotalSize))
 
 		if c.RequiresSudo() {
 			needsSudo = true
@@ -138,11 +138,11 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 
 				switch resourceType {
 				case "container":
-					b.WriteString(fmt.Sprintf("  docker rm -f '%s' || true\n", resourceID))
+					fmt.Fprintf(&b, "  docker rm -f '%s' || true\n", resourceID)
 				case "image":
-					b.WriteString(fmt.Sprintf("  docker rmi -f '%s' || true\n", resourceID))
+					fmt.Fprintf(&b, "  docker rmi -f '%s' || true\n", resourceID)
 				case "volume":
-					b.WriteString(fmt.Sprintf("  docker volume rm '%s' || true\n", resourceID))
+					fmt.Fprintf(&b, "  docker volume rm '%s' || true\n", resourceID)
 				}
 			}
 			b.WriteString("else\n")
@@ -168,7 +168,7 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 				if !ok {
 					continue
 				}
-				b.WriteString(fmt.Sprintf("  tmutil deletelocalsnapshots '%s' || true\n", snapshotDate))
+				fmt.Fprintf(&b, "  tmutil deletelocalsnapshots '%s' || true\n", snapshotDate)
 			}
 			b.WriteString("else\n")
 			b.WriteString("  echo -e \"${YELLOW}[SKIP]${NC} tmutil not available\"\n")
@@ -181,9 +181,9 @@ func Generate(results map[cleaner.Category]*cleaner.ScanResult, registry *cleane
 			// Escape single quotes in paths for shell safety.
 			escaped := strings.ReplaceAll(entry.Path, "'", "'\\''")
 			if entry.IsDir {
-				b.WriteString(fmt.Sprintf("safe_rm_rf '%s'\n", escaped))
+				fmt.Fprintf(&b, "safe_rm_rf '%s'\n", escaped)
 			} else {
-				b.WriteString(fmt.Sprintf("safe_rm '%s'\n", escaped))
+				fmt.Fprintf(&b, "safe_rm '%s'\n", escaped)
 			}
 		}
 		b.WriteString("\n")

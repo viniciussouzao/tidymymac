@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
@@ -69,7 +70,9 @@ tidymymac history --verbose
 			return fmt.Errorf("error rendering history: %w", err)
 		}
 
-		fmt.Fprint(cmd.OutOrStdout(), historyOutput)
+		if _, err := fmt.Fprint(cmd.OutOrStdout(), historyOutput); err != nil {
+			return fmt.Errorf("write history output: %w", err)
+		}
 		return nil
 
 	},
@@ -131,26 +134,23 @@ func renderHistory(record history.Record, opts historyOptions, loc *time.Locatio
 		runs = runs[:opts.last]
 	}
 
-	b.WriteString(fmt.Sprintf("\n  %s  %s  %s  %s  %s\n",
+	fmt.Fprintf(&b, "\n  %s  %s  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", historyColRun, "ID")),
 		boldStyle.Render(fmt.Sprintf("%-*s", historyColRanAt, "Ran At")),
 		boldStyle.Render(fmt.Sprintf("%*s", historyColFreed, "Freed")),
 		boldStyle.Render(fmt.Sprintf("%*s", historyColFiles, "Files")),
-		boldStyle.Render(fmt.Sprintf("%*s", historyColDuration, "Duration")),
-	))
+		boldStyle.Render(fmt.Sprintf("%*s", historyColDuration, "Duration")))
 	b.WriteString(sep)
 	b.WriteString("\n")
 
 	for i, run := range runs {
 		// default info
-		b.WriteString(fmt.Sprintf(
-			"  %-*s  %-*s  %s  %s  %s\n",
+		fmt.Fprintf(&b, "  %-*s  %-*s  %s  %s  %s\n",
 			historyColRun, fmt.Sprintf("#%d", run.ID),
 			historyColRanAt, run.RanAt.In(loc).Format("2006-01-02 15:04"),
 			styles.Dim.Render(fmt.Sprintf("%*s", historyColFreed, utils.FormatBytes(run.TotalBytes))),
 			styles.Dim.Render(fmt.Sprintf("%*d", historyColFiles, run.TotalFiles)),
-			styles.Dim.Render(fmt.Sprintf("%*s", historyColDuration, formatHistoryDuration(time.Duration(run.DurationMs)*time.Millisecond))),
-		))
+			styles.Dim.Render(fmt.Sprintf("%*s", historyColDuration, formatHistoryDuration(time.Duration(run.DurationMs)*time.Millisecond))))
 
 		// verbose
 		if opts.verbose && len(run.Categories) > 0 {

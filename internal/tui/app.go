@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
@@ -71,8 +72,7 @@ type App struct {
 	cleanMsgCh     <-chan tea.Msg
 	cleanStartTime time.Time
 
-	// to-do: i want to use this for the generate script only feature
-	//scriptMessage string
+	// scriptMessage will support the generate-script-only flow.
 }
 
 // NewApp initializes the TUI application with default values and a spinner
@@ -227,9 +227,6 @@ func (a App) handleCleanComplete(msg cleanCompleteMsg) (tea.Model, tea.Cmd) {
 
 func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// to-do: implement re-run scan for a category when it's selected and user presses "r"
-	if key.Matches(msg, keys.ReRun) {
-
-	}
 
 	var keyType string
 	switch {

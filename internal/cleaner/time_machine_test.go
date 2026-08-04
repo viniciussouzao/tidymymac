@@ -28,9 +28,9 @@ func TestTimeMachineCleanerMetadata(t *testing.T) {
 
 func TestParseLocalSnapshots(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   []string
+		name  string
+		input string
+		want  []string
 	}{
 		{
 			name:  "empty output",
@@ -89,10 +89,10 @@ func TestParseLocalSnapshots(t *testing.T) {
 
 func TestSnapshotDateFromEntry(t *testing.T) {
 	tests := []struct {
-		name    string
-		entry   string
-		want    string
-		wantOk  bool
+		name   string
+		entry  string
+		want   string
+		wantOk bool
 	}{
 		{
 			name:   "valid snapshot",
@@ -202,7 +202,7 @@ func TestTimeMachineCleanerScanContextCancelled(t *testing.T) {
 	cancel()
 
 	c := NewTimeMachineCleaner()
-	// A cancelled context passed to exec.CommandContext causes the command to
+	// A canceled context passed to exec.CommandContext causes the command to
 	// fail. The cleaner must return a non-nil result regardless.
 	result, _ := c.Scan(ctx, nil)
 	if result == nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
 	"github.com/viniciussouzao/tidymymac/internal/scriptgen"
@@ -145,16 +147,19 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 		return err
 	}
 
-	out := os.Stdout
 	if save {
 		filename := fmt.Sprintf("tidymymac-scan-%s.%s", time.Now().Format("2006-01-02-15-04-05"), format)
 		f, createErr := os.Create(filename)
 		if createErr != nil {
 			return fmt.Errorf("creating output file: %w", createErr)
 		}
-		defer f.Close()
-		out = f
 		stderr("\n  saved to ./%s\n", filename)
+
+		if err := writeScanOutputFile(f, result, format, detailed); err != nil {
+			return err
+		}
+	} else if err := commands.WriteOutput(os.Stdout, result, format, detailed); err != nil {
+		return fmt.Errorf("write scan output: %w", err)
 	}
 
 	if generateScript {
@@ -164,10 +169,6 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 			return fmt.Errorf("generating cleanup script: %w", genErr)
 		}
 		stderr("\n  cleanup script generated: %s\n", scriptPath)
-	}
-
-	if writeErr := commands.WriteOutput(out, result, format, detailed); writeErr != nil {
-		return writeErr
 	}
 
 	if result.HasErrors {
@@ -180,6 +181,19 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 		return fmt.Errorf("scan completed with errors in: %s", strings.Join(failed, ", "))
 	}
 
+	return nil
+}
+
+func writeScanOutputFile(file io.WriteCloser, result commands.ScanResult, format string, detailed bool) (err error) {
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close scan output file: %w", closeErr)
+		}
+	}()
+
+	if err := commands.WriteOutput(file, result, format, detailed); err != nil {
+		return fmt.Errorf("write scan output: %w", err)
+	}
 	return nil
 }
 
@@ -398,15 +412,16 @@ func (m scanModel) View() string {
 		b.WriteString(scanTitleStyle.Render("🔎 scanning your mac..."))
 		b.WriteString("\n")
 
-		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), styles.Dim.Render("looking for things that you may not need anymore...")))
+		fmt.Fprintf(&b, " %s %s", m.spinner.View(), styles.Dim.Render("looking for things that you may not need anymore..."))
 		b.WriteString("\n\n")
 		for _, cat := range m.categories {
-			if cat.err {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name)))
-			} else if cat.done {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Success.Render("✓"), styles.Dim.Render(cat.name)))
-			} else {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name)))
+			switch {
+			case cat.err:
+				fmt.Fprintf(&b, "  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name))
+			case cat.done:
+				fmt.Fprintf(&b, "  %s %s\n", styles.Success.Render("✓"), styles.Dim.Render(cat.name))
+			default:
+				fmt.Fprintf(&b, "  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name))
 			}
 		}
 		b.WriteString("\n")
@@ -443,11 +458,10 @@ func (m scanModel) View() string {
 	sep := styles.Dim.Render("  " + strings.Repeat("─", tableWidth))
 
 	// header
-	b.WriteString(fmt.Sprintf("\n  %s  %s  %s\n",
+	fmt.Fprintf(&b, "\n  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Category")),
 		boldStyle.Render(fmt.Sprintf("%*s", colFiles, "Files")),
-		boldStyle.Render(fmt.Sprintf("%*s", colSize, "Freeable")),
-	))
+		boldStyle.Render(fmt.Sprintf("%*s", colSize, "Freeable")))
 	b.WriteString(sep)
 	b.WriteString("\n")
 
@@ -473,17 +487,16 @@ func (m scanModel) View() string {
 		}
 		nameCell := nameWithTag + strings.Repeat(" ", pad)
 
-		b.WriteString(fmt.Sprintf("  %s  %s  %s\n", nameCell, filesText, sizeText))
+		fmt.Fprintf(&b, "  %s  %s  %s\n", nameCell, filesText, sizeText)
 	}
 
 	// total
 	b.WriteString(sep)
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %s  %s  %s\n",
+	fmt.Fprintf(&b, "  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Total")),
 		styles.Dim.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
-		styles.SizeStyled(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
-	))
+		styles.SizeStyled(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))))
 
 	return b.String()
 }

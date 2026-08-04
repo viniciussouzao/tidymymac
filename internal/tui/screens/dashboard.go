@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/sysinfo"
@@ -17,7 +18,7 @@ type CategoryItem struct {
 	ID   string
 	Name string
 	Desc string
-	//Icon      string // for future use, maybe we can add emojis or something to make it more visually appealing
+	// Icon string // for future use, maybe we can add emojis or something to make it more visually appealing
 	Selected  bool
 	Size      int64 // in bytes, -1 means not scanned yet
 	Files     int
@@ -225,10 +226,10 @@ func (m DashboardModel) View() string {
 			barStyle = styles.Size
 		}
 
-		b.WriteString(fmt.Sprintf(" %s  %s\n\n",
+		fmt.Fprintf(&b, " %s  %s\n\n",
 			barStyle.Render(bar),
 			styles.Muted.Render(fmt.Sprintf("%s used of %s (%d%%) | %s free",
-				utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct, utils.FormatBytes(m.DiskTotal-m.DiskUsed)))))
+				utils.FormatBytes(m.DiskUsed), utils.FormatBytes(m.DiskTotal), pct, utils.FormatBytes(m.DiskTotal-m.DiskUsed))))
 	}
 
 	// Machine health summary
@@ -259,15 +260,16 @@ func (m DashboardModel) View() string {
 			name = styles.Cursor.Render(name)
 		}
 
-		sizeText := styles.Dim.Render("scanning...")
-		if !cat.Scanning && cat.Files > 0 && !cat.SizeKnown {
+		var sizeText string
+		switch {
+		case !cat.Scanning && cat.Files > 0 && !cat.SizeKnown:
 			sizeText = styles.Warning.Render("unknown")
-		} else if cat.Size >= 0 {
+		case cat.Size >= 0:
 			formatted := utils.FormatBytes(cat.Size)
 			sizeText = styles.SizeStyled(cat.Size, formatted)
-		} else if cat.Scanning {
+		case cat.Scanning:
 			sizeText = styles.Dim.Render("scanning...")
-		} else {
+		default:
 			sizeText = styles.Dim.Render("-")
 		}
 
@@ -309,14 +311,14 @@ func (m DashboardModel) View() string {
 		scanNote = " (scanning...)"
 	}
 
-	b.WriteString(fmt.Sprintf("  Total freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(totalFreeable)), styles.Dim.Render(scanNote)))
+	fmt.Fprintf(&b, "  Total freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(totalFreeable)), styles.Dim.Render(scanNote))
 
 	selectedScanNote := ""
 	if stillScanningSelected {
 		selectedScanNote = " (scanning...)"
 	}
 
-	b.WriteString(fmt.Sprintf("  Selected freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(selectedFreeable)), styles.Dim.Render(selectedScanNote)))
+	fmt.Fprintf(&b, "  Selected freeable: %s%s\n", styles.Success.Render(utils.FormatBytes(selectedFreeable)), styles.Dim.Render(selectedScanNote))
 	b.WriteString("\n")
 
 	viewToggleLabel := "v: show all"

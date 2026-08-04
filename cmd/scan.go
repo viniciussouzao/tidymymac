@@ -45,6 +45,9 @@ $ tidymymac scan --output json --detailed
 
 # Scan specific categories
 $ tidymymac scan docker caches
+
+# Scan everything a profile bundles (categories + project paths)
+$ tidymymac scan --profile dev
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		output, _ := cmd.Flags().GetString("output")
@@ -52,16 +55,25 @@ $ tidymymac scan docker caches
 		save, _ := cmd.Flags().GetBool("save")
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		generateScript, _ := cmd.Flags().GetBool("generate-script")
+		profileName, _ := cmd.Flags().GetString("profile")
 
 		if output != "" && output != "json" && output != "csv" {
 			return fmt.Errorf("invalid --output value %q: must be json or csv", output)
 		}
 
-		if output != "" {
-			return runScanNonInteractive(cmd.Context(), args, output, detailed, save, quiet, generateScript)
+		// Resolved once here so every path below works in terms of a plain
+		// (categories, registry) pair, profile or not. Scanning never
+		// deletes, so includeLargeFiles is irrelevant to it.
+		categories, registry, err := resolveSelection(args, profileName, false)
+		if err != nil {
+			return err
 		}
 
-		return runScanInteractive(cmd, args)
+		if output != "" {
+			return runScanNonInteractive(cmd.Context(), registry, categories, output, detailed, save, quiet, generateScript)
+		}
+
+		return runScanInteractive(cmd, registry, categories)
 	},
 	SilenceUsage: true,
 }
@@ -69,6 +81,7 @@ $ tidymymac scan docker caches
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	scanCmd.Flags().StringP("output", "o", "", "output format: json or csv (omit for interactive table)")
+	scanCmd.Flags().String("profile", "", "scan the categories and project paths bundled by a configured profile")
 	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
 	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout")
 	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
@@ -77,9 +90,9 @@ func init() {
 
 // runScanNonInteractive runs the scan, using BubbleTea when --save is set (and
 // --quiet is absent), otherwise printing progress to stderr.
-func runScanNonInteractive(ctx context.Context, args []string, format string, detailed bool, save bool, quiet bool, generateScript bool) error {
+func runScanNonInteractive(ctx context.Context, registry *cleaner.Registry, categories []string, format string, detailed bool, save bool, quiet bool, generateScript bool) error {
 	if save && !quiet {
-		m := newScanModel(ctx, args, generateScript, true, format, detailed)
+		m := newScanModel(ctx, registry, categories, generateScript, true, format, detailed)
 		p := tea.NewProgram(m)
 
 		final, err := p.Run()
@@ -98,7 +111,7 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 
 		if generateScript && finalModel.result != nil {
 			scriptInput := scanResultToCleanerResults(*finalModel.result)
-			scriptPath, genErr := scriptgen.Generate(scriptInput, cleaner.DefaultRegistry())
+			scriptPath, genErr := scriptgen.Generate(scriptInput, registry)
 			if genErr != nil {
 				return fmt.Errorf("generating cleanup script: %w", genErr)
 			}
@@ -128,8 +141,8 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 
 	result, err := commands.RunScan(
 		ctx,
-		cleaner.DefaultRegistry(),
-		args,
+		registry,
+		categories,
 		commands.ScanOptions{Detailed: detailed || generateScript, Config: loadedConfig},
 		func(event commands.ScanEvent) {
 			switch event.Type {
@@ -165,7 +178,7 @@ func runScanNonInteractive(ctx context.Context, args []string, format string, de
 
 	if generateScript {
 		scriptInput := scanResultToCleanerResults(result)
-		scriptPath, genErr := scriptgen.Generate(scriptInput, cleaner.DefaultRegistry())
+		scriptPath, genErr := scriptgen.Generate(scriptInput, registry)
 		if genErr != nil {
 			return fmt.Errorf("generating cleanup script: %w", genErr)
 		}
@@ -220,10 +233,10 @@ func scanResultToCleanerResults(result commands.ScanResult) map[cleaner.Category
 }
 
 // runScanInteractive runs the scan using the BubbleTea model (default mode).
-func runScanInteractive(cmd *cobra.Command, args []string) error {
+func runScanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categories []string) error {
 	generateScript, _ := cmd.Flags().GetBool("generate-script")
 
-	m := newScanModel(cmd.Context(), args, generateScript, false, "", false)
+	m := newScanModel(cmd.Context(), registry, categories, generateScript, false, "", false)
 	p := tea.NewProgram(m)
 
 	final, err := p.Run()
@@ -249,7 +262,7 @@ func runScanInteractive(cmd *cobra.Command, args []string) error {
 	if finalModel.err == nil && finalModel.result != nil {
 		if generateScript {
 			scriptInput := scanResultToCleanerResults(*finalModel.result)
-			scriptPath, genErr := scriptgen.Generate(scriptInput, cleaner.DefaultRegistry())
+			scriptPath, genErr := scriptgen.Generate(scriptInput, registry)
 			if genErr != nil {
 				return fmt.Errorf("generating cleanup script: %w", genErr)
 			}
@@ -286,6 +299,7 @@ type scanCategoryProgress struct {
 
 type scanModel struct {
 	ctx            context.Context
+	registry       *cleaner.Registry
 	args           []string
 	spinner        spinner.Model
 	result         *commands.ScanResult
@@ -300,13 +314,14 @@ type scanModel struct {
 	savedTo        string
 }
 
-func newScanModel(ctx context.Context, args []string, generateScript bool, save bool, format string, detailed bool) scanModel {
+func newScanModel(ctx context.Context, registry *cleaner.Registry, args []string, generateScript bool, save bool, format string, detailed bool) scanModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = styles.Cursor
 
 	return scanModel{
 		ctx:            ctx,
+		registry:       registry,
 		args:           args,
 		spinner:        s,
 		scanning:       true,
@@ -322,7 +337,7 @@ func (m scanModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		func() tea.Msg {
-			result, err := commands.RunScan(m.ctx, cleaner.DefaultRegistry(), m.args, commands.ScanOptions{Detailed: m.detailed || m.generateScript, Config: loadedConfig}, func(event commands.ScanEvent) {
+			result, err := commands.RunScan(m.ctx, m.registry, m.args, commands.ScanOptions{Detailed: m.detailed || m.generateScript, Config: loadedConfig}, func(event commands.ScanEvent) {
 				m.eventCh <- event
 			})
 			close(m.eventCh)

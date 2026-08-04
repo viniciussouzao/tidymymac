@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -123,9 +124,68 @@ func returnProtected() string {
 	return b.String()
 }
 
+var listProfilesCmd = &cobra.Command{
+	Use:   "profiles",
+	Short: "List the cleanup profiles configured in the config file",
+	Long: `List the profiles defined in ~/.tidymymac/config.yaml, with the categories
+and project paths each one bundles.
+
+Example:
+$ tidymymac list profiles
+`,
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Fprint(cmd.OutOrStdout(), returnProfiles())
+	},
+}
+
+func returnProfiles() string {
+	var b strings.Builder
+	sep := styles.Dim.Render("  " + strings.Repeat("─", 40))
+
+	b.WriteString("\n")
+	b.WriteString(styles.CategoryHeader.Render("  Profiles"))
+	b.WriteString("\n")
+	b.WriteString(sep)
+	b.WriteString("\n")
+
+	if len(loadedConfig.Profiles) == 0 {
+		b.WriteString(styles.Dim.Render("  (none configured)") + "\n")
+	}
+
+	// Profiles is a map, and Go randomizes map iteration order: sort so the
+	// listing is stable between runs.
+	names := make([]string, 0, len(loadedConfig.Profiles))
+	for name := range loadedConfig.Profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		profile := loadedConfig.Profiles[name]
+		b.WriteString("  " + name + "\n")
+
+		if len(profile.Categories) == 0 && len(profile.Paths) == 0 {
+			b.WriteString("    " + styles.Dim.Render("(empty)") + "\n")
+			continue
+		}
+		if len(profile.Categories) > 0 {
+			b.WriteString("    " + styles.Dim.Render("categories: "+strings.Join(profile.Categories, ", ")) + "\n")
+		}
+		for _, p := range profile.Paths {
+			b.WriteString("    " + styles.Dim.Render("path: "+p) + "\n")
+		}
+	}
+
+	b.WriteString(styles.Help.Render("  run tidymymac scan --profile <name> to scan with a profile"))
+	b.WriteString("\n")
+
+	return b.String()
+}
+
 func init() {
 	rootCmd.AddCommand(listCmd)
 	listCmd.AddCommand(listCategoriesCmd)
 	listCmd.AddCommand(listProtectedCmd)
+	listCmd.AddCommand(listProfilesCmd)
 	listCategoriesCmd.Flags().Bool("detailed", false, "show a description for each category")
 }

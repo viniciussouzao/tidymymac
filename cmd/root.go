@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/tui"
 )
 
@@ -14,7 +15,7 @@ var executeFlag bool
 var rootCmd = &cobra.Command{
 	Use:   "tidymymac",
 	Short: "macOS storage cleanup tool",
-	Long:  `TidyMyMac scans for junk files and helps you clean up your Mac storage.
+	Long: `TidyMyMac scans for junk files and helps you clean up your Mac storage.
 
 Running without a subcommand opens the interactive TUI where you can browse
 and select categories to clean. Use subcommands for non-interactive workflows.`,

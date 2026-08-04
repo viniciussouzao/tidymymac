@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/history"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
@@ -42,7 +43,9 @@ tidymymac stats caches
 		}
 
 		if len(args) == 0 {
-			fmt.Fprint(cmd.OutOrStdout(), renderAllTimeStats(history.Stats(record), time.Local))
+			if _, err := fmt.Fprint(cmd.OutOrStdout(), renderAllTimeStats(history.Stats(record), time.Local)); err != nil {
+				return fmt.Errorf("write stats output: %w", err)
+			}
 			return nil
 		}
 
@@ -52,7 +55,9 @@ tidymymac stats caches
 		}
 
 		category := cleaner.Category(categoryName)
-		fmt.Fprint(cmd.OutOrStdout(), renderCategoryStats(category.DisplayName(), history.StatsByCategory(record, categoryName), time.Local))
+		if _, err := fmt.Fprint(cmd.OutOrStdout(), renderCategoryStats(category.DisplayName(), history.StatsByCategory(record, categoryName), time.Local)); err != nil {
+			return fmt.Errorf("write stats output: %w", err)
+		}
 		return nil
 	},
 }
@@ -76,7 +81,7 @@ func validateHistoryCategory(name string) error {
 
 	var b strings.Builder
 
-	b.WriteString(fmt.Sprintf("unknown category %q. Available categories:\n", name))
+	fmt.Fprintf(&b, "unknown category %q. Available categories:\n", name)
 	for _, category := range available {
 		b.WriteString("  ")
 		b.WriteString(category)
@@ -117,11 +122,11 @@ func renderStatsBlock(title string, stats history.AllTimeStats, locTime *time.Lo
 	b.WriteString("\n")
 	b.WriteString(sep)
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total runs:", styles.Dim.Render(fmt.Sprintf("%d", stats.TotalRuns))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total files:", styles.Dim.Render(fmt.Sprintf("%d", stats.TotalFiles))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Total bytes:", styles.Dim.Render(utils.FormatBytes(stats.TotalBytes))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Avg per run:", styles.Dim.Render(utils.FormatBytes(stats.AvgBytes))))
-	b.WriteString(fmt.Sprintf("  %-14s %s\n", "Last run at:", styles.Dim.Render(stats.LastRunAt.In(locTime).Format("2006-01-02 15:04:05"))))
+	fmt.Fprintf(&b, "  %-14s %s\n", "Total runs:", styles.Dim.Render(fmt.Sprintf("%d", stats.TotalRuns)))
+	fmt.Fprintf(&b, "  %-14s %s\n", "Total files:", styles.Dim.Render(fmt.Sprintf("%d", stats.TotalFiles)))
+	fmt.Fprintf(&b, "  %-14s %s\n", "Total bytes:", styles.Dim.Render(utils.FormatBytes(stats.TotalBytes)))
+	fmt.Fprintf(&b, "  %-14s %s\n", "Avg per run:", styles.Dim.Render(utils.FormatBytes(stats.AvgBytes)))
+	fmt.Fprintf(&b, "  %-14s %s\n", "Last run at:", styles.Dim.Render(stats.LastRunAt.In(locTime).Format("2006-01-02 15:04:05")))
 	b.WriteString("\n")
 	return b.String()
 

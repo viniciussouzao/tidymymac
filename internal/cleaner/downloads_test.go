@@ -250,4 +250,3 @@ func TestIsInstallerPath(t *testing.T) {
 		}
 	}
 }
-

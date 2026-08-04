@@ -3,6 +3,7 @@ package history
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -47,12 +48,16 @@ func loadAtPath(p string) (Record, error) {
 	return record, nil
 }
 
-func appendAtPath(p string, run RunRecord) error {
+func appendAtPath(p string, run RunRecord) (err error) {
 	lockFile, err := lockHistoryFile(p)
 	if err != nil {
 		return err
 	}
-	defer unlockHistoryFile(lockFile)
+	defer func() {
+		if unlockErr := unlockHistoryFile(lockFile); unlockErr != nil && err == nil {
+			err = unlockErr
+		}
+	}()
 
 	record, err := loadAtPath(p)
 	if err != nil {
@@ -70,7 +75,11 @@ func appendAtPath(p string, run RunRecord) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
+	defer func() {
+		if removeErr := os.Remove(tmp.Name()); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && err == nil {
+			err = fmt.Errorf("remove temporary history file: %w", removeErr)
+		}
+	}()
 
 	enc := json.NewEncoder(tmp)
 	enc.SetIndent("", "  ")
@@ -104,14 +113,21 @@ func lockHistoryFile(p string) (*os.File, error) {
 	return lockFile, nil
 }
 
-func unlockHistoryFile(lockFile *os.File) {
+func unlockHistoryFile(lockFile *os.File) error {
 	if lockFile == nil {
-		return
+		return nil
 	}
 
-	//go
-	_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
-	_ = lockFile.Close()
+	var errs []error
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+		errs = append(errs, fmt.Errorf("unlock history file: %w", err))
+	}
+	if err := lockFile.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close history lock file: %w", err))
+	}
+	if err := os.Remove(lockFile.Name()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, fmt.Errorf("remove history lock file: %w", err))
+	}
 
-	_ = os.Remove(lockFile.Name())
+	return errors.Join(errs...)
 }

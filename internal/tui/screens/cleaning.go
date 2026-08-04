@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
@@ -162,14 +163,15 @@ func (m *CleaningModel) UpdateCleanProgress(progress cleaner.CleanProgress) {
 func (m CleaningModel) Results() []*cleaner.CleanResult {
 	var results []*cleaner.CleanResult
 	for _, c := range m.Categories {
-		if c.Result != nil {
+		switch {
+		case c.Result != nil:
 			results = append(results, c.Result)
-		} else if c.Status == "skipped" {
+		case c.Status == "skipped":
 			results = append(results, &cleaner.CleanResult{
 				Category: c.Category,
 				Skipped:  true,
 			})
-		} else {
+		default:
 			var errs []error
 			if c.Error != nil {
 				errs = []error{c.Error}

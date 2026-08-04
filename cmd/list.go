@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
@@ -37,9 +38,12 @@ Example:
 # List all available categories
 tidymymac list categories
 `,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		detailed, _ := cmd.Flags().GetBool("detailed")
-		fmt.Fprint(cmd.OutOrStdout(), returnCategories(listOptions{detailed: detailed}))
+		if _, err := fmt.Fprint(cmd.OutOrStdout(), returnCategories(listOptions{detailed: detailed})); err != nil {
+			return fmt.Errorf("write categories output: %w", err)
+		}
+		return nil
 	},
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
 	"github.com/viniciussouzao/tidymymac/internal/history"
@@ -147,17 +149,17 @@ func runCleanNonInteractive(ctx context.Context, args []string, detailed bool, f
 		actionVerb = "cleaned"
 	}
 
-	b.WriteString(fmt.Sprintf("%s %s across %d files.\n", actionSummary, result.TotalSizeHuman, result.TotalFiles))
+	fmt.Fprintf(&b, "%s %s across %d files.\n", actionSummary, result.TotalSizeHuman, result.TotalFiles)
 	for _, category := range result.Categories {
 		if category.Err != nil {
-			b.WriteString(fmt.Sprintf("- %s: error: %s\n", category.Name, category.ErrMsg))
+			fmt.Fprintf(&b, "- %s: error: %s\n", category.Name, category.ErrMsg)
 			continue
 		}
 
-		b.WriteString(fmt.Sprintf("- %s: %s, %d files %s\n", category.Name, actionSize(category.DeletedSize), category.DeletedFiles, actionVerb))
+		fmt.Fprintf(&b, "- %s: %s, %d files %s\n", category.Name, actionSize(category.DeletedSize), category.DeletedFiles, actionVerb)
 		if detailed {
 			for _, file := range category.Files {
-				b.WriteString(fmt.Sprintf("  %s\n", file.Path))
+				fmt.Fprintf(&b, "  %s\n", file.Path)
 			}
 		}
 	}
@@ -261,9 +263,18 @@ func loadScanResultFile(path string) (commands.ScanResult, error) {
 	if err != nil {
 		return commands.ScanResult{}, fmt.Errorf("open scan file: %w", err)
 	}
-	defer f.Close()
+	return loadScanResultReader(f)
+}
 
-	result, err := commands.LoadScanResult(f)
+func loadScanResultReader(r io.ReadCloser) (result commands.ScanResult, err error) {
+	defer func() {
+		if closeErr := r.Close(); closeErr != nil && err == nil {
+			result = commands.ScanResult{}
+			err = fmt.Errorf("close scan file: %w", closeErr)
+		}
+	}()
+
+	result, err = commands.LoadScanResult(r)
 	if err != nil {
 		return commands.ScanResult{}, explainScanLoadError(err)
 	}
@@ -485,7 +496,7 @@ func (m cleanModel) View() string {
 	b.WriteString("\n")
 
 	if m.cleaning {
-		b.WriteString(fmt.Sprintf(" %s %s", m.spinner.View(), styles.Dim.Render(statusText)))
+		fmt.Fprintf(&b, " %s %s", m.spinner.View(), styles.Dim.Render(statusText))
 		b.WriteString("\n")
 		if m.fromFile != "" {
 			b.WriteString("\n")
@@ -494,12 +505,13 @@ func (m cleanModel) View() string {
 		}
 		b.WriteString("\n")
 		for _, cat := range m.categories {
-			if cat.err {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name)))
-			} else if cat.done {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Success.Render("✓"), styles.Dim.Render(cat.name)))
-			} else {
-				b.WriteString(fmt.Sprintf("  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name)))
+			switch {
+			case cat.err:
+				fmt.Fprintf(&b, "  %s %s\n", styles.Error.Render("✗"), styles.Dim.Render(cat.name))
+			case cat.done:
+				fmt.Fprintf(&b, "  %s %s\n", styles.Success.Render("✓"), styles.Dim.Render(cat.name))
+			default:
+				fmt.Fprintf(&b, "  %s %s\n", styles.Dim.Render("·"), styles.Dim.Render(cat.name))
 			}
 		}
 		b.WriteString("\n")
@@ -541,11 +553,10 @@ func (m cleanModel) View() string {
 		sizeLabel = "Would Free"
 	}
 
-	b.WriteString(fmt.Sprintf("\n  %s  %s  %s\n",
+	fmt.Fprintf(&b, "\n  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Category")),
 		boldStyle.Render(fmt.Sprintf("%*s", colFiles, "Files")),
-		boldStyle.Render(fmt.Sprintf("%*s", colSize, sizeLabel)),
-	))
+		boldStyle.Render(fmt.Sprintf("%*s", colSize, sizeLabel)))
 	b.WriteString(sep)
 	b.WriteString("\n")
 
@@ -560,20 +571,18 @@ func (m cleanModel) View() string {
 			sizeText = styles.SizeStyled(cat.DeletedSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(cat.DeletedSize)))
 		}
 
-		b.WriteString(fmt.Sprintf("  %-*s  %s  %s\n",
+		fmt.Fprintf(&b, "  %-*s  %s  %s\n",
 			colCategory, cat.Name,
 			filesText,
-			sizeText,
-		))
+			sizeText)
 	}
 
 	b.WriteString(sep)
 	b.WriteString("\n")
-	b.WriteString(fmt.Sprintf("  %s  %s  %s\n",
+	fmt.Fprintf(&b, "  %s  %s  %s\n",
 		boldStyle.Render(fmt.Sprintf("%-*s", colCategory, "Total")),
 		styles.Dim.Render(fmt.Sprintf("%*d", colFiles, m.result.TotalFiles)),
-		styles.SizeStyled(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))),
-	))
+		styles.SizeStyled(m.result.TotalSize, fmt.Sprintf("%*s", colSize, utils.FormatBytes(m.result.TotalSize))))
 	b.WriteString("\n")
 	if m.dryRun {
 		b.WriteString(styles.Help.Render("  Preview only. Run 'tidymymac clean --execute' to actually delete these files."))

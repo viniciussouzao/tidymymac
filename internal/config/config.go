@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
@@ -17,10 +18,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Profile is a named, user-authored bundle of cleaner categories plus
+// arbitrary project directories to sweep for regenerable junk (see
+// cleaner.ProjectArtifactsCleaner). Managed through the "tidymymac profile"
+// commands rather than by hand-editing YAML.
+type Profile struct {
+	Categories []string `yaml:"categories"`
+	Paths      []string `yaml:"paths"`
+}
+
 // Config holds user-configurable safety settings.
 type Config struct {
-	ProtectedPaths     []string `yaml:"protected_paths"`
-	DisabledCategories []string `yaml:"disabled_categories"`
+	ProtectedPaths     []string           `yaml:"protected_paths"`
+	DisabledCategories []string           `yaml:"disabled_categories"`
+	Profiles           map[string]Profile `yaml:"profiles"`
 
 	normalizedProtected []string
 	disabledSet         map[string]struct{}
@@ -112,6 +123,12 @@ func decodeConfig(data []byte) (*Config, error) {
 // protected path entry: tilde-expanded, cleaned, required-absolute, and
 // case-folded (APFS is case-insensitive-but-preserving by default, and for a
 // hard-block safety feature it's better to over-protect than under-protect).
+//
+// Profiles are deliberately NOT validated here. A broken profile poses no
+// safety risk until it is used, whereas failing Load would block every
+// command (root's PersistentPreRunE loads config even for "list categories").
+// Profile paths are validated at the two moments that matter instead: write
+// time (AddProfilePath) and use time (ResolveProfile).
 func (c *Config) normalize() error {
 	c.disabledSet = make(map[string]struct{}, len(c.DisabledCategories))
 	for _, cat := range c.DisabledCategories {
@@ -195,21 +212,77 @@ func firmlinkAliases(clean string) []string {
 // (the normalized form for comparison, or the original raw string when
 // writing back to disk).
 func validateProtectedPathEntry(raw string) (string, error) {
+	return validatePathEntry("protected_paths", raw)
+}
+
+// validatePathEntry is the shared shape of every path a user can put in
+// config: non-empty, tilde-expandable, absolute. field names the setting in
+// error messages so protected_paths and profile paths report accurately.
+func validatePathEntry(field, raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
-		return "", fmt.Errorf("protected_paths contains an empty entry")
+		return "", fmt.Errorf("%s contains an empty entry", field)
 	}
 
 	expanded, err := expandTilde(raw)
 	if err != nil {
-		return "", fmt.Errorf("protected_paths entry %q: %w", raw, err)
+		return "", fmt.Errorf("%s entry %q: %w", field, raw, err)
 	}
 
 	clean := filepath.Clean(expanded)
 	if !filepath.IsAbs(clean) {
-		return "", fmt.Errorf("protected_paths entry %q must be an absolute path", raw)
+		return "", fmt.Errorf("%s entry %q must be an absolute path", field, raw)
 	}
 
 	return clean, nil
+}
+
+// broadProfileRoots are directories far too broad to be a "project path".
+// Scanning one would turn a profile into a full-system junk-dir sweep --
+// exactly what a typo like paths: ["~"] would otherwise do.
+var broadProfileRoots = []string{
+	"/",
+	"/Users",
+	"/System",
+	"/Library",
+	"/Applications",
+	"/private",
+	"/Volumes",
+}
+
+// validateProfilePathEntry validates a profile "paths" entry: everything
+// validatePathEntry requires, plus a rejection of overly-broad roots. Runs at
+// write time (AddProfilePath) and at use time (ResolveProfile), never at load
+// time -- see normalize. Returns the tilde-expanded, cleaned, absolute form.
+func validateProfilePathEntry(raw string) (string, error) {
+	clean, err := validatePathEntry("profile paths", raw)
+	if err != nil {
+		return "", err
+	}
+
+	if isBroadProfileRoot(clean) {
+		return "", fmt.Errorf("profile paths entry %q resolves to %s, which is too broad to scan as a project: point it at a specific project directory", raw, clean)
+	}
+
+	return clean, nil
+}
+
+func isBroadProfileRoot(clean string) bool {
+	norm := strings.ToLower(clean)
+
+	for _, root := range broadProfileRoots {
+		if norm == strings.ToLower(root) {
+			return true
+		}
+	}
+
+	// The home directory itself: everything the user owns lives under it.
+	if home, err := homedir.Resolve(); err == nil {
+		if norm == strings.ToLower(filepath.Clean(home)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func expandTilde(p string) (string, error) {
@@ -245,11 +318,11 @@ func (c *Config) IsProtected(path string) bool {
 // path -- IsProtected's containment check, reversed. nil-safe.
 //
 // Cleaners that record a directory as a single whole unit without descending
-// into it (downloads' folders, and any future cleaner that does the same)
-// need this: such an entry is not itself under any protected root, so
-// IsProtected returns false, yet deleting it with os.RemoveAll would take the
-// protected path nested inside it along too. Only meaningful for directory
-// entries -- see Tag.
+// into it (project-artifacts' junk dirs, downloads' folders) need this: such
+// an entry is not itself under any protected root, so IsProtected returns
+// false, yet deleting it with os.RemoveAll would take the protected path
+// nested inside it along too. Only meaningful for directory entries -- see
+// Tag.
 func (c *Config) ContainsProtected(path string) bool {
 	if c == nil {
 		return false
@@ -324,6 +397,81 @@ func StripProtected(entries []cleaner.FileEntry) []cleaner.FileEntry {
 		kept = append(kept, e)
 	}
 	return kept
+}
+
+// ResolveProfile turns profile name into the (categories, registry) pair the
+// command layer already consumes, so scan/clean need no profile-specific code
+// paths of their own.
+//
+// The returned categories are exactly Profile.Categories, order preserved and
+// bypassing disabled_categories -- the same precedent explicit CLI category
+// args already get in resolveCleaners. If Profile.Paths is non-empty, the
+// project-artifacts cleaner in the returned registry is replaced with one
+// scanning those paths, and "project-artifacts" is appended to the category
+// list if the profile didn't already list it.
+//
+// Every Profile.Paths entry is (re)validated here via
+// validateProfilePathEntry: a hand-edited, overly-broad path fails this one
+// profile at the moment it is used, never config loading. includeLargeFiles
+// is forwarded to the substituted cleaner's deleteLargeFiles -- it only
+// affects Clean, so scan passes false.
+func (c *Config) ResolveProfile(base *cleaner.Registry, name string, includeLargeFiles bool) (categories []string, registry *cleaner.Registry, err error) {
+	if base == nil {
+		return nil, nil, fmt.Errorf("resolving profile %q: no cleaner registry provided", name)
+	}
+
+	var profile Profile
+	found := false
+	if c != nil {
+		profile, found = c.Profiles[name]
+	}
+	if !found {
+		return nil, nil, fmt.Errorf("profile %q is not configured; run \"tidymymac list profiles\" to see the available ones, or \"tidymymac profile create %s\" to add it", name, name)
+	}
+
+	if len(profile.Categories) == 0 && len(profile.Paths) == 0 {
+		// An empty selection means "every category" downstream, which is the
+		// opposite of what an empty profile should do.
+		return nil, nil, fmt.Errorf("profile %q is empty: add categories with \"tidymymac profile add-category %s <category>\" or paths with \"tidymymac profile add-path %s <path>\"", name, name, name)
+	}
+
+	categories = append(categories, profile.Categories...)
+
+	paths := make([]string, 0, len(profile.Paths))
+	for _, raw := range profile.Paths {
+		clean, pathErr := validateProfilePathEntry(raw)
+		if pathErr != nil {
+			return nil, nil, fmt.Errorf("profile %q: %w", name, pathErr)
+		}
+		paths = append(paths, clean)
+	}
+
+	if len(paths) == 0 {
+		return categories, base, nil
+	}
+
+	// Rebuild rather than Register over the top of a copy: Register replaces
+	// the byID entry but *appends* to the ordered slice, so All() would hand
+	// back two project-artifacts cleaners.
+	registry = cleaner.NewRegistry()
+	substituted := false
+	for _, cl := range base.All() {
+		if cl.Category() == cleaner.CategoryProjectArtifacts {
+			registry.Register(cleaner.NewProjectArtifactsCleaner(paths, 0, includeLargeFiles))
+			substituted = true
+			continue
+		}
+		registry.Register(cl)
+	}
+	if !substituted {
+		registry.Register(cleaner.NewProjectArtifactsCleaner(paths, 0, includeLargeFiles))
+	}
+
+	if !slices.Contains(categories, string(cleaner.CategoryProjectArtifacts)) {
+		categories = append(categories, string(cleaner.CategoryProjectArtifacts))
+	}
+
+	return categories, registry, nil
 }
 
 // FilterRegistry returns a new Registry containing only the cleaners from r

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
@@ -35,8 +36,8 @@ var profileCreateCmd = &cobra.Command{
 		if err := config.CreateProfile(args[0]); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  profile created: ")+args[0])
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Help.Render(fmt.Sprintf("  add something to it with 'tidymymac profile add-category %s <category>' or 'tidymymac profile add-path %s <path>'", args[0], args[0])))
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  profile created: ")+args[0])
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Help.Render(fmt.Sprintf("  add something to it with 'tidymymac profile add-category %s <category>' or 'tidymymac profile add-path %s <path>'", args[0], args[0])))
 		return nil
 	},
 	SilenceUsage: true,
@@ -52,10 +53,10 @@ var profileDeleteCmd = &cobra.Command{
 			return err
 		}
 		if !removed {
-			fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  no such profile, nothing to delete: ")+args[0])
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  no such profile, nothing to delete: ")+args[0])
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  profile deleted: ")+args[0])
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  profile deleted: ")+args[0])
 		return nil
 	},
 	SilenceUsage: true,
@@ -76,7 +77,7 @@ var profileAddCategoryCmd = &cobra.Command{
 		if err := config.AddProfileCategory(name, category); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  added to "+name+": ")+category)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  added to "+name+": ")+category)
 		return nil
 	},
 	SilenceUsage: true,
@@ -93,10 +94,10 @@ var profileRemoveCategoryCmd = &cobra.Command{
 			return err
 		}
 		if !removed {
-			fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  not in "+name+", nothing to remove: ")+category)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  not in "+name+", nothing to remove: ")+category)
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  removed from "+name+": ")+category)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  removed from "+name+": ")+category)
 		return nil
 	},
 	SilenceUsage: true,
@@ -117,7 +118,7 @@ a profile path is meant to be a single project, not a whole-system sweep.
 		if err := config.AddProfilePath(name, p); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  added to "+name+": ")+p)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  added to "+name+": ")+p)
 		return nil
 	},
 	SilenceUsage: true,
@@ -134,10 +135,10 @@ var profileRemovePathCmd = &cobra.Command{
 			return err
 		}
 		if !removed {
-			fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  not in "+name+", nothing to remove: ")+p)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  not in "+name+", nothing to remove: ")+p)
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  removed from "+name+": ")+p)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  removed from "+name+": ")+p)
 		return nil
 	},
 	SilenceUsage: true,

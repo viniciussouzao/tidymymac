@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
@@ -27,7 +28,7 @@ $ tidymymac protect --path ~/Documents/Work
 		if err := config.AddProtectedPath(p); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  protected: ")+p)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  protected: ")+p)
 		return nil
 	},
 	SilenceUsage: true,

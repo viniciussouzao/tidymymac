@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
 	"github.com/viniciussouzao/tidymymac/internal/config"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 )
@@ -26,10 +27,10 @@ $ tidymymac unprotect --path ~/Documents/Work
 			return err
 		}
 		if !removed {
-			fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  not protected, nothing to remove: ")+p)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  not protected, nothing to remove: ")+p)
 			return nil
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  unprotected: ")+p)
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  unprotected: ")+p)
 		return nil
 	},
 	SilenceUsage: true,

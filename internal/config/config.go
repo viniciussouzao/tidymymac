@@ -13,9 +13,10 @@ import (
 	"slices"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/homedir"
-	"gopkg.in/yaml.v3"
 )
 
 // Profile is a named, user-authored bundle of cleaner categories plus

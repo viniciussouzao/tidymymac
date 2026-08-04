@@ -86,7 +86,7 @@ Example:
 $ tidymymac list protected
 `,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Fprint(cmd.OutOrStdout(), returnProtected())
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), returnProtected())
 	},
 }
 
@@ -134,7 +134,7 @@ Example:
 $ tidymymac list profiles
 `,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Fprint(cmd.OutOrStdout(), returnProfiles())
+		_, _ = fmt.Fprint(cmd.OutOrStdout(), returnProfiles())
 	},
 }
 

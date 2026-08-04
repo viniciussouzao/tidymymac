@@ -173,7 +173,7 @@ func RenderLogo() string {
 		out = append(out, lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Bold(true).Render(line))
 	}
 
-	return strings.Join(out, "\n")
+	return lipgloss.NewStyle().MarginTop(2).Render(strings.Join(out, "\n"))
 }
 
 // RenderTagLine renders a subtitle below the logo.

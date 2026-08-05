@@ -66,6 +66,11 @@ jobs:
           tar -czf tidymymac-${{ steps.version.outputs.version }}-darwin-arm64.tar.gz tidymymac-darwin-arm64
           rm tidymymac-darwin-amd64 tidymymac-darwin-arm64
 
+      - name: Generate checksums
+        run: |
+          cd dist
+          shasum -a 256 *.tar.gz > checksums.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

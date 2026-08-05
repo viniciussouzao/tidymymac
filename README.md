@@ -52,7 +52,24 @@ TidyMyMac was built to make cleanup transparent and safe:
 
 ## 🚀 Installation
 
-### Homebrew (recommended)
+### curl
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/viniciussouzao/tidymymac/main/install.sh | sh
+```
+
+Downloads and installs the latest release to `/usr/local/bin` (falling back to
+`$HOME/.local/bin` if that isn't writable, prompting for `sudo` otherwise).
+
+```bash
+# Install a specific version
+curl -fsSL https://raw.githubusercontent.com/viniciussouzao/tidymymac/main/install.sh | TIDYMYMAC_VERSION=v1.1 sh
+
+# Install to a custom directory
+curl -fsSL https://raw.githubusercontent.com/viniciussouzao/tidymymac/main/install.sh | TIDYMYMAC_INSTALL_DIR=$HOME/bin sh
+```
+
+### Homebrew
 
 ```bash
 brew install viniciussouzao/tap/tidymymac
@@ -75,7 +92,7 @@ make build
 ./bin/tidymymac
 ```
 
-> Requires Go 1.21+
+> Requires Go 1.26+
 
 ## 🛠️ Usage
 

@@ -133,6 +133,7 @@ print_summary() {
 		*":$INSTALL_DIR:"*) ;;
 		*)
 			warn "$INSTALL_DIR is not on your PATH"
+			# shellcheck disable=SC2016 # $PATH is meant to stay literal here, for the user to paste
 			printf '    export PATH="%s:$PATH"\n' "$INSTALL_DIR" >&2
 			;;
 	esac

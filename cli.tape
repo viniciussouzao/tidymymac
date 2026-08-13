@@ -1,18 +1,31 @@
-Output docs/images/cli.gif
+# TidyMyMac — CLI demo
+# Requires: tidymymac in PATH. Record with: vhs cli.tape
 
-Set FontSize 12
-Set Width 1200
-Set Height 700
+Output docs/images/cli-demo.gif
+
+Set FontSize 20
+Set Width 1600
+Set Height 1000
+Set Padding 20
 Set Theme "Dracula"
+Set FontFamily "CaskaydiaCove Nerd Font Mono"
+Set TypingSpeed 75ms
+Set Framerate 30
 
-Type "tidymymac scan"
+# Scan a few categories (read-only, dry-run by default)
+Type "tidymymac scan trash downloads homebrew"
+Sleep 400ms
 Enter
-Sleep 2s
+Sleep 4s
 
+# Storage stats
 Type "tidymymac stats"
+Sleep 400ms
 Enter
-Sleep 2s
+Sleep 2.5s
 
+# Explain what macOS hides under "System Data"
 Type "tidymymac explain system-data"
+Sleep 400ms
 Enter
-Sleep 3s
+Sleep 4s

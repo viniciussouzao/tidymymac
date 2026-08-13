@@ -107,13 +107,17 @@ tidymymac --execute
 ### TUI Demo
 
 <p align="center">
-  <img src="docs/images/tui-demo.gif" width="900" alt="TidyMyMac TUI demo"/>
+  <a href="https://viniciussouzao.github.io/tidymymac/">
+    <img src="docs/images/tui-demo.gif" width="900" alt="TidyMyMac interactive TUI demo: dashboard scan, select all, review files, and dry-run summary"/>
+  </a>
 </p>
 
 ### CLI Demo
 
 <p align="center">
-  <img src="docs/images/cli-demo.gif" width="900" alt="TidyMyMac CLI demo"/>
+  <a href="https://viniciussouzao.github.io/tidymymac/">
+    <img src="docs/images/cli-demo.gif" width="900" alt="TidyMyMac CLI demo: targeted scan table, all-time stats, and explain system-data with safety badges"/>
+  </a>
 </p>
 
 ### 📋 Commands

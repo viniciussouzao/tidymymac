@@ -1,0 +1,17 @@
+{
+  "name": "tidymymac-site",
+  "private": true,
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "site:build": "tailwindcss -c site-src/tailwind.config.js -i site-src/styles.css -o site/assets/site.css --minify",
+    "site:serve": "serve site -l tcp://127.0.0.1:4173",
+    "site:test": "npm run site:build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "serve": "14.2.6",
+    "tailwindcss": "3.4.17"
+  }
+}

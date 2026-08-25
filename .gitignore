@@ -36,3 +36,9 @@ bin/
 .github/agents/
 .DS_Store
 .claude/*
+
+# Static site build and browser-test artifacts
+node_modules/
+site/assets/site.css
+playwright-report/
+test-results/

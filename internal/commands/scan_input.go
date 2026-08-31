@@ -153,17 +153,6 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 	return revalidated, missing, typeChanged
 }
 
-// RunCleanWithScanResult takes a ScanResult, prepares it for cleaning, and then executes the cleaning process while emitting events through the provided onEvent callback.
-// It returns a CleanResult summarizing the outcome of the cleaning operation or an error if any step fails.
-func RunCleanWithScanResult(ctx context.Context, registry *cleaner.Registry, scan ScanResult, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {
-	prepared, err := PrepareScanResultForClean(registry, scan, selected, opts.Config)
-	if err != nil {
-		return CleanResult{}, err
-	}
-
-	return RunCleanWithPreparedScanResult(ctx, registry, prepared, selected, opts, onEvent)
-}
-
 // RunCleanWithPreparedScanResult executes the cleaning process using a PreparedScanResult, which includes a ScanResult along with metadata about the revalidation process.
 // It returns a CleanResult summarizing the outcome of the cleaning operation or an error if any step fails.
 func RunCleanWithPreparedScanResult(ctx context.Context, registry *cleaner.Registry, prepared PreparedScanResult, selected []string, opts CleanerOptions, onEvent func(CleanEvent)) (CleanResult, error) {

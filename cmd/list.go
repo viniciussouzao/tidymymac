@@ -25,6 +25,12 @@ Use a subcommand to specify what to list:
 
 # List all available categories
 tidymymac list categories
+
+# List protected paths and disabled categories from the config
+tidymymac list protected
+
+# List configured cleanup profiles
+tidymymac list profiles
 `,
 }
 

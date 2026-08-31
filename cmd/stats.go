@@ -32,8 +32,8 @@ Example:
 # Show all-time statistics for all categories
 tidymymac stats
 
-# Show all-time statistics for the "caches" category
-tidymymac stats caches
+# Show all-time statistics for the "app-caches" category
+tidymymac stats app-caches
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

@@ -129,7 +129,7 @@ tidymymac --execute
 tidymymac scan
 
 # Scan specific categories only
-tidymymac scan docker caches xcode
+tidymymac scan docker app-caches xcode
 
 # Scan everything a profile bundles (categories + project paths)
 tidymymac scan --profile dev
@@ -161,7 +161,7 @@ tidymymac clean
 tidymymac clean --execute
 
 # Clean specific categories
-tidymymac clean docker caches --execute
+tidymymac clean docker app-caches --execute
 
 # Clean everything a profile bundles
 tidymymac clean --profile dev --execute

@@ -19,7 +19,7 @@ build:
 	go build $(LDFLAGS) -o $(BINARY_PATH) $(CMD_DIR)
 
 test:
-	go test ./internal/cleaner -v -race -short ./...
+	go test ./... -race -short
 
 run: build
 	./$(BINARY_PATH)

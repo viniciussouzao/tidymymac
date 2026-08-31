@@ -44,7 +44,7 @@ $ tidymymac scan --output csv --save
 $ tidymymac scan --output json --detailed
 
 # Scan specific categories
-$ tidymymac scan docker caches
+$ tidymymac scan docker app-caches
 
 # Scan everything a profile bundles (categories + project paths)
 $ tidymymac scan --profile dev
@@ -83,7 +83,7 @@ func init() {
 	scanCmd.Flags().StringP("output", "o", "", "output format: json or csv (omit for interactive table)")
 	scanCmd.Flags().String("profile", "", "scan the categories and project paths bundled by a configured profile")
 	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
-	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout")
+	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout (only applies with --output)")
 	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
 	scanCmd.Flags().Bool("generate-script", false, "generate a shell script to delete the found files")
 }

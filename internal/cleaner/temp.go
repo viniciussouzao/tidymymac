@@ -14,7 +14,10 @@ type TempCleaner struct {
 }
 
 func NewTempCleaner() *TempCleaner {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
 	return &TempCleaner{
 		homeDir: home,
 	}

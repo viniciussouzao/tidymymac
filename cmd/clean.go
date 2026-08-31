@@ -39,7 +39,7 @@ $ tidymymac clean
 $ tidymymac clean --execute
 
 # Clean only specific categories
-$ tidymymac clean docker caches --execute
+$ tidymymac clean docker app-caches --execute
 
 # Use a previous detailed JSON scan and revalidate entries before cleaning
 $ tidymymac clean --from-file scan.json
@@ -90,7 +90,7 @@ func init() {
 	cleanCmd.Flags().StringP("output", "o", "", "output format for results: json (omit for interactive table)")
 	cleanCmd.Flags().String("profile", "", "clean the categories and project paths bundled by a configured profile")
 	cleanCmd.Flags().Bool("include-large-files", false, "also delete the oversized files found in a profile's project paths (they are reported but never deleted without this)")
-	cleanCmd.Flags().Bool("detailed", false, "include individual file paths in the cleanup result")
+	cleanCmd.Flags().Bool("detailed", false, "include individual file paths in the cleanup result (only applies with --output json)")
 	cleanCmd.Flags().String("from-file", "", "load a JSON scan file (from 'scan --output json --detailed') and revalidate its entries before cleaning")
 	cleanCmd.Flags().Bool("force-stale-scan", false, "allow --from-file scan results older than 24 hours when used with --execute")
 	cleanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr")

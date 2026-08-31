@@ -44,5 +44,5 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().BoolVarP(&executeFlag, "execute", "e", false, "execute deletions; without this flag runs as a dry-run preview")
+	rootCmd.PersistentFlags().BoolVarP(&executeFlag, "execute", "e", false, "execute deletions when cleaning (root TUI and 'clean'); ignored by read-only commands")
 }

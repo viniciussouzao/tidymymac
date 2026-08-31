@@ -82,7 +82,7 @@ func init() {
 	rootCmd.AddCommand(historyCmd)
 	historyCmd.Flags().BoolP("all", "a", false, "show the full history of successful runs")
 	historyCmd.Flags().BoolP("verbose", "v", false, "show per-category breakdown for each run")
-	historyCmd.Flags().Int("last", 5, "number of recent runs to show (ignored if --all is set)")
+	historyCmd.Flags().Int("last", 5, "number of recent runs to show (cannot be combined with --all)")
 }
 
 func renderHistory(record history.Record, opts historyOptions, loc *time.Location) (string, error) {

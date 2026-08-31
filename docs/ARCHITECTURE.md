@@ -120,7 +120,8 @@ tidymymac/
 │   │       ├── scanning.go
 │   │       ├── review.go
 │   │       ├── cleaning.go
-│   │       └── summary.go
+│   │       ├── summary.go
+│   │       └── health.go
 │   │
 │   ├── history/                  # Cleanup run history persisted at ~/.tidymymac/history.json
 │   │   ├── history.go            # Load/append/Stats/StatsByCategory

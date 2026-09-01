@@ -244,7 +244,7 @@ var dockerResourceGroups = []dockerResourceGroup{
 // requires detailed data (result.Categories[i].Files) to produce per-entry
 // breakdowns; categories without Files are reported by their totals only.
 func writeTable(w io.Writer, result ScanResult, printAll bool) error {
-	fmt.Fprintf(w, "Scan report - %s\n", result.ScannedAt.Format("2006-01-02 15:04:05 MST"))
+	fmt.Fprintf(w, "Scan report - %s\n", result.ScannedAt.Local().Format("2006-01-02 15:04:05 MST"))
 	fmt.Fprintf(w, "Total: %d items, %s\n\n", result.TotalFiles, utils.FormatBytes(result.TotalSize))
 
 	for _, cat := range result.Categories {

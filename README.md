@@ -246,6 +246,7 @@ TidyMyMac is designed with safety as the primary concern:
 - ✅ **Dry-run by default**: scanning and reviewing never touches your files
 - ✅ **Explicit confirmation required**: deletion only happens with `--execute`
 - ✅ **Protected paths are a hard block**: anything in `protected_paths` is never deleted, and no CLI flag overrides it
+- ✅ **AI model stores protected by default**: `~/.ollama/models` and `~/.cache/huggingface` are built-in protected paths, even with no config file
 - ✅ **No silent operations**: every file is shown before removal
 - ✅ **Errors are non-fatal**: a failure on one file won't stop the rest
 

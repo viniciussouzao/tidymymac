@@ -26,11 +26,23 @@ $ tidymymac unprotect --path ~/Documents/Work
 		if err != nil {
 			return err
 		}
+		builtin := loadedConfig.IsBuiltinProtected(p)
 		if !removed {
+			// A built-in default is protected but lives in the binary, not in
+			// config.yaml: saying "not protected" here would be actively
+			// misleading about a path that is, in fact, hard-blocked.
+			if builtin {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  protected by a built-in default, cannot be removed with unprotect: ")+p)
+				return nil
+			}
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  not protected, nothing to remove: ")+p)
 			return nil
 		}
 		_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Success.Render("  unprotected: ")+p)
+		if builtin {
+			// The entry is gone from config.yaml, but the path stays blocked.
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), styles.Dim.Render("  still protected by a built-in default"))
+		}
 		return nil
 	},
 	SilenceUsage: true,

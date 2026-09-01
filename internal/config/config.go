@@ -34,8 +34,43 @@ type Config struct {
 	DisabledCategories []string           `yaml:"disabled_categories"`
 	Profiles           map[string]Profile `yaml:"profiles"`
 
-	normalizedProtected []string
+	normalizedProtected []normalizedProtectedPath
 	disabledSet         map[string]struct{}
+}
+
+// normalizedProtectedPath is one entry of the pre-computed comparison form
+// used by IsProtected/ContainsProtected, tagged with where it came from so
+// commands can tell a built-in default apart from a user-configured entry
+// (a built-in cannot be removed by "tidymymac unprotect", since it lives in
+// the binary, not in config.yaml).
+type normalizedProtectedPath struct {
+	key     string // lowercased, cleaned, absolute -- the comparison form
+	builtin bool
+}
+
+// builtinProtectedPath is a product-shipped protected_paths entry: never
+// written to the user's config.yaml, always unioned in at normalize time.
+type builtinProtectedPath struct {
+	path   string
+	reason string
+}
+
+// builtinProtectedPaths are hard-blocked by default, with no config file
+// required. Local model stores are huge and structurally indistinguishable
+// from regenerable cache to a generic scanner, yet re-downloading them costs
+// tens of GB -- so they are protected out of the box rather than relying on
+// every user to have written a config file first.
+//
+// Both entries are officially documented, stable defaults. Do NOT add app
+// cache dirs (~/Library/Caches is regenerable by design and stays normal
+// cleanable cache), LM Studio (no stable default path), or llama.cpp (its
+// cache dir is a build cache, not model storage) -- see the task's explicit
+// scope decision. Env-var overrides (OLLAMA_MODELS, HF_HOME, HF_HUB_CACHE)
+// are deliberately not detected either; a user with a relocated store adds it
+// to protected_paths themselves.
+var builtinProtectedPaths = []builtinProtectedPath{
+	{"~/.ollama/models", "Ollama local models"},
+	{"~/.cache/huggingface", "Hugging Face Hub cache (models + Xet cache)"},
 }
 
 func path() (string, error) {
@@ -84,7 +119,10 @@ func New(protectedPaths, disabledCategories []string) (*Config, error) {
 func loadFrom(p string) (*Config, error) {
 	data, err := os.ReadFile(p)
 	if errors.Is(err, os.ErrNotExist) {
-		return &Config{}, nil
+		// Still normalize: a missing file means "no *user* protected paths",
+		// never "no protection at all" -- the built-in defaults must apply
+		// with no config file present.
+		return emptyConfig()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading config file %s: %w", p, err)
@@ -94,13 +132,29 @@ func loadFrom(p string) (*Config, error) {
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty (zero-byte or whitespace-only) file: treat like a
-			// missing file, not an error.
-			return &Config{}, nil
+			// missing file, not an error -- including still applying the
+			// built-in protected paths.
+			return emptyConfig()
 		}
 		return nil, fmt.Errorf("config file %s: unrecognized or malformed content: %w", p, err)
 	}
 	if err := cfg.normalize(); err != nil {
 		return nil, fmt.Errorf("config file %s: %w", p, err)
+	}
+	return cfg, nil
+}
+
+// emptyConfig builds the Config used when there is nothing to read (missing
+// or empty file). It is deliberately NOT a bare &Config{}: normalize is what
+// installs the built-in protected paths, so skipping it here would silently
+// under-protect exactly the users who never wrote a config file. An error can
+// realistically only come from home-directory resolution, which the rest of
+// this package already treats as a hard failure rather than a reason to
+// proceed unprotected.
+func emptyConfig() (*Config, error) {
+	cfg := &Config{}
+	if err := cfg.normalize(); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }
@@ -136,15 +190,17 @@ func (c *Config) normalize() error {
 		c.disabledSet[cat] = struct{}{}
 	}
 
-	seen := make(map[string]struct{}, len(c.ProtectedPaths))
-	for _, raw := range c.ProtectedPaths {
+	c.normalizedProtected = nil
+	seen := make(map[string]struct{}, len(builtinProtectedPaths)+len(c.ProtectedPaths))
+
+	addEntry := func(raw string, builtin bool) error {
 		clean, err := validateProtectedPathEntry(raw)
 		if err != nil {
 			return err
 		}
 
 		norm := strings.ToLower(clean)
-		addRoot(&c.normalizedProtected, seen, norm)
+		addRoot(&c.normalizedProtected, seen, norm, builtin)
 
 		// macOS mounts several top-level directories as firmlinks to a
 		// /private/... path (e.g. /tmp -> /private/tmp, /var -> /private/var).
@@ -152,7 +208,7 @@ func (c *Config) normalize() error {
 		// in either form must protect both -- otherwise a path typed in the
 		// "wrong" spelling silently fails to match anything scanned.
 		for _, alias := range firmlinkAliases(norm) {
-			addRoot(&c.normalizedProtected, seen, alias)
+			addRoot(&c.normalizedProtected, seen, alias, builtin)
 		}
 
 		// General symlink case: if the configured path itself resolves to a
@@ -161,19 +217,36 @@ func (c *Config) normalize() error {
 		// legitimate thing to protect (see Load's doc comment), so an error
 		// here is not fatal to Load.
 		if resolved, err := filepath.EvalSymlinks(clean); err == nil {
-			addRoot(&c.normalizedProtected, seen, strings.ToLower(resolved))
+			addRoot(&c.normalizedProtected, seen, strings.ToLower(resolved), builtin)
+		}
+		return nil
+	}
+
+	// Built-ins first, so that a user who redundantly lists one of them in
+	// their own protected_paths is deduped into a no-op that keeps the
+	// built-in origin: user entries are unioned with the built-ins, never
+	// replacing or duplicating them.
+	for _, b := range builtinProtectedPaths {
+		if err := addEntry(b.path, true); err != nil {
+			return fmt.Errorf("built-in protected path %q: %w", b.path, err)
+		}
+	}
+
+	for _, raw := range c.ProtectedPaths {
+		if err := addEntry(raw, false); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func addRoot(roots *[]string, seen map[string]struct{}, root string) {
+func addRoot(roots *[]normalizedProtectedPath, seen map[string]struct{}, root string, builtin bool) {
 	if _, dup := seen[root]; dup {
 		return
 	}
 	seen[root] = struct{}{}
-	*roots = append(*roots, root)
+	*roots = append(*roots, normalizedProtectedPath{key: root, builtin: builtin})
 }
 
 // firmlinkPrefixes are macOS's well-known top-level firmlink shortcuts to
@@ -308,11 +381,67 @@ func (c *Config) IsProtected(path string) bool {
 	}
 	clean := strings.ToLower(filepath.Clean(path))
 	for _, root := range c.normalizedProtected {
-		if clean == root || strings.HasPrefix(clean, root+string(os.PathSeparator)) {
+		if clean == root.key || strings.HasPrefix(clean, root.key+string(os.PathSeparator)) {
 			return true
 		}
 	}
 	return false
+}
+
+// IsBuiltinProtected reports whether path matches one of TidyMyMac's built-in
+// protected defaults (as opposed to a user-configured protected_paths entry).
+// Used by "tidymymac unprotect" so it can say "built-in, cannot be removed"
+// instead of wrongly claiming an actually-protected path is "not protected".
+// nil-safe.
+//
+// Unlike IsProtected, which only ever sees absolute paths produced by
+// cleaners, this is called with a raw, user-typed CLI argument -- so it
+// tilde-expands first (best-effort: an unexpandable path just fails to match,
+// which only costs a less precise message, never protection itself).
+func (c *Config) IsBuiltinProtected(path string) bool {
+	if c == nil {
+		return false
+	}
+	if expanded, err := expandTilde(path); err == nil {
+		path = expanded
+	}
+	clean := strings.ToLower(filepath.Clean(path))
+	for _, root := range c.normalizedProtected {
+		if !root.builtin {
+			continue
+		}
+		if clean == root.key || strings.HasPrefix(clean, root.key+string(os.PathSeparator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ProtectedPathEntry is one protected_paths entry as shown to the user: its
+// origin (built-in default vs. user-configured) and, for built-ins, why it is
+// protected.
+type ProtectedPathEntry struct {
+	Path    string
+	Builtin bool
+	Reason  string // set only when Builtin is true
+}
+
+// ProtectedPathEntries lists every protected path for display (e.g.
+// "tidymymac list protected"): the built-in defaults first, in their
+// documented tilde form, then the user's own protected_paths exactly as
+// written in config.yaml. Display-only -- enforcement always goes through the
+// normalized form. nil-safe.
+func (c *Config) ProtectedPathEntries() []ProtectedPathEntry {
+	entries := make([]ProtectedPathEntry, 0, len(builtinProtectedPaths))
+	for _, b := range builtinProtectedPaths {
+		entries = append(entries, ProtectedPathEntry{Path: b.path, Builtin: true, Reason: b.reason})
+	}
+	if c != nil {
+		for _, p := range c.ProtectedPaths {
+			entries = append(entries, ProtectedPathEntry{Path: p})
+		}
+	}
+	return entries
 }
 
 // ContainsProtected reports whether a protected path lies strictly *inside*
@@ -333,7 +462,7 @@ func (c *Config) ContainsProtected(path string) bool {
 		prefix += string(os.PathSeparator)
 	}
 	for _, root := range c.normalizedProtected {
-		if strings.HasPrefix(root, prefix) {
+		if strings.HasPrefix(root.key, prefix) {
 			return true
 		}
 	}

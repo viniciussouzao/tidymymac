@@ -105,11 +105,12 @@ func returnProtected() string {
 	b.WriteString("\n")
 	b.WriteString(sep)
 	b.WriteString("\n")
-	if len(loadedConfig.ProtectedPaths) == 0 {
-		b.WriteString(styles.Dim.Render("  (none configured)") + "\n")
-	}
-	for _, p := range loadedConfig.ProtectedPaths {
-		b.WriteString("  " + p + "\n")
+	for _, entry := range loadedConfig.ProtectedPathEntries() {
+		line := "  " + entry.Path
+		if entry.Builtin {
+			line += styles.Dim.Render(" (built-in — " + entry.Reason + ")")
+		}
+		b.WriteString(line + "\n")
 	}
 
 	b.WriteString("\n")
@@ -125,6 +126,8 @@ func returnProtected() string {
 	}
 
 	b.WriteString(styles.Help.Render("  run tidymymac protect --path <path> to add a protected path"))
+	b.WriteString("\n")
+	b.WriteString(styles.Help.Render("  built-in paths are always protected and cannot be removed with tidymymac unprotect"))
 	b.WriteString("\n")
 
 	return b.String()

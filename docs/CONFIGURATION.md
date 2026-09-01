@@ -19,8 +19,9 @@ categories disabled by default, and named cleanup profiles.
 ## The config file
 
 TidyMyMac looks for `~/.tidymymac/config.yaml`. The file is **optional**: if it is missing or
-empty, nothing is protected, nothing is disabled and no profiles exist — every command behaves
-as if you had never created it.
+empty, nothing is disabled and no profiles exist — every command behaves as if you had never
+created it. The only exception is the [built-in protected paths](#built-in-protected-paths),
+which always apply, with or without a config file.
 
 If the file *is* present but cannot be understood — invalid YAML, an unrecognized key, an
 invalid `protected_paths` entry — TidyMyMac **aborts the command** instead of continuing:
@@ -63,6 +64,26 @@ protected_paths:
 
 Protected files are still **shown** by `scan` and by dry-run previews — protection hides
 nothing, it only prevents deletion.
+
+### Built-in protected paths
+
+Two paths are protected **by default, with no config file required**:
+
+| Path | Why |
+|---|---|
+| `~/.ollama/models` | Ollama local models |
+| `~/.cache/huggingface` | Hugging Face Hub cache (models + Xet cache) |
+
+Local model stores are often tens of GB and look exactly like regenerable cache to a generic
+scanner, but re-downloading them is expensive — so they are hard-blocked out of the box. They
+are shown by `tidymymac list protected` marked as built-in, and behave like any other protected
+path (same matching rules, same containment rules).
+
+Built-ins live in the binary, not in your config file, so `tidymymac unprotect` cannot remove
+them; it tells you so instead of reporting the path as unprotected. If your models live
+elsewhere (for example via `OLLAMA_MODELS` or `HF_HOME`), add that location with
+`tidymymac protect --path ...` — those overrides are not auto-detected. Your own
+`protected_paths` are always unioned with the built-ins, never replaced by them.
 
 ### How paths are matched
 

@@ -100,7 +100,10 @@ make build
 # Launch interactive TUI (dry-run, nothing is deleted)
 tidymymac
 
-# Actually delete the selected files
+# Launch the same TUI ready to actually delete the selected files
+tidymymac execute
+
+# Deprecated: still works, but prefer 'tidymymac execute' above
 tidymymac --execute
 ```
 

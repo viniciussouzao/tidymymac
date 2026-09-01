@@ -269,10 +269,11 @@ Progress callbacks (`func(ScanProgress)` and `func(CleanProgress)`) allow cleane
 
 ### `cmd/`
 
-The `cmd/` package uses [Cobra](https://github.com/spf13/cobra) to define the CLI structure. The root command (`tidymymac`) launches the TUI. Subcommands provide non-interactive alternatives:
+The `cmd/` package uses [Cobra](https://github.com/spf13/cobra) to define the CLI structure. The root command (`tidymymac`) launches the TUI in dry-run mode. Subcommands provide non-interactive alternatives:
 
 | Command | Purpose |
 |---|---|
+| `execute` | Open the same interactive TUI as the root command, but already in execute mode. Deletion still goes through the TUI's own review and confirmation step. Prefer this over the deprecated `tidymymac --execute`. |
 | `scan [categories...]` | Run scans and emit an interactive table or machine-readable JSON/CSV (with `--output`, `--detailed`, `--save`, `--quiet`, `--generate-script`). `--profile <name>` runs a configured profile instead of positional categories. |
 | `clean [categories...]` | Delete scanned files. Dry-run by default; destructive only with `--execute`. Supports `--from-file` to reuse a previously saved detailed scan, `--output json`, `--profile <name>`, and `--include-large-files` to opt into deleting the oversized files a profile's project paths turn up. |
 | `list categories\|protected\|profiles` | Print all registered categories (add `--detailed` for descriptions), the current safety config, or the configured profiles. |
@@ -289,8 +290,10 @@ The `--execute` flag is defined at the root level as a persistent flag, making i
 
 ```go
 rootCmd.PersistentFlags().BoolVarP(&executeFlag, "execute", "e", false,
-    "execute deletions; without this flag runs as a dry-run preview")
+    "execute deletions when cleaning ('clean --execute'); deprecated for the root TUI - use 'tidymymac execute' instead")
 ```
+
+Using `--execute` directly on the root command (e.g. `tidymymac --execute`) still opens the TUI in execute mode for backward compatibility, but emits a one-line deprecation warning to stderr pointing at `tidymymac execute`. `clean --execute` is unaffected by this warning — it reads the same `executeFlag` variable but is a separate `RunE`.
 
 ### `internal/cleaner/`
 

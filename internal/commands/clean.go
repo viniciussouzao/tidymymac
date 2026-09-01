@@ -136,9 +136,22 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 				}
 			}
 
+			// A whole-domain cleaner shells out to a command that clears its
+			// entire domain regardless of which entries are passed in -- so
+			// zero reviewed entries must never be read as "run it anyway".
+			// That matters most exactly when entries can under-report reality:
+			// a stale --from-file scan, a category the file never mentioned
+			// (buildCleanScanResult then hands back an empty result rather
+			// than an error), or every entry having been revalidated away.
+			// Skipping is indistinguishable on screen from "genuinely already
+			// clean" (both report 0 files, 0 bytes, no error), which is the
+			// same trade-off the elevated helper makes for an empty
+			// plan/scan intersection.
+			skipEmptyWholeDomain := !opts.DryRun && c.DeletesWholeDomain() && scanResult != nil && len(scanResult.Entries) == 0
+
 			var cleanRunResult *cleaner.CleanResult
 			var cleanErr error
-			if scanErr == nil {
+			if scanErr == nil && !skipEmptyWholeDomain {
 				cleanRunResult, cleanErr = c.Clean(ctx, scanResult.Entries, opts.DryRun, func(progress cleaner.CleanProgress) {
 					if onEvent != nil {
 						onEvent(CleanEvent{
@@ -217,6 +230,75 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 	result.TotalSizeHuman = utils.FormatBytes(result.TotalSize)
 
 	return result, nil
+}
+
+// ApprovedCategory is one category's approved-for-deletion entries: freshly
+// scanned, tagged, and stripped of protected paths, but not cleaned.
+type ApprovedCategory struct {
+	Category cleaner.Category
+	Name     string
+	Entries  []cleaner.FileEntry
+
+	// Err is set when the scan itself failed, or when the category cannot
+	// honor a filtered entry list (DeletesWholeDomain) and protected paths
+	// were found in it -- the same "skip the whole category" rule runClean
+	// applies per cleaner. Entries is empty whenever Err is set.
+	Err error
+}
+
+// ResolveApprovedEntries scans, tags, and strips protected paths for exactly
+// the given categories, without cleaning anything. It runs the identical
+// per-category pipeline runClean's own loop applies right before calling
+// Clean -- including honoring a prepared --from-file scan the same way --
+// so a caller that needs a category's approved entries without cleaning it
+// can't drift from what an ordinary clean run would have used.
+//
+// It exists for the elevated-helper path in cmd/clean.go: entries destined
+// for elevate.Invoke must be gathered the same way as everything else clean
+// deletes, not through a second, possibly-divergent implementation of scan
+// + tag + strip.
+func ResolveApprovedEntries(ctx context.Context, registry *cleaner.Registry, selected []string, cfg *config.Config, preparedScan ScanResult, usePreparedScan bool) ([]ApprovedCategory, error) {
+	cleaners, err := resolveCleaners(registry, selected, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]ApprovedCategory, len(cleaners))
+	var wg sync.WaitGroup
+	wg.Add(len(cleaners))
+
+	for i, c := range cleaners {
+		i, c := i, c
+
+		go func() {
+			defer wg.Done()
+
+			name := c.Category().DisplayName()
+			results[i] = ApprovedCategory{Category: c.Category(), Name: name}
+
+			scanResult, scanErr := buildCleanScanResult(c, preparedScan, usePreparedScan)
+			if !usePreparedScan {
+				scanResult, scanErr = c.Scan(ctx, nil)
+			}
+			if scanErr != nil {
+				results[i].Err = scanErr
+				return
+			}
+			if scanResult == nil {
+				return
+			}
+
+			scanResult.Entries = cfg.Tag(scanResult.Entries)
+			if protected := config.CountProtected(scanResult.Entries); protected > 0 && c.DeletesWholeDomain() {
+				results[i].Err = fmt.Errorf("skipped: %d protected path(s) found in this category, and %s cannot selectively clean around them", protected, name)
+				return
+			}
+			results[i].Entries = config.StripProtected(scanResult.Entries)
+		}()
+	}
+
+	wg.Wait()
+	return results, nil
 }
 
 // buildCleanScanResult constructs a cleaner.ScanResult from a prepared ScanResult for a specific cleaner category.

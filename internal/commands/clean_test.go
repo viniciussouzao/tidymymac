@@ -364,6 +364,81 @@ func TestRunClean_WholeDomainSkipAppliesInDryRunToo(t *testing.T) {
 	}
 }
 
+func TestRunClean_SkipsWholeDomainCleanerWhenScanFindsNothing(t *testing.T) {
+	mock := &mockCleanRunner{
+		category:           "cat_a",
+		deletesWholeDomain: true,
+		// entries deliberately nil: this is what buildCleanScanResult hands
+		// back for a --from-file prepared scan that never mentions cat_a at
+		// all, and what a stale/expired --from-file entry set revalidates
+		// down to -- indistinguishable, at this point, from a category that
+		// is genuinely already clean.
+		entries: nil,
+	}
+	r := newMockCleanRegistry(mock)
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if mock.cleanCalled {
+		t.Fatal("a whole-domain cleaner must never run against zero reviewed entries -- it shells out to a command that clears its entire domain regardless of what was passed in")
+	}
+	if result.HasErrors {
+		t.Errorf("HasErrors = true, want false: %+v", result.Categories[0])
+	}
+	if result.Categories[0].DeletedFiles != 0 || result.Categories[0].DeletedSize != 0 {
+		t.Errorf("Categories[0] = %+v, want a benign zero result", result.Categories[0])
+	}
+}
+
+func TestRunClean_WholeDomainZeroEntriesSkipDoesNotApplyInDryRun(t *testing.T) {
+	// Dry-run cleaners never shell out for real regardless of entries (see
+	// e.g. HomebrewCleaner.Clean's dryRun branch), so there is nothing to
+	// protect against here -- Clean still runs, purely to produce the
+	// (harmless, zero) preview.
+	mock := &mockCleanRunner{category: "cat_a", deletesWholeDomain: true, entries: nil}
+	r := newMockCleanRegistry(mock)
+
+	_, err := RunClean(t.Context(), r, nil, CleanerOptions{DryRun: true}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if !mock.cleanCalled {
+		t.Error("dry-run should still call Clean with zero entries; only --execute needs the guard")
+	}
+}
+
+func TestRunCleanWithPreparedScanResult_NeverRunsWholeDomainCleanerForACategoryTheScanFileOmits(t *testing.T) {
+	// The scenario this must close: a --from-file scan that only covers
+	// "other_cat" must never cause a registered whole-domain cleaner it
+	// doesn't even mention to run at all -- buildCleanScanResult hands that
+	// cleaner back an empty (not erroring) ScanResult, which previously let
+	// it straight through to Clean().
+	mock := &mockCleanRunner{category: "whole_domain_cat", deletesWholeDomain: true}
+	other := &mockCleanRunner{category: "other_cat", entries: []cleaner.FileEntry{{Path: "/tmp/a", Size: 5}}}
+	r := newMockCleanRegistry(mock, other)
+
+	prepared := PreparedScanResult{
+		Result: ScanResult{
+			Categories: []ScanCategoryResult{
+				{Category: "other_cat", TotalFiles: 1, Files: other.entries},
+			},
+		},
+	}
+
+	result, err := RunCleanWithPreparedScanResult(t.Context(), r, prepared, []string{"whole_domain_cat", "other_cat"}, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunCleanWithPreparedScanResult() error: %v", err)
+	}
+	if mock.cleanCalled {
+		t.Fatal("whole_domain_cat must never be cleaned when the prepared scan never mentions it")
+	}
+	if result.HasErrors {
+		t.Errorf("HasErrors = true, want false: %+v", result.Categories)
+	}
+}
+
 func TestRunClean_FailedCategoryExcludedFromTotals(t *testing.T) {
 	r := newMockCleanRegistry(
 		&mockCleanRunner{category: "ok_cat", entries: []cleaner.FileEntry{{Path: "/tmp/a", Size: 500}}},

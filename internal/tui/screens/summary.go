@@ -92,13 +92,17 @@ func (m SummaryModel) View() string {
 
 	for _, r := range m.Results {
 		if r.Skipped {
+			reason := r.SkipReason
+			if reason == "" {
+				reason = "skipped"
+			}
 			line := fmt.Sprintf("  %-22s %12s %10s",
 				r.Category.DisplayName(),
 				"—",
 				"—",
 			)
 			b.WriteString(styles.Dim.Render(line))
-			b.WriteString(styles.Warning.Render(" (skipped: requires sudo)"))
+			b.WriteString(styles.Warning.Render(" (" + reason + ")"))
 			b.WriteString("\n")
 			continue
 		}
@@ -109,7 +113,11 @@ func (m SummaryModel) View() string {
 		)
 		b.WriteString(styles.Plain.Render(line))
 
-		if len(r.Errors) > 0 {
+		switch len(r.Errors) {
+		case 0:
+		case 1:
+			b.WriteString(styles.Error.Render(" (" + r.Errors[0].Error() + ")"))
+		default:
 			b.WriteString(styles.Error.Render(fmt.Sprintf(" (%d errors)", len(r.Errors))))
 		}
 		b.WriteString("\n")

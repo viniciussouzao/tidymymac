@@ -378,7 +378,7 @@ The privilege boundary. It lets categories that genuinely need root (`temp`, `lo
 
 `HelperCommandName` (`internal-elevated-clean`) is exported only so `cmd/elevated_clean.go` can register the hidden command under exactly the name `Invoke` passes to `sudo`.
 
-As of this phase the package is **dormant**: nothing in the TUI or in `clean --execute` calls `Invoke` yet, so no user-facing behavior depends on it.
+`tidymymac execute` (the TUI) calls `Invoke` from `internal/tui/app.go`'s `startElevation`/`handleElevateComplete`: the review screen's sudo dialog lets the user Authenticate or Skip, and on Authenticate the terminal is handed to `sudo`'s native password prompt via bubbletea's `tea.Exec` (the same mechanism used to shell out to an external editor) before `Invoke` runs. The interactive `clean --execute` and the `--output json` automation contract do not call it yet.
 
 ### `internal/celebration/`
 

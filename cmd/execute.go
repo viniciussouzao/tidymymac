@@ -20,7 +20,7 @@ Example usage:
 $ tidymymac execute
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		p := tea.NewProgram(tui.NewApp(true, loadedConfig), tea.WithAltScreen())
+		p := tea.NewProgram(tui.NewApp(cmd.Context(), true, loadedConfig), tea.WithAltScreen())
 		_, err := p.Run()
 		return err
 	},

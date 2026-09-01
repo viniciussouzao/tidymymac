@@ -55,6 +55,16 @@ type ReviewModel struct {
 	UnknownCount   int
 	SudoCategories []cleaner.Category
 	ConfirmState   ConfirmState
+
+	// AuthenticateSudo is the pending choice on the ConfirmSudo dialog: true
+	// authenticates via sudo for the categories in SudoCategories, false
+	// skips them. Defaults to false (skip) so that the same "press enter a
+	// few times" muscle memory used before this dialog existed keeps its old
+	// meaning -- an unprivileged clean -- rather than silently starting to
+	// authenticate as root. It also means a warm sudo timestamp cache (sudo
+	// caches successful auth for ~5 minutes on macOS) can never authenticate
+	// the user without an explicit, deliberate switch to the other option.
+	AuthenticateSudo bool
 }
 
 // NewReview constructs a ReviewModel from the scan results
@@ -148,7 +158,10 @@ func (m ReviewModel) ShouldWarnAboutSudo() bool {
 
 func (m ReviewModel) actionableTotals() (int64, int) {
 	blocked := make(map[cleaner.Category]struct{}, len(m.SudoCategories))
-	if m.ShouldWarnAboutSudo() {
+	// AuthenticateSudo means the user chose to authenticate for these
+	// categories, so they are still actionable and count toward the total.
+	// Only exclude them here when the user chose to skip instead.
+	if m.ShouldWarnAboutSudo() && !m.AuthenticateSudo {
 		for _, cat := range m.SudoCategories {
 			blocked[cat] = struct{}{}
 		}
@@ -158,6 +171,33 @@ func (m ReviewModel) actionableTotals() (int64, int) {
 	var totalFiles int
 	for _, cat := range m.Categories {
 		if _, isBlocked := blocked[cat.Category]; isBlocked {
+			continue
+		}
+		for _, f := range cat.AllFiles {
+			if f.Protected {
+				continue
+			}
+			totalSize += f.Size
+			totalFiles++
+		}
+	}
+
+	return totalSize, totalFiles
+}
+
+// sudoTotals returns the size and file count across only the categories in
+// SudoCategories, mirroring actionableTotals' protected-path exclusion. Used
+// to describe what a sudo authentication decision is actually about.
+func (m ReviewModel) sudoTotals() (int64, int) {
+	sudo := make(map[cleaner.Category]struct{}, len(m.SudoCategories))
+	for _, cat := range m.SudoCategories {
+		sudo[cat] = struct{}{}
+	}
+
+	var totalSize int64
+	var totalFiles int
+	for _, cat := range m.Categories {
+		if _, isSudo := sudo[cat.Category]; !isSudo {
 			continue
 		}
 		for _, f := range cat.AllFiles {
@@ -386,12 +426,12 @@ func (m ReviewModel) View() string {
 			sudoNames[i] = cat.DisplayName()
 		}
 		warning := fmt.Sprintf(
-			"Some selected categories require sudo and will be skipped unless you re-run with elevated privileges: %s.",
+			"Some selected categories require administrator access: %s.",
 			strings.Join(sudoNames, ", "),
 		)
 		b.WriteString(styles.Warning.Render("  Warning: " + warning))
 		b.WriteString("\n")
-		b.WriteString(styles.Help.Render("  Press enter to continue without them, or esc to go back and re-run with sudo."))
+		b.WriteString(styles.Help.Render("  Press enter to choose whether to authenticate with sudo or skip them."))
 		b.WriteString("\n\n")
 	}
 
@@ -563,15 +603,48 @@ func (m ReviewModel) View() string {
 	}
 
 	switch {
-	case m.ConfirmState != ConfirmNone:
+	case m.ConfirmState == ConfirmSudo:
+		sudoNames := make([]string, len(m.SudoCategories))
+		for i, cat := range m.SudoCategories {
+			sudoNames[i] = cat.DisplayName()
+		}
+		sudoSize, sudoFiles := m.sudoTotals()
+		b.WriteString(styles.Warning.Bold(true).Render(fmt.Sprintf(
+			"  Administrator access needed for %s (%s across %d files): %s",
+			pluralSuffix(len(sudoNames), "this category", "these categories"),
+			utils.FormatBytes(sudoSize), sudoFiles, strings.Join(sudoNames, ", "),
+		)))
+		b.WriteString("\n\n")
+
+		authLabel, skipLabel := "Authenticate with sudo", "Skip these categories"
+		if m.AuthenticateSudo {
+			b.WriteString("  " + styles.Highlight.Render("> "+authLabel) + "\n")
+			b.WriteString("  " + styles.Dim.Render("  "+skipLabel) + "\n")
+		} else {
+			b.WriteString("  " + styles.Dim.Render("  "+authLabel) + "\n")
+			b.WriteString("  " + styles.Highlight.Render("> "+skipLabel) + "\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(styles.Help.Render("  enter: confirm choice  |  up/down: switch  |  esc: back to review"))
+
+	case m.ConfirmState == ConfirmExecute:
 		totalSize, totalFiles := m.actionableTotals()
 		message := fmt.Sprintf(
 			"  !! Permanently delete %s across %d files? Press enter to confirm or esc to cancel.",
 			utils.FormatBytes(totalSize), totalFiles,
 		)
-		if m.ConfirmState == ConfirmSudo {
+		switch {
+		case m.ShouldWarnAboutSudo() && !m.AuthenticateSudo:
 			message = fmt.Sprintf(
 				"  !! Permanently delete %s across %d files and skip %d sudo-protected categor%s? Press enter to confirm or esc to cancel.",
+				utils.FormatBytes(totalSize),
+				totalFiles,
+				len(m.SudoCategories),
+				pluralSuffix(len(m.SudoCategories), "y", "ies"),
+			)
+		case m.ShouldWarnAboutSudo() && m.AuthenticateSudo:
+			message = fmt.Sprintf(
+				"  !! Permanently delete %s across %d files, including %d sudo-authenticated categor%s (sudo may prompt for your password)? Press enter to confirm or esc to cancel.",
 				utils.FormatBytes(totalSize),
 				totalFiles,
 				len(m.SudoCategories),

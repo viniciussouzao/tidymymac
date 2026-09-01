@@ -38,7 +38,7 @@ subcommands for non-interactive workflows.`,
 		if warning := rootExecuteDeprecationWarning(cmd); warning != "" {
 			fmt.Fprintln(os.Stderr, warning)
 		}
-		p := tea.NewProgram(tui.NewApp(executeFlag, loadedConfig), tea.WithAltScreen())
+		p := tea.NewProgram(tui.NewApp(cmd.Context(), executeFlag, loadedConfig), tea.WithAltScreen())
 		_, err := p.Run()
 		return err
 	},

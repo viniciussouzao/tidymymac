@@ -194,6 +194,94 @@ func TestExcludeImagesUsedByStoppedContainers(t *testing.T) {
 	}
 }
 
+func TestDockerEntryBuilders(t *testing.T) {
+	tests := []struct {
+		name     string
+		entry    FileEntry
+		wantPath string
+		wantSize int64
+		wantKind string
+	}{
+		{
+			name:     "stopped container",
+			entry:    dockerContainerEntry(containerInfo{ID: "abc123456789def", Name: "/web", Size: 4096}),
+			wantPath: "docker://container/abc123456789/web",
+			wantSize: 4096,
+			wantKind: DockerResourceKindContainerStopped,
+		},
+		{
+			name:     "dangling image",
+			entry:    dockerImageEntry(imageInfo{ID: "def123456789abc", Tags: []string{"<none>"}, Size: 2048}, DockerResourceKindImageDangling),
+			wantPath: "docker://image/def123456789/<none>",
+			wantSize: 2048,
+			wantKind: DockerResourceKindImageDangling,
+		},
+		{
+			name:     "dangling image without tags falls back to <none>",
+			entry:    dockerImageEntry(imageInfo{ID: "aaaaaaaaaaaabbb", Size: 1}, DockerResourceKindImageDangling),
+			wantPath: "docker://image/aaaaaaaaaaaa/<none>",
+			wantSize: 1,
+			wantKind: DockerResourceKindImageDangling,
+		},
+		{
+			name:     "image tied to stopped container",
+			entry:    dockerImageEntry(imageInfo{ID: "111122223333444", Tags: []string{"nginx:latest"}, Size: 8192}, DockerResourceKindImageStoppedContainer),
+			wantPath: "docker://image/111122223333/nginx:latest",
+			wantSize: 8192,
+			wantKind: DockerResourceKindImageStoppedContainer,
+		},
+		{
+			name:     "orphaned volume",
+			entry:    dockerVolumeEntry("my-volume"),
+			wantPath: "docker://volume/my-volume",
+			wantSize: 0,
+			wantKind: DockerResourceKindVolumeOrphaned,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.entry.Path != tt.wantPath {
+				t.Errorf("Path = %q, want %q", tt.entry.Path, tt.wantPath)
+			}
+			if tt.entry.Size != tt.wantSize {
+				t.Errorf("Size = %d, want %d", tt.entry.Size, tt.wantSize)
+			}
+			if tt.entry.ResourceKind != tt.wantKind {
+				t.Errorf("ResourceKind = %q, want %q", tt.entry.ResourceKind, tt.wantKind)
+			}
+			if tt.entry.Category != CategoryDocker {
+				t.Errorf("Category = %q, want %q", tt.entry.Category, CategoryDocker)
+			}
+			if tt.entry.Protected {
+				t.Error("Protected = true, want false (Scan must never set it)")
+			}
+		})
+	}
+}
+
+// The four kinds must stay distinct: reporting groups on them, and images have
+// two kinds behind an identical Path.
+func TestDockerResourceKindsAreDistinct(t *testing.T) {
+	kinds := []string{
+		DockerResourceKindContainerStopped,
+		DockerResourceKindImageDangling,
+		DockerResourceKindImageStoppedContainer,
+		DockerResourceKindVolumeOrphaned,
+	}
+
+	seen := make(map[string]bool, len(kinds))
+	for _, k := range kinds {
+		if k == "" {
+			t.Error("resource kind must not be empty")
+		}
+		if seen[k] {
+			t.Errorf("duplicate resource kind %q", k)
+		}
+		seen[k] = true
+	}
+}
+
 func TestDockerCleanerMetadata(t *testing.T) {
 	c := NewDockerCleaner()
 

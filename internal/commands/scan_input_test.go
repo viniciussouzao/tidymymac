@@ -51,6 +51,29 @@ func TestLoadScanResult_DecodesJSON(t *testing.T) {
 	}
 }
 
+func TestRevalidateEntries_PreservesResourceKind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	entries := []cleaner.FileEntry{
+		{Path: path, Size: 5, Category: cleaner.Category("temp_files"), ResourceKind: cleaner.DockerResourceKindImageDangling},
+	}
+
+	revalidated, missing, typeChanged := revalidateEntries(entries)
+	if missing != 0 || typeChanged != 0 {
+		t.Fatalf("missing = %d, typeChanged = %d, want 0/0", missing, typeChanged)
+	}
+	if len(revalidated) != 1 {
+		t.Fatalf("len = %d, want 1", len(revalidated))
+	}
+	if revalidated[0].ResourceKind != cleaner.DockerResourceKindImageDangling {
+		t.Errorf("ResourceKind = %q, want %q", revalidated[0].ResourceKind, cleaner.DockerResourceKindImageDangling)
+	}
+}
+
 func TestPrepareScanResultForClean_RevalidatesAndSkipsMissing(t *testing.T) {
 	dir := t.TempDir()
 	keep := filepath.Join(dir, "keep.log")

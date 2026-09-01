@@ -261,6 +261,8 @@ All data flowing between the cleaner layer and the TUI is typed explicitly in `r
 
 `FileEntry` carries one field no `Scan` implementation may ever set: `Protected`. It is written exclusively by `internal/config`'s tagging layer, immediately before a clean, and is what `StripProtected` filters on.
 
+`FileEntry.ResourceKind` is the opposite case: it is set by a `Scan` implementation and is purely descriptive. It classifies an entry for reporting so downstream code never has to parse `Path`. Today only `DockerCleaner` sets it, using the `DockerResourceKind*` constants in `docker.go` (`container_stopped`, `image_dangling`, `image_stopped_container`, `volume_orphaned`); every other cleaner leaves it empty. It exists because the `docker://image/...` path shape cannot distinguish a dangling image from an image kept alive by a stopped container. Deletion logic must not branch on it — `DockerCleaner.Clean` and `internal/scriptgen` still parse the `docker://<type>/<id>/<name>` path, which remains the stable contract. Adding a kind is additive: declare a constant and set it on the entries of the new scan step.
+
 Progress callbacks (`func(ScanProgress)` and `func(CleanProgress)`) allow cleaners to stream partial results back to the TUI in real time, without coupling the cleaner layer to the UI.
 
 ---
@@ -274,7 +276,7 @@ The `cmd/` package uses [Cobra](https://github.com/spf13/cobra) to define the CL
 | Command | Purpose |
 |---|---|
 | `execute` | Open the same interactive TUI as the root command, but already in execute mode. Deletion still goes through the TUI's own review and confirmation step. Prefer this over the deprecated `tidymymac --execute`. |
-| `scan [categories...]` | Run scans and emit an interactive table or machine-readable JSON/CSV (with `--output`, `--detailed`, `--save`, `--quiet`, `--generate-script`). `--profile <name>` runs a configured profile instead of positional categories. |
+| `scan [categories...]` | Run scans and emit an interactive table or machine-readable JSON/CSV/table (with `--output json\|csv\|table`, `--detailed`, `--save`, `--quiet`, `--generate-script`). `--output table --detailed` prints a concise report (totals + top 10 largest items per category, Docker grouped by resource type); add `--print-all` to list every item instead of capping at 10 (only valid with `--output table --detailed`). `--profile <name>` runs a configured profile instead of positional categories. |
 | `clean [categories...]` | Delete scanned files. Dry-run by default; destructive only with `--execute`. Supports `--from-file` to reuse a previously saved detailed scan, `--output json`, `--profile <name>`, and `--include-large-files` to opt into deleting the oversized files a profile's project paths turn up. |
 | `list categories\|protected\|profiles` | Print all registered categories (add `--detailed` for descriptions), the current safety config, or the configured profiles. |
 | `profile <subcommand>` | `create`, `delete`, `add-category`, `remove-category`, `add-path`, `remove-path` — CRUD over the `profiles` tree in the config file. |
@@ -305,7 +307,7 @@ Shared filesystem utilities (directory walking, size aggregation) live in `utils
 
 This package contains the reusable orchestration logic that both the Cobra subcommands and (increasingly) the TUI depend on. It exists so that the same behavior — argument parsing, category filtering, parallel scan fan-out, JSON/CSV shaping, sequential clean execution, error aggregation — is implemented exactly once.
 
-- `scan.go` — runs `Scan` across the registry concurrently using a `sync.WaitGroup`, then produces a `ScanCategoryResult` per category. Supports `Detailed` mode (which includes the full `[]FileEntry` list) and JSON/CSV writers.
+- `scan.go` — runs `Scan` across the registry concurrently using a `sync.WaitGroup`, then produces a `ScanCategoryResult` per category. Supports `Detailed` mode (which includes the full `[]FileEntry` list) and JSON/CSV/table writers via `WriteOutput`. The table writer (`--output table`) is a plain-text, non-interactive report — separate from the lipgloss-styled interactive scan table in `cmd/scan.go` — that groups Docker entries by `FileEntry.ResourceKind` and caps every category/group at 10 entries unless `--print-all` is set; JSON/CSV remain untruncated regardless.
 - `scan_input.go` — normalizes user-provided category arguments against the registry and returns a filtered subset (or a helpful error listing valid categories).
 - `clean.go` — runs `Clean` sequentially, aggregating per-category results into a single `CleanResult` structure suitable for the CLI or TUI summary.
 

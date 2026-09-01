@@ -144,6 +144,13 @@ tidymymac scan --output csv
 # Include individual file paths in output
 tidymymac scan --output json --detailed
 
+# Concise human-readable report: totals + top 10 largest items per category
+# (Docker is broken down by resource type: images, containers, volumes)
+tidymymac scan --output table --detailed
+
+# List every item instead of capping at 10 per category/group
+tidymymac scan --output table --detailed --print-all
+
 # Save output to a timestamped file
 tidymymac scan --output csv --save
 

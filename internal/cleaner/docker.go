@@ -14,6 +14,18 @@ const stoppedThreshold = 7 * 24 * time.Hour
 
 const dockerStoppedContainerInspectFormat = `{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.FinishedAt}}|{{.SizeRw}}|{{.Image}}`
 
+// Values for FileEntry.ResourceKind produced by DockerCleaner.Scan. They exist
+// so reporting code can group Docker findings without parsing Path (which
+// cannot tell dangling images apart from images kept alive by a stopped
+// container). Adding a new kind is just adding a constant here and setting it
+// on the entries of a new scan step.
+const (
+	DockerResourceKindContainerStopped      = "container_stopped"
+	DockerResourceKindImageDangling         = "image_dangling"
+	DockerResourceKindImageStoppedContainer = "image_stopped_container"
+	DockerResourceKindVolumeOrphaned        = "volume_orphaned"
+)
+
 type containerInfo struct {
 	ID         string
 	Name       string
@@ -74,11 +86,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 
 	stoppedImageIDs := make(map[string]bool)
 	for _, sc := range stoppedContainers {
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://container/%s/%s", sc.ID[:12], strings.TrimPrefix(sc.Name, "/")),
-			Size:     sc.Size,
-			Category: CategoryDocker,
-		}
+		entry := dockerContainerEntry(sc)
 		result.Entries = append(result.Entries, entry)
 		result.TotalSize += sc.Size
 		result.TotalFiles++
@@ -101,16 +109,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	}
 
 	for _, img := range untaggedImages {
-		tag := "<none>"
-		if len(img.Tags) > 0 {
-			tag = img.Tags[0]
-		}
-
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://image/%s/%s", img.ID[:12], tag),
-			Size:     img.Size,
-			Category: CategoryDocker,
-		}
+		entry := dockerImageEntry(img, DockerResourceKindImageDangling)
 		result.Entries = append(result.Entries, entry)
 		result.TotalSize += img.Size
 		result.TotalFiles++
@@ -130,16 +129,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	imagesForStoppedContainers = excludeImagesUsedByStoppedContainers(imagesForStoppedContainers, stoppedImageIDs)
 
 	for _, img := range imagesForStoppedContainers {
-		tag := "<none>"
-		if len(img.Tags) > 0 {
-			tag = img.Tags[0]
-		}
-
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://image/%s/%s", img.ID[:12], tag),
-			Size:     img.Size,
-			Category: CategoryDocker,
-		}
+		entry := dockerImageEntry(img, DockerResourceKindImageStoppedContainer)
 		result.Entries = append(result.Entries, entry)
 		result.TotalSize += img.Size
 		result.TotalFiles++
@@ -157,11 +147,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	}
 
 	for _, vol := range orphanedVolumes {
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://volume/%s", vol),
-			Size:     0, // Docker doesn't provide size for volumes easily
-			Category: CategoryDocker,
-		}
+		entry := dockerVolumeEntry(vol)
 		result.Entries = append(result.Entries, entry)
 		result.TotalFiles++
 	}
@@ -173,6 +159,46 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// dockerContainerEntry builds the entry for a stopped container. The
+// docker://container/<id>/<name> Path shape is part of the contract with
+// Clean and scriptgen and must not change.
+func dockerContainerEntry(sc containerInfo) FileEntry {
+	return FileEntry{
+		Path:         fmt.Sprintf("docker://container/%s/%s", sc.ID[:12], strings.TrimPrefix(sc.Name, "/")),
+		Size:         sc.Size,
+		Category:     CategoryDocker,
+		ResourceKind: DockerResourceKindContainerStopped,
+	}
+}
+
+// dockerImageEntry builds the entry for an image. kind distinguishes dangling
+// images from images kept around by a stopped container; the Path is identical
+// in both cases.
+func dockerImageEntry(img imageInfo, kind string) FileEntry {
+	tag := "<none>"
+	if len(img.Tags) > 0 {
+		tag = img.Tags[0]
+	}
+
+	return FileEntry{
+		Path:         fmt.Sprintf("docker://image/%s/%s", img.ID[:12], tag),
+		Size:         img.Size,
+		Category:     CategoryDocker,
+		ResourceKind: kind,
+	}
+}
+
+// dockerVolumeEntry builds the entry for an orphaned volume. Size stays 0:
+// Docker does not expose volume sizes cheaply.
+func dockerVolumeEntry(name string) FileEntry {
+	return FileEntry{
+		Path:         fmt.Sprintf("docker://volume/%s", name),
+		Size:         0,
+		Category:     CategoryDocker,
+		ResourceKind: DockerResourceKindVolumeOrphaned,
+	}
 }
 
 func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {

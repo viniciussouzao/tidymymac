@@ -10,6 +10,13 @@ type FileEntry struct {
 	ModTime  time.Time
 	Category Category
 
+	// ResourceKind classifies the entry beyond its Path, so reporting code does
+	// not have to parse Path to know what it is looking at. It is Docker
+	// specific for now (see the DockerResourceKind* constants in docker.go) and
+	// is left empty by every other cleaner. Purely descriptive: deletion logic
+	// must not depend on it.
+	ResourceKind string
+
 	// Protected is set exclusively by internal/config's tagging layer; no
 	// Cleaner.Scan implementation should ever set it.
 	Protected bool

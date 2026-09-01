@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -444,6 +445,223 @@ func TestWriteCSV_CategoryWithError(t *testing.T) {
 	}
 	if records[1][4] != "docker not running" {
 		t.Errorf("error field = %q, want docker not running", records[1][4])
+	}
+}
+
+// --- writeTable ---
+
+func makeFileEntries(n int, sizeBase int64) []cleaner.FileEntry {
+	entries := make([]cleaner.FileEntry, n)
+	for i := range n {
+		entries[i] = cleaner.FileEntry{
+			Path: fmt.Sprintf("/tmp/file-%02d", i),
+			Size: sizeBase + int64(i),
+		}
+	}
+	return entries
+}
+
+func TestWriteTable_SortsBySizeDescending(t *testing.T) {
+	result := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Name:       "Caches",
+				TotalFiles: 3,
+				Files: []cleaner.FileEntry{
+					{Path: "/tmp/small", Size: 100},
+					{Path: "/tmp/big", Size: 900},
+					{Path: "/tmp/mid", Size: 500},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeTable(&buf, result, false); err != nil {
+		t.Fatalf("writeTable() error: %v", err)
+	}
+
+	out := buf.String()
+	bigIdx := strings.Index(out, "/tmp/big")
+	midIdx := strings.Index(out, "/tmp/mid")
+	smallIdx := strings.Index(out, "/tmp/small")
+	if bigIdx == -1 || midIdx == -1 || smallIdx == -1 {
+		t.Fatalf("missing entries in output: %s", out)
+	}
+	if !(bigIdx < midIdx && midIdx < smallIdx) {
+		t.Errorf("entries not sorted by size descending: %s", out)
+	}
+}
+
+func TestWriteTable_CapsAtTenEntriesWithoutPrintAll(t *testing.T) {
+	result := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Name:       "Caches",
+				TotalFiles: 15,
+				Files:      makeFileEntries(15, 1000),
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeTable(&buf, result, false); err != nil {
+		t.Fatalf("writeTable() error: %v", err)
+	}
+
+	out := buf.String()
+	shown := strings.Count(out, "/tmp/file-")
+	if shown != 10 {
+		t.Errorf("shown entries = %d, want 10", shown)
+	}
+	if !strings.Contains(out, "5 more omitted, use --print-all to list all") {
+		t.Errorf("missing omitted-count hint: %s", out)
+	}
+}
+
+func TestWriteTable_PrintAllListsEverything(t *testing.T) {
+	result := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Name:       "Caches",
+				TotalFiles: 15,
+				Files:      makeFileEntries(15, 1000),
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeTable(&buf, result, true); err != nil {
+		t.Fatalf("writeTable() error: %v", err)
+	}
+
+	out := buf.String()
+	shown := strings.Count(out, "/tmp/file-")
+	if shown != 15 {
+		t.Errorf("shown entries = %d, want 15", shown)
+	}
+	if strings.Contains(out, "more omitted") {
+		t.Errorf("should not omit anything with printAll: %s", out)
+	}
+}
+
+func TestWriteTable_EmptyCategoryReportsNothingFound(t *testing.T) {
+	result := ScanResult{
+		Categories: []ScanCategoryResult{
+			{Name: "Caches", TotalFiles: 0},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeTable(&buf, result, false); err != nil {
+		t.Fatalf("writeTable() error: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "nothing found") {
+		t.Errorf("expected 'nothing found', got: %s", buf.String())
+	}
+}
+
+func TestWriteTable_CategoryErrorSurfacesCauseAndNextStep(t *testing.T) {
+	result := ScanResult{
+		HasErrors: true,
+		Categories: []ScanCategoryResult{
+			{Category: cleaner.CategoryDocker, Name: "Docker", Err: errors.New("docker not running"), ErrMsg: "docker not running"},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeTable(&buf, result, false); err != nil {
+		t.Fatalf("writeTable() error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Docker") || !strings.Contains(out, "docker not running") {
+		t.Errorf("missing category/cause in error output: %s", out)
+	}
+	if !strings.Contains(out, "tidymymac scan docker") {
+		t.Errorf("missing next-step hint in error output: %s", out)
+	}
+}
+
+func TestWriteTable_GroupsDockerByResourceKind(t *testing.T) {
+	result := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Category:   cleaner.CategoryDocker,
+				Name:       "Docker",
+				TotalFiles: 3,
+				Files: []cleaner.FileEntry{
+					{Path: "docker://image/abc", Size: 100, ResourceKind: cleaner.DockerResourceKindImageDangling},
+					{Path: "docker://container/def", Size: 200, ResourceKind: cleaner.DockerResourceKindContainerStopped},
+					{Path: "docker://volume/ghi", Size: 300, ResourceKind: cleaner.DockerResourceKindVolumeOrphaned},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeTable(&buf, result, false); err != nil {
+		t.Fatalf("writeTable() error: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"Unreferenced images", "Stopped containers", "Unused volumes"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing docker group %q in output: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "Images tied to stopped containers") {
+		t.Errorf("group with no entries should not render: %s", out)
+	}
+}
+
+func TestWriteTable_JSONAndCSVUnaffectedByTableAddition(t *testing.T) {
+	result := ScanResult{
+		TotalFiles: 1,
+		TotalSize:  1024,
+		Categories: []ScanCategoryResult{
+			{Name: "Caches", TotalFiles: 1, TotalSize: 1024, Files: []cleaner.FileEntry{{Path: "/tmp/a", Size: 1024}}},
+		},
+	}
+
+	var jsonBuf, csvBuf bytes.Buffer
+	if err := WriteOutput(&jsonBuf, result, "json", true, false); err != nil {
+		t.Fatalf("WriteOutput(json) error: %v", err)
+	}
+	if err := WriteOutput(&csvBuf, result, "csv", true, false); err != nil {
+		t.Fatalf("WriteOutput(csv) error: %v", err)
+	}
+
+	var directJSON, directCSV bytes.Buffer
+	if err := writeJSON(&directJSON, result); err != nil {
+		t.Fatalf("writeJSON() error: %v", err)
+	}
+	if err := writeCSV(&directCSV, result, true); err != nil {
+		t.Fatalf("writeCSV() error: %v", err)
+	}
+
+	if jsonBuf.String() != directJSON.String() {
+		t.Errorf("WriteOutput(json) diverged from writeJSON()")
+	}
+	if csvBuf.String() != directCSV.String() {
+		t.Errorf("WriteOutput(csv) diverged from writeCSV()")
+	}
+}
+
+func TestWriteOutput_PrintAllOnlyAffectsTable(t *testing.T) {
+	result := ScanResult{
+		Categories: []ScanCategoryResult{
+			{Name: "Caches", TotalFiles: 15, Files: makeFileEntries(15, 1000)},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := WriteOutput(&buf, result, "table", true, true); err != nil {
+		t.Fatalf("WriteOutput() error: %v", err)
+	}
+	if strings.Count(buf.String(), "/tmp/file-") != 15 {
+		t.Errorf("printAll should list all entries via WriteOutput")
 	}
 }
 

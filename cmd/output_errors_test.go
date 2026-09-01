@@ -113,7 +113,7 @@ func TestLoadScanResultReaderPreservesReadError(t *testing.T) {
 }
 
 func TestWriteScanOutputFileReturnsCloseError(t *testing.T) {
-	err := writeScanOutputFile(failingWriteCloser{closeErr: errCloseUnavailable}, commands.ScanResult{}, "json", false)
+	err := writeScanOutputFile(failingWriteCloser{closeErr: errCloseUnavailable}, commands.ScanResult{}, "json", false, false)
 	if !errors.Is(err, errCloseUnavailable) {
 		t.Fatalf("error = %v, want wrapped %v", err, errCloseUnavailable)
 	}
@@ -123,7 +123,7 @@ func TestWriteScanOutputFilePreservesWriteError(t *testing.T) {
 	err := writeScanOutputFile(failingWriteCloser{
 		writeErr: errOutputUnavailable,
 		closeErr: errCloseUnavailable,
-	}, commands.ScanResult{}, "json", false)
+	}, commands.ScanResult{}, "json", false, false)
 	if !errors.Is(err, errOutputUnavailable) {
 		t.Fatalf("error = %v, want wrapped %v", err, errOutputUnavailable)
 	}

@@ -242,6 +242,39 @@ func TestTag_SetsProtectedWithoutRemovingEntries(t *testing.T) {
 	}
 }
 
+func TestTag_PreservesResourceKind(t *testing.T) {
+	p := writeConfig(t, `protected_paths: ["/Users/vini/Secrets"]`)
+	cfg, err := loadFrom(p)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entries := []cleaner.FileEntry{
+		{Path: "docker://image/abc123456789/<none>", ResourceKind: cleaner.DockerResourceKindImageDangling},
+		{Path: "/Users/vini/Secrets/file.txt", ResourceKind: ""},
+	}
+	tagged := cfg.Tag(entries)
+	if tagged[0].ResourceKind != cleaner.DockerResourceKindImageDangling {
+		t.Errorf("ResourceKind = %q, want %q", tagged[0].ResourceKind, cleaner.DockerResourceKindImageDangling)
+	}
+	if tagged[1].ResourceKind != "" {
+		t.Errorf("ResourceKind = %q, want empty", tagged[1].ResourceKind)
+	}
+}
+
+func TestStripProtected_PreservesResourceKind(t *testing.T) {
+	entries := []cleaner.FileEntry{
+		{Path: "docker://volume/keepme", ResourceKind: cleaner.DockerResourceKindVolumeOrphaned},
+		{Path: "docker://volume/dropme", ResourceKind: cleaner.DockerResourceKindVolumeOrphaned, Protected: true},
+	}
+	kept := StripProtected(entries)
+	if len(kept) != 1 {
+		t.Fatalf("len = %d, want 1", len(kept))
+	}
+	if kept[0].ResourceKind != cleaner.DockerResourceKindVolumeOrphaned {
+		t.Errorf("ResourceKind = %q, want %q", kept[0].ResourceKind, cleaner.DockerResourceKindVolumeOrphaned)
+	}
+}
+
 func TestStripProtected_RemovesOnlyTaggedEntries(t *testing.T) {
 	entries := []cleaner.FileEntry{
 		{Path: "/a", Protected: true},

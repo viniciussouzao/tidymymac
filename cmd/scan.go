@@ -56,9 +56,13 @@ $ tidymymac scan --profile dev
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		generateScript, _ := cmd.Flags().GetBool("generate-script")
 		profileName, _ := cmd.Flags().GetString("profile")
+		printAll, _ := cmd.Flags().GetBool("print-all")
 
-		if output != "" && output != "json" && output != "csv" {
-			return fmt.Errorf("invalid --output value %q: must be json or csv", output)
+		if output != "" && output != "json" && output != "csv" && output != "table" {
+			return fmt.Errorf("invalid --output value %q: must be json, csv, or table", output)
+		}
+		if printAll && (output != "table" || !detailed) {
+			return fmt.Errorf("--print-all requires --output table --detailed")
 		}
 
 		// Resolved once here so every path below works in terms of a plain
@@ -70,7 +74,7 @@ $ tidymymac scan --profile dev
 		}
 
 		if output != "" {
-			return runScanNonInteractive(cmd.Context(), registry, categories, output, detailed, save, quiet, generateScript)
+			return runScanNonInteractive(cmd.Context(), registry, categories, output, detailed, save, quiet, generateScript, printAll)
 		}
 
 		return runScanInteractive(cmd, registry, categories)
@@ -80,19 +84,20 @@ $ tidymymac scan --profile dev
 
 func init() {
 	rootCmd.AddCommand(scanCmd)
-	scanCmd.Flags().StringP("output", "o", "", "output format: json or csv (omit for interactive table)")
+	scanCmd.Flags().StringP("output", "o", "", "output format: json, csv, or table (omit for interactive table)")
 	scanCmd.Flags().String("profile", "", "scan the categories and project paths bundled by a configured profile")
-	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv output")
+	scanCmd.Flags().Bool("detailed", false, "include individual file paths in json/csv/table output")
 	scanCmd.Flags().Bool("save", false, "save output to a file in the current directory instead of stdout (only applies with --output)")
 	scanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr (only applies with --output)")
 	scanCmd.Flags().Bool("generate-script", false, "generate a shell script to delete the found files")
+	scanCmd.Flags().Bool("print-all", false, "list every entry instead of capping at 10 per group (requires --output table --detailed)")
 }
 
 // runScanNonInteractive runs the scan, using BubbleTea when --save is set (and
 // --quiet is absent), otherwise printing progress to stderr.
-func runScanNonInteractive(ctx context.Context, registry *cleaner.Registry, categories []string, format string, detailed bool, save bool, quiet bool, generateScript bool) error {
+func runScanNonInteractive(ctx context.Context, registry *cleaner.Registry, categories []string, format string, detailed bool, save bool, quiet bool, generateScript bool, printAll bool) error {
 	if save && !quiet {
-		m := newScanModel(ctx, registry, categories, generateScript, true, format, detailed)
+		m := newScanModel(ctx, registry, categories, generateScript, true, format, detailed, printAll)
 		p := tea.NewProgram(m)
 
 		final, err := p.Run()
@@ -169,10 +174,10 @@ func runScanNonInteractive(ctx context.Context, registry *cleaner.Registry, cate
 		}
 		stderr("\n  saved to ./%s\n", filename)
 
-		if err := writeScanOutputFile(f, result, format, detailed); err != nil {
+		if err := writeScanOutputFile(f, result, format, detailed, printAll); err != nil {
 			return err
 		}
-	} else if err := commands.WriteOutput(os.Stdout, result, format, detailed); err != nil {
+	} else if err := commands.WriteOutput(os.Stdout, result, format, detailed, printAll); err != nil {
 		return fmt.Errorf("write scan output: %w", err)
 	}
 
@@ -198,14 +203,14 @@ func runScanNonInteractive(ctx context.Context, registry *cleaner.Registry, cate
 	return nil
 }
 
-func writeScanOutputFile(file io.WriteCloser, result commands.ScanResult, format string, detailed bool) (err error) {
+func writeScanOutputFile(file io.WriteCloser, result commands.ScanResult, format string, detailed bool, printAll bool) (err error) {
 	defer func() {
 		if closeErr := file.Close(); closeErr != nil && err == nil {
 			err = fmt.Errorf("close scan output file: %w", closeErr)
 		}
 	}()
 
-	if err := commands.WriteOutput(file, result, format, detailed); err != nil {
+	if err := commands.WriteOutput(file, result, format, detailed, printAll); err != nil {
 		return fmt.Errorf("write scan output: %w", err)
 	}
 	return nil
@@ -236,7 +241,7 @@ func scanResultToCleanerResults(result commands.ScanResult) map[cleaner.Category
 func runScanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categories []string) error {
 	generateScript, _ := cmd.Flags().GetBool("generate-script")
 
-	m := newScanModel(cmd.Context(), registry, categories, generateScript, false, "", false)
+	m := newScanModel(cmd.Context(), registry, categories, generateScript, false, "", false, false)
 	p := tea.NewProgram(m)
 
 	final, err := p.Run()
@@ -311,10 +316,11 @@ type scanModel struct {
 	save           bool
 	format         string
 	detailed       bool
+	printAll       bool
 	savedTo        string
 }
 
-func newScanModel(ctx context.Context, registry *cleaner.Registry, args []string, generateScript bool, save bool, format string, detailed bool) scanModel {
+func newScanModel(ctx context.Context, registry *cleaner.Registry, args []string, generateScript bool, save bool, format string, detailed bool, printAll bool) scanModel {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = styles.Cursor
@@ -330,6 +336,7 @@ func newScanModel(ctx context.Context, registry *cleaner.Registry, args []string
 		save:           save,
 		format:         format,
 		detailed:       detailed,
+		printAll:       printAll,
 	}
 }
 
@@ -355,7 +362,7 @@ func (m scanModel) Init() tea.Cmd {
 					}
 					return scanDoneMsg{result: result, err: createErr}
 				}
-				writeErr := commands.WriteOutput(f, result, m.format, m.detailed)
+				writeErr := commands.WriteOutput(f, result, m.format, m.detailed, m.printAll)
 				_ = f.Close()
 				if writeErr != nil {
 					return scanDoneMsg{result: result, err: writeErr}

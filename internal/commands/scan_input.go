@@ -142,11 +142,12 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 		}
 
 		revalidated = append(revalidated, cleaner.FileEntry{
-			Path:     entry.Path,
-			Size:     info.Size(),
-			IsDir:    info.IsDir(),
-			ModTime:  info.ModTime().UTC(),
-			Category: entry.Category,
+			Path:         entry.Path,
+			Size:         info.Size(),
+			IsDir:        info.IsDir(),
+			ModTime:      info.ModTime().UTC(),
+			Category:     entry.Category,
+			ResourceKind: entry.ResourceKind,
 		})
 	}
 

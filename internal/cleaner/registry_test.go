@@ -110,3 +110,24 @@ func TestDefaultRegistryHasAllCleaners(t *testing.T) {
 		}
 	}
 }
+
+// TestNoCleanerIsBothSudoAndWholeDomain is a conformance test that internal/
+// elevate depends on.
+//
+// The elevated helper deletes only the intersection of the approved plan and a
+// fresh root scan, and it hands that intersection to Clean. A cleaner that
+// DeletesWholeDomain ignores the entry list it is given and clears its entire
+// domain -- which under elevation means clearing it AS ROOT, for a domain the
+// intersection may have narrowed to a handful of entries, or to none.
+// internal/elevate is designed on the assumption that this combination does not
+// exist.
+//
+// If this test ever fails, do NOT relax it: revisit internal/elevate first and
+// decide how a whole-domain cleaner may (or may not) be elevated at all.
+func TestNoCleanerIsBothSudoAndWholeDomain(t *testing.T) {
+	for _, c := range DefaultRegistry().All() {
+		if c.RequiresSudo() && c.DeletesWholeDomain() {
+			t.Errorf("cleaner %q is both RequiresSudo and DeletesWholeDomain; internal/elevate assumes no cleaner is, see its Elevation Model", c.Category())
+		}
+	}
+}

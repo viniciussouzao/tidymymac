@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/viniciussouzao/tidymymac/internal/homedir"
 )
 
 // LogsCleaner scans and cleans system and user log files.
@@ -13,9 +15,13 @@ type LogsCleaner struct {
 	homeDir string
 }
 
-// NewLogsCleaner creates a LogsCleaner using the current user's home directory.
+// NewLogsCleaner creates a LogsCleaner using the current user's home
+// directory. It resolves via homedir.Resolve rather than os.UserHomeDir
+// because this cleaner requires sudo: when the process runs elevated,
+// os.UserHomeDir would resolve to root's home (/var/root) and the cleaner
+// would scan and clean the wrong home.
 func NewLogsCleaner() *LogsCleaner {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Resolve()
 	if err != nil {
 		home = ""
 	}

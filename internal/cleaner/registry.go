@@ -30,6 +30,22 @@ type Cleaner interface {
 	DeletesWholeDomain() bool
 }
 
+// EntryRevalidator is an optional interface implemented by cleaners whose
+// FileEntry.Path is not a literal filesystem path (Docker resources, Time
+// Machine snapshots). Callers that revalidate saved scan entries before a
+// clean (see internal/commands) default to os.Stat, which would wrongly drop
+// every such entry as "missing" -- so they must prefer this method when the
+// cleaner implements it.
+//
+// RevalidateEntries re-checks entries against the cleaner's real backing store
+// and returns the still-valid subset plus counts of entries that disappeared
+// or changed type. err means revalidation itself could not be performed at all
+// (daemon down, tmutil absent) and is deliberately distinct from "the entries
+// are gone": callers must not treat it as an empty result.
+type EntryRevalidator interface {
+	RevalidateEntries(ctx context.Context, entries []FileEntry) (revalidated []FileEntry, missing int, typeChanged int, err error)
+}
+
 // Registry is a struct that holds registered cleaners and provides methods to manage them.
 type Registry struct {
 	cleaners []Cleaner

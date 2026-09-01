@@ -19,6 +19,7 @@ This document describes the internal architecture of TidyMyMac: how the packages
   - [internal/cleaner/](#internalcleaner)
   - [internal/commands/](#internalcommands)
   - [internal/config/](#internalconfig)
+  - [internal/elevate/](#internalelevate)
   - [internal/celebration/](#internalcelebration)
   - [internal/tui/](#internaltui)
   - [internal/history/](#internalhistory)
@@ -33,6 +34,7 @@ This document describes the internal architecture of TidyMyMac: how the packages
 - [Data Flow Diagram](#data-flow-diagram)
 - [Concurrency Model](#concurrency-model)
 - [Safety Model](#safety-model)
+- [Elevation Model](#elevation-model)
 - [Extending TidyMyMac](#extending-tidymymac)
 
 ---
@@ -75,6 +77,7 @@ tidymymac/
 │   ├── stats.go                  # `tidymymac stats [category]`
 │   ├── explain.go                # `tidymymac explain <topic>`
 │   ├── history.go                # `tidymymac history`
+│   ├── elevated_clean.go         # hidden `internal-elevated-clean` (root helper entry point)
 │   └── version.go                # `tidymymac version`
 │
 ├── internal/
@@ -107,6 +110,12 @@ tidymymac/
 │   │   ├── config.go             # Load/normalize, protected-path matching, ResolveProfile
 │   │   ├── write.go              # yaml.Node surgery for protected_paths + atomic write
 │   │   └── write_profiles.go     # Same, for the profiles tree
+│   │
+│   ├── elevate/                  # Privilege boundary: sudo helper + plan protocol
+│   │   ├── elevate.go            # Plan/Result IPC types and schema versions
+│   │   ├── planfile.go           # fd-based plan-file validation
+│   │   ├── helper.go             # RunHelper — the root side (guards, intersection)
+│   │   └── invoke.go             # Invoke — the unprivileged side (sudo, stdout capture)
 │   │
 │   ├── celebration/              # Post-cleanup celebration message selection
 │   │   └── celebration.go        # Winner selection, random template, size analogy
@@ -174,6 +183,22 @@ type Cleaner interface {
 The separation between `Scan` and `Clean` is intentional and enforces the core safety guarantee: **nothing is ever deleted as a side effect of scanning**. A scan produces a `ScanResult` with candidate `FileEntry` items; deletion only happens when `Clean` is explicitly called with those entries.
 
 `DeletesWholeDomain()` is the escape hatch for cleaners that cannot honor a filtered entry list. Homebrew, Development Artifacts and Trash shell out to a command (`brew cleanup`, `go clean -cache -modcache`, Finder's "empty trash") that clears their entire domain regardless of what they were handed. Callers must never invoke `Clean` on such a cleaner when any entry was withheld — see [Safety Model](#safety-model).
+
+### Optional Interfaces
+
+`EntryRevalidator` (also in `registry.go`) is an **optional** interface a cleaner may additionally implement:
+
+```go
+type EntryRevalidator interface {
+    RevalidateEntries(ctx context.Context, entries []FileEntry) (revalidated []FileEntry, missing int, typeChanged int, err error)
+}
+```
+
+It exists because `clean --from-file` re-checks every saved entry before deleting anything, and its default check is `os.Stat(entry.Path)`. That is correct only while `Path` is a real filesystem path. `DockerCleaner` (`docker://image/<id>/<tag>`) and `TimeMachineCleaner` (`com.apple.TimeMachine.<date>.local`) use `Path` as a resource identifier, so `os.Stat` always fails and every entry would be silently dropped as "missing". Implementing this interface lets such a cleaner re-check its entries against its own backing store instead — `docker ps -a` / `docker images -a` / `docker volume ls`, and `tmutil listlocalsnapshots /`.
+
+The returned `err` means *revalidation could not be performed at all* (daemon down, `tmutil` absent) and is deliberately distinct from "the entries are gone": `PrepareScanResultForClean` records it as that one category's error and leaves sibling categories untouched, rather than treating it as an empty result. Existence is the entire contract — deeper checks (is the image still dangling? has the container been stopped long enough?) belong to `Scan`.
+
+A cleaner whose `Path` is a real filesystem path implements nothing and keeps the `os.Stat` path.
 
 ### The Registry
 
@@ -303,6 +328,10 @@ This is the heart of the project. Each file in this package implements the `Clea
 
 Shared filesystem utilities (directory walking, size aggregation) live in `utils.go` and are used internally across implementations. Cleaners that shell out to external tools (e.g. `docker` for `docker.go`, `tmutil` for `time_machine.go`) gracefully degrade to an empty scan result when the tool is absent, so the TUI and the non-interactive commands remain usable on any Mac.
 
+The cleaners that report `RequiresSudo()` and target paths under the user's home (`temp.go`, `logs.go`, `updates.go`) resolve it through `internal/homedir.Resolve()` rather than `os.UserHomeDir()`. These are precisely the cleaners that can end up running elevated, where `os.UserHomeDir()` would return root's home (`/var/root`) and the cleaner would scan and clean the wrong home entirely; `homedir.Resolve` short-circuits on `euid == 0` + `SUDO_USER` to the invoking user's real home. `internal/config` uses the same resolver for the same reason.
+
+For the same reason, `temp.go` does not trust `os.TempDir()` (i.e. `$TMPDIR`) verbatim. A scan root is exactly what the elevated helper's fence 2 treats as a category's legitimate domain, so an environment variable that becomes a scan root is an environment variable that can nominate a directory for root-privileged deletion. `userTempRoot` accepts it only when it resolves under a genuine macOS temp root (`/var/folders`, `/private/var/folders`, `/tmp`, `/private/tmp`) and drops it entirely when `euid == 0` — the elevated path already covers `/tmp` and `/var/tmp` explicitly.
+
 ### `internal/commands/`
 
 This package contains the reusable orchestration logic that both the Cobra subcommands and (increasingly) the TUI depend on. It exists so that the same behavior — argument parsing, category filtering, parallel scan fan-out, JSON/CSV shaping, sequential clean execution, error aggregation — is implemented exactly once.
@@ -335,6 +364,21 @@ The safety layer, backed by `~/.tidymymac/config.yaml` (see [docs/CONFIGURATION.
 **Profile resolution.** `ResolveProfile(base, name, includeLargeFiles)` returns the `(categories, registry)` pair described above. When a profile has project paths, it rebuilds the registry from `base.All()` with a configured `ProjectArtifactsCleaner` substituted in place — rebuilt rather than re-`Register`ed, because `Register` replaces the `byID` entry but *appends* to the ordered slice, which would leave `All()` returning the cleaner twice. Profile paths are re-validated here, so a hand-edited entry fails only that profile.
 
 **Writing.** `write.go` and `write_profiles.go` edit the file as a `yaml.Node` tree rather than re-marshalling a struct, which is what preserves hand-written comments. Every write is atomic (temp file + rename, mirroring `internal/history`) and is followed by a reload that must still satisfy `Load`'s invariants — catching a node-surgery bug at `protect`/`profile` time instead of on the next real clean. An already-invalid file is refused rather than patched around.
+
+### `internal/elevate/`
+
+The privilege boundary. It lets categories that genuinely need root (`temp`, `logs`, `macos-updates`) be cleaned without the user ever starting the whole application under `sudo`. See [Elevation Model](#elevation-model) for the design; the package exposes exactly four things:
+
+| Symbol | Role |
+|---|---|
+| `Plan` / `PlanCategory` | The approved work sent to the helper: schema version, dry-run flag, and per-category approved entries. |
+| `Result` / `CategoryIntersection` | What the helper sends back: a `commands.CleanResult` plus per-category `Approved`/`Matched`/`Missing` counts. |
+| `Invoke(ctx, plan)` | Unprivileged side. Re-executes this binary under `sudo` and decodes the helper's result. |
+| `RunHelper(ctx, planPath)` | Root side. Runs the guards, the intersection, and the normal clean pipeline. |
+
+`HelperCommandName` (`internal-elevated-clean`) is exported only so `cmd/elevated_clean.go` can register the hidden command under exactly the name `Invoke` passes to `sudo`.
+
+As of this phase the package is **dormant**: nothing in the TUI or in `clean --execute` calls `Invoke` yet, so no user-facing behavior depends on it.
 
 ### `internal/celebration/`
 
@@ -542,6 +586,7 @@ This is enforced at multiple levels:
 4. **Context cancellation**: If the user quits mid-operation, `cancel()` is called, and cleaners are expected to respect `ctx.Done()`.
 5. **Protected paths are a hard block**: `config.StripProtected` runs immediately before *every* `Clean` invocation and before any generated deletion script, unconditionally. There is no CLI flag that overrides `protected_paths` — by design. Protection is not filtering: `Tag` only marks entries, so scans and dry-run previews still *show* protected files, they simply are never passed to `Clean`. Containment applies in both directions, so a directory entry that contains a protected path is protected as a whole (deleting it would take the protected path with it).
 6. **Whole-domain cleaners skip rather than under-honor**: when a protected path lands in a category whose cleaner reports `DeletesWholeDomain()`, there is no way to run it while sparing that path. The category is skipped entirely, with an error explaining why, instead of running with a silently-filtered list.
+7. **Privileges are scoped, not global**: root is never granted to the whole program. Only the deletion of an already-approved plan runs elevated, and even then it is re-bounded by a fresh root scan — see [Elevation Model](#elevation-model).
 
 ```mermaid
 flowchart TD
@@ -559,6 +604,94 @@ flowchart TD
     F --> H
     S --> H
 ```
+
+---
+
+## Elevation Model
+
+Some categories cannot be cleaned without root. The naive answer — tell the user to run `sudo tidymymac` — makes *every* line of the program run as root, including the TUI, the config loader and every cleaner that never needed privileges. `internal/elevate` exists so that only the deletion of already-approved items runs elevated.
+
+The flow is: the unprivileged process scans and gets the user's approval, then re-executes **itself** under `sudo` with one narrow job, handing over a `Plan`.
+
+### The two-fence intersection
+
+A root process that deletes whatever list it is handed is a confused deputy. So the helper never trusts the plan alone. It deletes only the **intersection** of two independent fences:
+
+| Fence | What it bounds | Produced by |
+|---|---|---|
+| 1 — intent | what the human actually reviewed and approved | the `Plan` |
+| 2 — domain | what the category legitimately owns *right now* | a fresh `Cleaner.Scan()` run as root |
+
+- A tampered plan pointing at `~/Documents` passes fence 1 but can never pass fence 2, because no cleaner's `Scan` returns those paths.
+- Junk that appeared between approval and elevation passes fence 2 but not fence 1, so nothing the user did not see is removed.
+- Approved entries the fresh scan does not return are counted as **missing/skipped**, never deleted.
+
+Matching is exact `FileEntry.Path` string equality — no cleaning, no symlink resolution, no case folding — so "is this in the domain" is decided solely by whether `Scan` itself emitted that exact path. The entry handed to `Clean` is the **fresh-scan** entry, so sizes and attributes are current, and the plan's `Protected` flag (attacker-controllable input) is discarded rather than trusted.
+
+The intersection is assembled into a `commands.PreparedScanResult` and run through `commands.RunCleanWithPreparedScanResult`. That is deliberate: `config.Tag`/`StripProtected` and the `DeletesWholeDomain` skip stay in their single canonical place, so the elevated path and the ordinary path cannot drift apart.
+
+```mermaid
+flowchart LR
+    P[Approved Plan\nfence 1] --> X{intersect\nby exact Path}
+    S[Fresh root Scan\nfence 2] --> X
+    X -->|matched| RC[commands.RunCleanWithPreparedScanResult\nTag · StripProtected · DeletesWholeDomain]
+    X -->|approved but absent| M[reported as missing/skipped]
+    RC --> R[Result JSON on stdout]
+```
+
+### IPC contract
+
+| Direction | Channel | Why |
+|---|---|---|
+| plan in | temp file, path passed as `--plan-file` | argv is world-readable via `ps`; stdin must stay free |
+| result out | **stdout only**, a single JSON `Result` | a root process writing to a caller-supplied path is a symlink-attack surface; an inherited pipe has no name to attack |
+| password | never touches this codebase | no askpass, no `sudo -S`, no secret ever read from stdin |
+
+The child's **stdin and stderr are inherited** from the terminal, so `sudo`'s native password prompt runs untouched and the helper's progress lines go to stderr. Nothing but the final `Result` JSON is ever written to stdout. `sudo` is invoked by its absolute path (`/usr/bin/sudo`) rather than through `$PATH`: the custom prompt exists to make the password request identifiable, and a fake `sudo` earlier on `$PATH` could print that exact prompt.
+
+The helper's contract with `Invoke`: if it actually ran, it prints a `Result` and exits 0 — *per-category failures travel inside the Result*. Exit code **3** (`elevate.HelperGuardRejectedExitCode`) is a dedicated third channel meaning "a guard rejected the plan; nothing was deleted", which is why `cmd/elevated_clean.go` exits with it directly instead of returning the error through cobra: a generic non-zero exit cannot be told apart from the helper crashing or being killed *after* it started deleting.
+
+### Honest outcomes
+
+`Invoke` therefore reports only what it can prove, through two distinct sentinel errors:
+
+| Observation | Error | Caller may say |
+|---|---|---|
+| could not spawn the child / write the plan | `ErrElevationFailed` | nothing was deleted |
+| exit 3 — guard rejected the plan | `ErrElevationFailed` | nothing was deleted |
+| exit 1 with empty stdout — sudo auth failed/cancelled | `ErrElevationFailed` | nothing was deleted |
+| context cancelled during the run | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
+| killed by a signal, or any other abnormal exit | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
+| exit 0 but empty or undecodable stdout | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
+| exit 0, decodable `Result` | `nil` | inspect `Result.HasErrors` |
+
+The last "unknown" row is not pedantry: the helper encodes its `Result` *after* cleaning, so a truncated stdout write is a report that failed, not a clean that never happened.
+
+Cancellation is handled to match. `Execute()` builds a `signal.NotifyContext`, so even the hidden helper's `RunE` gets a cancellable context and its cleaners stop at their `ctx.Done()` checks. `Invoke` sets `cmd.Cancel` to send **SIGTERM** rather than the default SIGKILL — killing `sudo` does nothing to the root child it spawned, whereas `sudo` relays SIGTERM to it — and sets `cmd.WaitDelay`, so `Wait` cannot block forever on the inherited stdout pipe if the helper ignores the signal.
+
+Both payloads are schema-versioned and both sides hard-fail on a mismatch.
+
+### Guards and plan-file validation
+
+Every guard is fatal and runs **before any deletion** — this path fails closed:
+
+- `euid == 0`, otherwise a clear "internal command, must be started via sudo by tidymymac itself" error.
+- `SUDO_UID` present and parsable; it identifies the unprivileged user whose plan this is.
+- `config.Load()` succeeds — it already hard-fails when elevated without a resolvable `SUDO_USER`, precisely so `protected_paths` cannot silently stop applying under sudo.
+- Every plan category exists in the registry, reports `RequiresSudo()`, and is **not** listed in `disabled_categories`. Any of those failing rejects the **entire** plan, not just that category: a plan we no longer fully understand must not be partially executed as root, and elevation must never become the way around a user's own config. The elevated side is strictly *narrower* than the interactive one.
+- Schema version matches; a plan with no categories or no entries is rejected.
+
+A category whose intersection comes out **empty** is dropped from the clean entirely (it is still reported, with `Matched: 0`). `runClean` calls `Clean(ctx, entries, …)` unconditionally for every selected category, and a cleaner that both `RequiresSudo()` and `DeletesWholeDomain()` would read an empty list as "clear the whole domain" — as root. No such cleaner exists (`TestNoCleanerIsBothSudoAndWholeDomain` in `internal/cleaner` asserts it), and this keeps it from mattering if one ever does. When *every* category is dropped the helper short-circuits instead of calling `RunCleanWithPreparedScanResult`, because `resolveCleaners` reads an empty selection as "all categories".
+
+### Accepted risk: the self binary path
+
+`Invoke` re-executes *itself*: it resolves `os.Executable()`, follows symlinks, and hands the absolute result to `sudo`. That means the design trusts that the resolved binary is not writable by an attacker — anyone who can rewrite it before the user authenticates gets root.
+
+This is **deliberately not enforced**. Refusing to elevate from user-writable install locations would reject the normal ways TidyMyMac is installed on macOS (a Homebrew prefix, `~/go/bin`, a `go install` output), so the check would fire on legitimate installs far more often than on attacks. And it would not actually close the hole: same-user binary replacement is inherent to *any* tool that elevates itself, since an attacker who already runs as the user can equally replace the shell, the alias or the `PATH` entry the user types. The mitigations that do apply — the symlink resolution, the absolute `/usr/bin/sudo`, the identifying `[tidymymac]` password prompt — are about making the *elevation request itself* attributable, not about defending a compromised user account.
+
+Sources of scan roots that an attacker can influence *without* touching the binary are treated differently, because they are not inherent: `TempCleaner` validates `$TMPDIR` against the real macOS temp roots and ignores it entirely when `euid == 0`, so an environment variable can never nominate a directory for a root-privileged walk (see [internal/cleaner/](#internalcleaner)).
+
+The plan file is validated **on the opened file descriptor, not on the path**, which eliminates the classic `Lstat`-then-open swap race (as root, that race is a full compromise). It is opened once with `O_RDONLY|O_NOFOLLOW`, and every check then runs against that same fd via `f.Stat()`: regular file, permissions exactly `0600`, owner uid equal to `SUDO_UID`, size within an 8 MiB cap (re-applied through an `io.LimitReader` while decoding, since the file could grow after the stat). The parent directory is checked separately by name — directory, exactly `0700`, same owner — which is exactly what `Invoke`'s `os.MkdirTemp` produces on the other side.
 
 ---
 

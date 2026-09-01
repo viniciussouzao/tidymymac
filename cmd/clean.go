@@ -221,7 +221,7 @@ func executeClean(
 			return commands.CleanResult{}, nil, fmt.Errorf("scan file is %s old; rerun the scan or use --force-stale-scan with --execute", roundAge(age))
 		}
 
-		prepared, prepErr := commands.PrepareScanResultForClean(registry, scanResult, args, opts.Config)
+		prepared, prepErr := commands.PrepareScanResultForClean(ctx, registry, scanResult, args, opts.Config)
 		if prepErr != nil {
 			return commands.CleanResult{}, nil, prepErr
 		}

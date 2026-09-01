@@ -370,3 +370,168 @@ func TestDockerCleanContextCancellation(t *testing.T) {
 		t.Errorf("FilesDeleted = %d, want 0 after cancellation", result.FilesDeleted)
 	}
 }
+
+func TestParseDockerResourcePath(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		wantType string
+		wantID   string
+		wantOK   bool
+	}{
+		{name: "container", path: "docker://container/abc123456789/web", wantType: "container", wantID: "abc123456789", wantOK: true},
+		{name: "image", path: "docker://image/def123456789/nginx:latest", wantType: "image", wantID: "def123456789", wantOK: true},
+		{name: "volume has no name segment", path: "docker://volume/my-volume", wantType: "volume", wantID: "my-volume", wantOK: true},
+		{name: "missing id", path: "docker://image", wantOK: false},
+		{name: "empty id", path: "docker://image/", wantOK: false},
+		{name: "not a docker path", path: "/tmp/file", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resourceType, id, ok := parseDockerResourcePath(tt.path)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if resourceType != tt.wantType || id != tt.wantID {
+				t.Errorf("got (%q, %q), want (%q, %q)", resourceType, id, tt.wantType, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestMatchDockerEntries(t *testing.T) {
+	sets := dockerResourceSets{
+		containers: map[string]bool{"abc123456789": true},
+		images:     map[string]bool{"def123456789": true},
+		volumes:    map[string]bool{"kept-volume": true},
+	}
+
+	tests := []struct {
+		name        string
+		sets        dockerResourceSets
+		entries     []FileEntry
+		wantKept    []string
+		wantMissing int
+	}{
+		{
+			name: "every kind still present",
+			sets: sets,
+			entries: []FileEntry{
+				{Path: "docker://container/abc123456789/web", ResourceKind: DockerResourceKindContainerStopped},
+				{Path: "docker://image/def123456789/nginx:latest", ResourceKind: DockerResourceKindImageDangling},
+				{Path: "docker://volume/kept-volume", ResourceKind: DockerResourceKindVolumeOrphaned},
+			},
+			wantKept: []string{
+				"docker://container/abc123456789/web",
+				"docker://image/def123456789/nginx:latest",
+				"docker://volume/kept-volume",
+			},
+		},
+		{
+			name: "resources removed since the scan",
+			sets: sets,
+			entries: []FileEntry{
+				{Path: "docker://container/999999999999/gone", ResourceKind: DockerResourceKindContainerStopped},
+				{Path: "docker://image/888888888888/gone:latest", ResourceKind: DockerResourceKindImageStoppedContainer},
+				{Path: "docker://volume/gone-volume", ResourceKind: DockerResourceKindVolumeOrphaned},
+			},
+			wantMissing: 3,
+		},
+		{
+			name:        "malformed path counts as missing",
+			sets:        sets,
+			entries:     []FileEntry{{Path: "docker://image"}},
+			wantMissing: 1,
+		},
+		{
+			name:        "unknown resource type counts as missing",
+			sets:        sets,
+			entries:     []FileEntry{{Path: "docker://network/abc123456789/bridge"}},
+			wantMissing: 1,
+		},
+		{
+			name: "a type that was never queried is missing, not kept",
+			// containers was not listed (nil map), so a container entry cannot
+			// be confirmed and must not survive revalidation.
+			sets:        dockerResourceSets{images: map[string]bool{"def123456789": true}},
+			entries:     []FileEntry{{Path: "docker://container/abc123456789/web"}},
+			wantMissing: 1,
+		},
+		{
+			// Was previously accepted. A 6-char id is far too short to identify
+			// a resource Clean will then "docker rmi -f".
+			name: "a truncation shorter than a docker short id is not a match",
+			sets: dockerResourceSets{images: map[string]bool{"def123456789": true}},
+			entries: []FileEntry{
+				{Path: "docker://image/sha256:def123/nginx:latest"},
+			},
+			wantMissing: 1,
+		},
+		{
+			name: "11 characters is still one short of the floor",
+			sets: dockerResourceSets{images: map[string]bool{"def123456789abcdef": true}},
+			entries: []FileEntry{
+				{Path: "docker://image/def12345678/nginx:latest"},
+			},
+			wantMissing: 1,
+		},
+		{
+			name: "12 characters is the docker short-id width and matches",
+			sets: dockerResourceSets{images: map[string]bool{"def123456789abcdef": true}},
+			entries: []FileEntry{
+				{Path: "docker://image/def123456789/nginx:latest"},
+			},
+			wantKept: []string{"docker://image/def123456789/nginx:latest"},
+		},
+		{
+			name: "a sha256-prefixed full id matches the short id docker lists",
+			sets: dockerResourceSets{images: map[string]bool{"def123456789": true}},
+			entries: []FileEntry{
+				{Path: "docker://image/sha256:def123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd/nginx:latest"},
+			},
+			wantKept: []string{"docker://image/sha256:def123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd/nginx:latest"},
+		},
+		{
+			name: "a volume name matches only exactly, never by prefix",
+			sets: dockerResourceSets{volumes: map[string]bool{"db-backup-volume": true}},
+			entries: []FileEntry{
+				{Path: "docker://volume/db-backup-volume"},
+				{Path: "docker://volume/db-backup"},
+			},
+			wantKept:    []string{"docker://volume/db-backup-volume"},
+			wantMissing: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kept, missing := matchDockerEntries(tt.entries, tt.sets)
+			if missing != tt.wantMissing {
+				t.Errorf("missing = %d, want %d", missing, tt.wantMissing)
+			}
+			if len(kept) != len(tt.wantKept) {
+				t.Fatalf("kept %d entries, want %d (%+v)", len(kept), len(tt.wantKept), kept)
+			}
+			for i, want := range tt.wantKept {
+				if kept[i].Path != want {
+					t.Errorf("kept[%d] = %q, want %q", i, kept[i].Path, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCleanersImplementEntryRevalidator(t *testing.T) {
+	// Both cleaners produce non-filesystem Paths, so the os.Stat-based default
+	// revalidation would drop all their entries -- they must opt in.
+	if _, ok := any(NewDockerCleaner()).(EntryRevalidator); !ok {
+		t.Error("DockerCleaner does not implement EntryRevalidator")
+	}
+	if _, ok := any(NewTimeMachineCleaner()).(EntryRevalidator); !ok {
+		t.Error("TimeMachineCleaner does not implement EntryRevalidator")
+	}
+}

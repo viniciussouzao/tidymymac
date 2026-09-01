@@ -251,3 +251,84 @@ func createAllocatedFile(t *testing.T, dir, name string, size int64) string {
 
 	return path
 }
+
+// TestUserTempRoot pins the validation of $TMPDIR. TempCleaner requires sudo,
+// so whatever this returns can end up being walked -- and deleted -- by root.
+func TestUserTempRoot(t *testing.T) {
+	tests := []struct {
+		name   string
+		tmpDir string
+		euid   int
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "a real per-user temp dir is accepted",
+			tmpDir: "/var/folders/xy/abc123/T/",
+			euid:   501,
+			want:   "/var/folders/xy/abc123/T",
+			wantOK: true,
+		},
+		{
+			name:   "the firmlinked /private form is accepted too",
+			tmpDir: "/private/var/folders/xy/abc123/T",
+			euid:   501,
+			want:   "/private/var/folders/xy/abc123/T",
+			wantOK: true,
+		},
+		{
+			name:   "/private/tmp is a legitimate temp root",
+			tmpDir: "/private/tmp",
+			euid:   501,
+			want:   "/private/tmp",
+			wantOK: true,
+		},
+		{
+			name:   "/tmp is skipped because it is already scanned unconditionally",
+			tmpDir: "/tmp",
+			euid:   501,
+		},
+		{
+			name:   "an injected home path is refused",
+			tmpDir: "/Users/someone/Documents",
+			euid:   501,
+		},
+		{
+			name:   "a prefix lookalike is not a temp root",
+			tmpDir: "/var/folders-evil/x",
+			euid:   501,
+		},
+		{
+			name:   "traversal out of a temp root is refused after cleaning",
+			tmpDir: "/var/folders/../../Users/someone",
+			euid:   501,
+		},
+		{
+			name:   "a relative TMPDIR is refused",
+			tmpDir: "var/folders/x",
+			euid:   501,
+		},
+		{
+			name:   "an empty TMPDIR is refused",
+			tmpDir: "",
+			euid:   501,
+		},
+		{
+			name:   "an otherwise valid TMPDIR is dropped entirely when elevated",
+			tmpDir: "/var/folders/xy/abc123/T",
+			euid:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := userTempRoot(tt.tmpDir, tt.euid)
+			if ok != tt.wantOK {
+				t.Fatalf("userTempRoot(%q, %d) ok = %t, want %t", tt.tmpDir, tt.euid, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Fatalf("userTempRoot(%q, %d) = %q, want %q", tt.tmpDir, tt.euid, got, tt.want)
+			}
+		})
+	}
+}

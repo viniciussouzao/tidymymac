@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -52,8 +55,19 @@ func rootExecuteDeprecationWarning(cmd *cobra.Command) string {
 	return "⚠️  --execute on the root command is deprecated; use 'tidymymac execute' instead."
 }
 
+// Execute runs the root command with a signal-aware context.
+//
+// Every RunE therefore reaches a cancellable ctx through cmd.Context(), which
+// matters most for the hidden elevated helper: it runs as root and deletes
+// files, and without a cancellable context its cleaners' ctx.Done() checks
+// could never fire. sudo relays SIGTERM to the command it runs, so the
+// unprivileged parent cancelling its Invoke actually stops the root child
+// here rather than orphaning a process that keeps deleting.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

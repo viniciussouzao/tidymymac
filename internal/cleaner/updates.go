@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/viniciussouzao/tidymymac/internal/homedir"
 )
 
 // UpdatesCleaner is a cleaner that targets old macOS update residues and installers.
@@ -13,9 +15,13 @@ type UpdatesCleaner struct {
 	homeDir string
 }
 
-// NewUpdatesCleaner creates a new instance of UpdatesCleaner with the user's home directory.
+// NewUpdatesCleaner creates a new instance of UpdatesCleaner with the user's
+// home directory. It resolves via homedir.Resolve rather than os.UserHomeDir
+// because this cleaner requires sudo: when the process runs elevated,
+// os.UserHomeDir would resolve to root's home (/var/root) and the cleaner
+// would scan and clean the wrong home.
 func NewUpdatesCleaner() *UpdatesCleaner {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Resolve()
 	if err != nil {
 		home = ""
 	}
@@ -81,10 +87,16 @@ func (c *UpdatesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) 
 				return nil
 			}
 
+			// p, not path: path is the walk ROOT of the enclosing loop.
+			// Recording the root here made every entry claim to be the
+			// directory itself, which is both wrong reporting and, under
+			// elevation, a path the fresh-scan intersection would happily
+			// match.
 			result.Entries = append(result.Entries, FileEntry{
-				Path:     path,
+				Path:     p,
 				Size:     info.Size(),
 				ModTime:  info.ModTime(),
+				IsDir:    d.IsDir(),
 				Category: CategoryUpdates,
 			})
 

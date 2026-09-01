@@ -5,7 +5,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/viniciussouzao/tidymymac/internal/homedir"
 )
 
 // TempCleaner scans and cleans temporary files
@@ -13,8 +16,12 @@ type TempCleaner struct {
 	homeDir string
 }
 
+// NewTempCleaner creates a TempCleaner. The home directory comes from
+// homedir.Resolve rather than os.UserHomeDir because this cleaner requires
+// sudo: when the process runs elevated, os.UserHomeDir would resolve to root's
+// home (/var/root) and the cleaner would scan and clean the wrong home.
 func NewTempCleaner() *TempCleaner {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Resolve()
 	if err != nil {
 		home = ""
 	}
@@ -33,6 +40,53 @@ func (c *TempCleaner) RequiresSudo() bool { return true }
 
 func (c *TempCleaner) DeletesWholeDomain() bool { return false }
 
+// legitimateTempRoots are the only places macOS ever puts a per-user temp
+// directory. /tmp and /private/tmp are already scanned unconditionally; they
+// are listed so an explicit TMPDIR pointing at them is not treated as hostile.
+var legitimateTempRoots = []string{
+	"/var/folders",
+	"/private/var/folders",
+	"/tmp",
+	"/private/tmp",
+}
+
+// userTempRoot validates $TMPDIR before it is allowed to become a scan root.
+//
+// Two independent rules, both about the same risk -- an environment variable
+// deciding what a root process walks and offers up for deletion:
+//
+//  1. it must live under a real macOS temp root, so "TMPDIR=$HOME/Documents"
+//     cannot turn a user's documents into temp-file candidates;
+//  2. when euid is 0 it is dropped entirely. The elevated helper already covers
+//     /tmp and /var/tmp explicitly, and an env-derived root has no business in
+//     a scan whose results a root process is about to delete.
+//
+// It returns the cleaned path to use, or ok=false to skip it.
+func userTempRoot(tmpDir string, euid int) (string, bool) {
+	if euid == 0 {
+		return "", false
+	}
+	if tmpDir == "" {
+		return "", false
+	}
+
+	cleaned := filepath.Clean(tmpDir)
+	if !filepath.IsAbs(cleaned) {
+		return "", false
+	}
+	// Already walked unconditionally; adding it again would double-count.
+	if cleaned == "/tmp" {
+		return "", false
+	}
+
+	for _, root := range legitimateTempRoots {
+		if cleaned == root || strings.HasPrefix(cleaned, root+"/") {
+			return cleaned, true
+		}
+	}
+	return "", false
+}
+
 func (c *TempCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	start := time.Now()
 	result := &ScanResult{
@@ -45,8 +99,12 @@ func (c *TempCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 		filepath.Join(c.homeDir, "Library", "Caches", "TemporaryItems"),
 	}
 
-	userTmp := os.TempDir()
-	if userTmp != "/tmp" {
+	// os.TempDir() is just $TMPDIR: attacker-settable, and this cleaner
+	// RequiresSudo, so an unvalidated value becomes a root-walked scan root and
+	// therefore a root-deletable domain (the elevated helper's fence 2 is
+	// exactly "whatever Scan returned"). Accept it only when it really is a
+	// macOS temp location, and never at all when elevated.
+	if userTmp, ok := userTempRoot(os.TempDir(), os.Geteuid()); ok {
 		paths = append(paths, userTmp)
 	}
 

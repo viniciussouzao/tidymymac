@@ -3,6 +3,7 @@ package cleaner
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -59,7 +60,7 @@ func TestLogsCleanerScanWithTempDir(t *testing.T) {
 	// Use only the user logs dir by setting homeDir to our temp dir.
 	// The cleaner also scans /Library/Logs and /var/log, but those have
 	// system files we can't control, so we just verify our files are found.
-	c := &LogsCleaner{homeDir: dir}
+	c := newTestLogsCleaner(t, dir)
 	result, err := c.Scan(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("Scan() error: %v", err)
@@ -125,11 +126,12 @@ func TestLogsCleanerCleanDryRun(t *testing.T) {
 }
 
 func TestLogsCleanerCleanActualDeletion(t *testing.T) {
-	dir := t.TempDir()
+	home := t.TempDir()
+	c := newTestLogsCleaner(t, home)
+	dir := testLogsDir(t, home)
 	f1 := createTempFile(t, dir, "a.log", 100)
 	f2 := createTempFile(t, dir, "b.log", 200)
 
-	c := NewLogsCleaner()
 	entries := []FileEntry{
 		{Path: f1, Size: 100, Category: CategoryLogs},
 		{Path: f2, Size: 200, Category: CategoryLogs},
@@ -185,11 +187,11 @@ func TestLogsCleanerCleanContextCancellation(t *testing.T) {
 }
 
 func TestLogsCleanerCleanProgress(t *testing.T) {
-	dir := t.TempDir()
-	f := createTempFile(t, dir, "app.log", 100)
+	home := t.TempDir()
+	c := newTestLogsCleaner(t, home)
+	f := createTempFile(t, testLogsDir(t, home), "app.log", 100)
 
 	var progressCalls int
-	c := NewLogsCleaner()
 	entries := []FileEntry{
 		{Path: f, Size: 100, Category: CategoryLogs},
 	}
@@ -209,9 +211,10 @@ func TestLogsCleanerCleanProgress(t *testing.T) {
 }
 
 func TestLogsCleanerCleanNonExistentFile(t *testing.T) {
-	c := NewLogsCleaner()
+	home := t.TempDir()
+	c := newTestLogsCleaner(t, home)
 	entries := []FileEntry{
-		{Path: "/tmp/does-not-exist-tidymymac-log-test", Size: 100, Category: CategoryLogs},
+		{Path: filepath.Join(testLogsDir(t, home), "does-not-exist.log"), Size: 100, Category: CategoryLogs},
 	}
 
 	result, err := c.Clean(t.Context(), entries, false, nil)
@@ -221,4 +224,23 @@ func TestLogsCleanerCleanNonExistentFile(t *testing.T) {
 	if result.FilesDeleted != 1 {
 		t.Errorf("FilesDeleted = %d, want 1 (not-exist treated as success)", result.FilesDeleted)
 	}
+}
+
+// newTestLogsCleaner builds a LogsCleaner whose domain is a throwaway home,
+// resolved through the same logsScanRoots the constructor uses. Clean is now
+// confined to that domain, so a test that drops files in a bare t.TempDir()
+// and expects them deleted would be asserting the opposite of the guarantee.
+func newTestLogsCleaner(t *testing.T, home string) *LogsCleaner {
+	t.Helper()
+	return &LogsCleaner{homeDir: home, roots: logsScanRoots(home)}
+}
+
+// testLogsDir creates and returns the user log directory inside a fake home.
+func testLogsDir(t *testing.T, home string) string {
+	t.Helper()
+	dir := filepath.Join(home, "Library", "Logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	return dir
 }

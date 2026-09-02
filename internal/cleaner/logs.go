@@ -13,6 +13,11 @@ import (
 // LogsCleaner scans and cleans system and user log files.
 type LogsCleaner struct {
 	homeDir string
+
+	// roots is the cleaner's domain: the only directories Scan walks and the
+	// only ones Clean will delete inside. Resolved once at construction so the
+	// two can never disagree.
+	roots []string
 }
 
 // NewLogsCleaner creates a LogsCleaner using the current user's home
@@ -25,7 +30,21 @@ func NewLogsCleaner() *LogsCleaner {
 	if err != nil {
 		home = ""
 	}
-	return &LogsCleaner{homeDir: home}
+	return &LogsCleaner{homeDir: home, roots: logsScanRoots(home)}
+}
+
+// logsScanRoots resolves the Logs domain. With no home directory there is no
+// domain at all: the system roots alone would let Clean delete under /var/log
+// on the strength of a scan that never established a user context.
+func logsScanRoots(homeDir string) []string {
+	if homeDir == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(homeDir, "Library", "Logs"),
+		"/Library/Logs",
+		"/var/log",
+	}
 }
 
 func (c *LogsCleaner) Category() Category       { return CategoryLogs }
@@ -43,13 +62,7 @@ func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 	start := time.Now()
 	result := &ScanResult{Category: CategoryLogs}
 
-	paths := []string{
-		filepath.Join(c.homeDir, "Library", "Logs"),
-		"/Library/Logs",
-		"/var/log",
-	}
-
-	for _, root := range paths {
+	for _, root := range c.roots {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
@@ -120,6 +133,11 @@ func (c *LogsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		DryRun:   dryRun,
 	}
 
+	// Deletion never re-resolves entry.Path from "/": see rootedRemover for
+	// why a root process must not, and what it is confined to instead.
+	remover := newRootedRemover(c.roots...)
+	defer remover.Close()
+
 	for i, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -130,7 +148,7 @@ func (c *LogsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		}
 
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil {
+			if err := remover.Remove(entry.Path); err != nil {
 				if !os.IsNotExist(err) {
 					result.Errors = append(result.Errors, err)
 					continue

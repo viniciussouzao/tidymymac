@@ -14,6 +14,13 @@ import (
 // TempCleaner scans and cleans temporary files
 type TempCleaner struct {
 	homeDir string
+
+	// roots is the cleaner's domain: the only directories Scan walks and,
+	// just as importantly, the only ones Clean will delete inside. It is
+	// resolved once at construction so the two can never disagree about what
+	// the domain is -- a Clean allowed to delete under a root Scan never
+	// visited would be a hole in the elevated helper's second fence.
+	roots []string
 }
 
 // NewTempCleaner creates a TempCleaner. The home directory comes from
@@ -27,7 +34,33 @@ func NewTempCleaner() *TempCleaner {
 	}
 	return &TempCleaner{
 		homeDir: home,
+		roots:   tempScanRoots(home, os.TempDir(), os.Geteuid()),
 	}
+}
+
+// tempScanRoots resolves the Temp domain.
+//
+// os.TempDir() is just $TMPDIR: attacker-settable, and this cleaner
+// RequiresSudo, so an unvalidated value becomes a root-walked scan root and
+// therefore a root-deletable domain. Accept it only when it really is a macOS
+// temp location, and never at all when elevated -- see userTempRoot.
+func tempScanRoots(homeDir, tmpDir string, euid int) []string {
+	roots := []string{
+		"/tmp",
+		"/var/tmp",
+	}
+
+	// An empty home would make this a relative path, which as a walk root
+	// means "wherever the process happens to be running from".
+	if homeDir != "" {
+		roots = append(roots, filepath.Join(homeDir, "Library", "Caches", "TemporaryItems"))
+	}
+
+	if userTmp, ok := userTempRoot(tmpDir, euid); ok {
+		roots = append(roots, userTmp)
+	}
+
+	return roots
 }
 
 func (c *TempCleaner) Category() Category { return CategoryTemp }
@@ -93,22 +126,7 @@ func (c *TempCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 		Category: CategoryTemp,
 	}
 
-	paths := []string{
-		"/tmp",
-		"/var/tmp",
-		filepath.Join(c.homeDir, "Library", "Caches", "TemporaryItems"),
-	}
-
-	// os.TempDir() is just $TMPDIR: attacker-settable, and this cleaner
-	// RequiresSudo, so an unvalidated value becomes a root-walked scan root and
-	// therefore a root-deletable domain (the elevated helper's fence 2 is
-	// exactly "whatever Scan returned"). Accept it only when it really is a
-	// macOS temp location, and never at all when elevated.
-	if userTmp, ok := userTempRoot(os.TempDir(), os.Geteuid()); ok {
-		paths = append(paths, userTmp)
-	}
-
-	for _, root := range paths {
+	for _, root := range c.roots {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
@@ -172,6 +190,11 @@ func (c *TempCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		DryRun:   dryRun,
 	}
 
+	// Deletion never re-resolves entry.Path from "/": see rootedRemover for
+	// why a root process must not, and what it is confined to instead.
+	remover := newRootedRemover(c.roots...)
+	defer remover.Close()
+
 	for i, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -182,7 +205,7 @@ func (c *TempCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		}
 
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := remover.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}

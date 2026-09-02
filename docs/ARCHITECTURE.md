@@ -330,6 +330,8 @@ Shared filesystem utilities (directory walking, size aggregation) live in `utils
 
 The cleaners that report `RequiresSudo()` and target paths under the user's home (`temp.go`, `logs.go`, `updates.go`) resolve it through `internal/homedir.Resolve()` rather than `os.UserHomeDir()`. These are precisely the cleaners that can end up running elevated, where `os.UserHomeDir()` would return root's home (`/var/root`) and the cleaner would scan and clean the wrong home entirely; `homedir.Resolve` short-circuits on `euid == 0` + `SUDO_USER` to the invoking user's real home. `internal/config` uses the same resolver for the same reason.
 
+Those same three cleaners also never delete by pathname. Each one resolves its **scan roots once, at construction** (`tempScanRoots` / `logsScanRoots` / `updatesScanRoots`) into a `roots` field that both `Scan` and `Clean` read, so the set of directories a cleaner walks and the set it is allowed to delete inside cannot drift apart. `Clean` then routes every removal through `rootedRemover` (`saferemove.go`), which performs the unlink relative to an `os.Root` anchored at one of those roots instead of calling `os.Remove` on the absolute path. See [Confined removal](#confined-removal) for why that distinction is the whole point.
+
 For the same reason, `temp.go` does not trust `os.TempDir()` (i.e. `$TMPDIR`) verbatim. A scan root is exactly what the elevated helper's fence 2 treats as a category's legitimate domain, so an environment variable that becomes a scan root is an environment variable that can nominate a directory for root-privileged deletion. `userTempRoot` accepts it only when it resolves under a genuine macOS temp root (`/var/folders`, `/private/var/folders`, `/tmp`, `/private/tmp`) and drops it entirely when `euid == 0` — the elevated path already covers `/tmp` and `/var/tmp` explicitly.
 
 ### `internal/commands/`
@@ -587,6 +589,7 @@ This is enforced at multiple levels:
 5. **Protected paths are a hard block**: `config.StripProtected` runs immediately before *every* `Clean` invocation and before any generated deletion script, unconditionally. There is no CLI flag that overrides `protected_paths` — by design. Protection is not filtering: `Tag` only marks entries, so scans and dry-run previews still *show* protected files, they simply are never passed to `Clean`. Containment applies in both directions, so a directory entry that contains a protected path is protected as a whole (deleting it would take the protected path with it).
 6. **Whole-domain cleaners skip rather than under-honor**: when a protected path lands in a category whose cleaner reports `DeletesWholeDomain()`, there is no way to run it while sparing that path. The category is skipped entirely, with an error explaining why, instead of running with a silently-filtered list.
 7. **Privileges are scoped, not global**: root is never granted to the whole program. Only the deletion of an already-approved plan runs elevated, and even then it is re-bounded by a fresh root scan — see [Elevation Model](#elevation-model).
+8. **Deletion is confined to the scanning domain**: the cleaners that can run elevated (`temp`, `logs`, `macos-updates`) do not call `os.Remove` on a path string. Every removal goes through an `os.Root` anchored at one of that cleaner's own scan roots, so a path component swapped for a symlink between approval and deletion cannot redirect the unlink out of the domain — see [Confined removal](#confined-removal).
 
 ```mermaid
 flowchart TD
@@ -627,6 +630,23 @@ A root process that deletes whatever list it is handed is a confused deputy. So 
 - Approved entries the fresh scan does not return are counted as **missing/skipped**, never deleted.
 
 Matching is exact `FileEntry.Path` string equality — no cleaning, no symlink resolution, no case folding — so "is this in the domain" is decided solely by whether `Scan` itself emitted that exact path. The entry handed to `Clean` is the **fresh-scan** entry, so sizes and attributes are current, and the plan's `Protected` flag (attacker-controllable input) is discarded rather than trusted.
+
+### Confined removal
+
+The intersection binds a path **string**. Deleting that string later is a separate syscall, and `os.Remove` re-walks every component from `/` at that later moment. If any component between the root and the leaf is swapped for a symlink in between — trivially arrangeable when the parent lives under a world-writable `/tmp` — the kernel resolves the unlink somewhere else entirely while the path string, and therefore every check made against it, stays identical. Both fences still report a match. As root, that turns an approved temp-file cleanup into `unlink("/etc/hosts")`.
+
+So the privileged cleaners stop resolving by name. `internal/cleaner/saferemove.go`'s `rootedRemover` gives `Clean` a third, mechanical fence:
+
+| Step | What it buys |
+|---|---|
+| open an `os.Root` at one of the cleaner's own scan roots | every later component is resolved with `openat` under that root; an absolute symlink is refused outright and a relative one that would leave the root is refused as *`path escapes from parent`* |
+| hold the entry's **parent directory** open as a descriptor | validation and removal share one already-resolved parent instead of two independent path walks |
+| `Lstat` then `Remove` the leaf **relative to that descriptor** | the leaf must still be a regular file; a directory or a symlink is refused rather than removed |
+| refuse anything not strictly under a root | a path that this cleaner's `Scan` could never have emitted — a stale `--from-file` scan, a hand-edited plan — is not deleted merely because it reached `Clean` |
+
+What deliberately remains: a symlink whose target stays *inside* the same scan root is followed. That cannot cross the privilege boundary, because everything under a scan root is by definition what the cleaner was already authorized to delete; at worst it redirects one in-domain deletion to another in-domain file. Closing even that would require a device/inode identity captured at scan time and carried through to `Clean`, which buys no additional containment.
+
+Failures surface as ordinary per-item errors (`ErrOutsideApprovedRoots`, `ErrNotRegularFile`, or the raw `openat` refusal), so a refused entry lands in `partial_errors` and is reported — never counted as deleted, never silently dropped.
 
 The intersection is assembled into a `commands.PreparedScanResult` and run through `commands.RunCleanWithPreparedScanResult`. That is deliberate: `config.Tag`/`StripProtected` and the `DeletesWholeDomain` skip stay in their single canonical place, so the elevated path and the ordinary path cannot drift apart.
 

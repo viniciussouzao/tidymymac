@@ -13,6 +13,11 @@ import (
 // UpdatesCleaner is a cleaner that targets old macOS update residues and installers.
 type UpdatesCleaner struct {
 	homeDir string
+
+	// roots is the cleaner's domain: the only directories Scan walks and the
+	// only ones Clean will delete inside. Resolved once at construction so the
+	// two can never disagree.
+	roots []string
 }
 
 // NewUpdatesCleaner creates a new instance of UpdatesCleaner with the user's
@@ -27,6 +32,20 @@ func NewUpdatesCleaner() *UpdatesCleaner {
 	}
 	return &UpdatesCleaner{
 		homeDir: home,
+		roots:   updatesScanRoots(home),
+	}
+}
+
+// updatesScanRoots resolves the Updates domain, which is entirely
+// home-relative: with no home there is nothing to scan or clean.
+func updatesScanRoots(homeDir string) []string {
+	if homeDir == "" {
+		return nil
+	}
+	return []string{
+		filepath.Join(homeDir, "Library", "Updates"),
+		filepath.Join(homeDir, "Library", "iTunes", "iPad Software Updates"),
+		filepath.Join(homeDir, "Library", "iTunes", "iPhone Software Updates"),
 	}
 }
 
@@ -48,13 +67,7 @@ func (c *UpdatesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) 
 	start := time.Now()
 	result := &ScanResult{Category: CategoryUpdates}
 
-	paths := []string{
-		filepath.Join(c.homeDir, "Library", "Updates"),
-		filepath.Join(c.homeDir, "Library", "iTunes", "iPad Software Updates"),
-		filepath.Join(c.homeDir, "Library", "iTunes", "iPhone Software Updates"),
-	}
-
-	for _, path := range paths {
+	for _, path := range c.roots {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
@@ -118,6 +131,11 @@ func (c *UpdatesCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun 
 	start := time.Now()
 	result := &CleanResult{Category: CategoryUpdates, DryRun: dryRun}
 
+	// Deletion never re-resolves entry.Path from "/": see rootedRemover for
+	// why a root process must not, and what it is confined to instead.
+	remover := newRootedRemover(c.roots...)
+	defer remover.Close()
+
 	for i, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -126,7 +144,7 @@ func (c *UpdatesCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun 
 			continue
 		}
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := remover.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}

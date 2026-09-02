@@ -35,6 +35,12 @@ subcommands for non-interactive workflows.`,
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if executeFlag {
+			if err := guardRootDeletion(); err != nil {
+				return err
+			}
+		}
+
 		if warning := rootExecuteDeprecationWarning(cmd); warning != "" {
 			fmt.Fprintln(os.Stderr, warning)
 		}

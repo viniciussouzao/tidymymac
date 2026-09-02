@@ -20,6 +20,10 @@ Example usage:
 $ tidymymac execute
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := guardRootDeletion(); err != nil {
+			return err
+		}
+
 		p := tea.NewProgram(tui.NewApp(cmd.Context(), true, loadedConfig), tea.WithAltScreen())
 		_, err := p.Run()
 		return err

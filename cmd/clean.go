@@ -59,6 +59,12 @@ $ tidymymac clean --profile dev --execute
 $ tidymymac clean --profile dev --include-large-files --execute
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if executeFlag {
+			if err := guardRootDeletion(); err != nil {
+				return err
+			}
+		}
+
 		detailed, _ := cmd.Flags().GetBool("detailed")
 		fromFile, _ := cmd.Flags().GetString("from-file")
 		forceStaleScan, _ := cmd.Flags().GetBool("force-stale-scan")

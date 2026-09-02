@@ -42,11 +42,11 @@ func updatesScanRoots(homeDir string) []string {
 	if homeDir == "" {
 		return nil
 	}
-	return []string{
+	return resolveScanRoots([]string{
 		filepath.Join(homeDir, "Library", "Updates"),
 		filepath.Join(homeDir, "Library", "iTunes", "iPad Software Updates"),
 		filepath.Join(homeDir, "Library", "iTunes", "iPhone Software Updates"),
-	}
+	})
 }
 
 func (c *UpdatesCleaner) Category() Category { return CategoryUpdates }

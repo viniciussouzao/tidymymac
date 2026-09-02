@@ -204,9 +204,11 @@ func (c *Config) normalize() error {
 
 		// macOS mounts several top-level directories as firmlinks to a
 		// /private/... path (e.g. /tmp -> /private/tmp, /var -> /private/var).
-		// Cleaners walk the shortcut form, so a protected_paths entry written
-		// in either form must protect both -- otherwise a path typed in the
-		// "wrong" spelling silently fails to match anything scanned.
+		// Cleaners resolve their scan roots and therefore report the resolved
+		// form, but a user types whichever spelling they know, so a
+		// protected_paths entry written in either form must protect both --
+		// otherwise a path typed in the "wrong" spelling silently fails to
+		// match anything scanned.
 		for _, alias := range firmlinkAliases(norm) {
 			addRoot(&c.normalizedProtected, seen, alias, builtin)
 		}

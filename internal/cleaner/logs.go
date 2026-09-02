@@ -40,11 +40,11 @@ func logsScanRoots(homeDir string) []string {
 	if homeDir == "" {
 		return nil
 	}
-	return []string{
+	return resolveScanRoots([]string{
 		filepath.Join(homeDir, "Library", "Logs"),
 		"/Library/Logs",
 		"/var/log",
-	}
+	})
 }
 
 func (c *LogsCleaner) Category() Category       { return CategoryLogs }

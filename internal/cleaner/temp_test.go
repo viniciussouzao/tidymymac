@@ -55,7 +55,7 @@ func TestTempCleanerScanContextCancellation(t *testing.T) {
 }
 
 func TestTempCleanerCleanDryRun(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	f := createTempFile(t, dir, "test.tmp", 512)
 
 	c := NewTempCleaner()
@@ -84,7 +84,7 @@ func TestTempCleanerCleanDryRun(t *testing.T) {
 }
 
 func TestTempCleanerCleanActualDeletion(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	f1 := createTempFile(t, dir, "a.tmp", 100)
 	f2 := createTempFile(t, dir, "b.tmp", 200)
 
@@ -113,7 +113,7 @@ func TestTempCleanerCleanActualDeletion(t *testing.T) {
 }
 
 func TestTempCleanerCleanSkipsDirectories(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	c := NewTempCleaner()
 	entries := []FileEntry{
 		{Path: dir, Size: 0, IsDir: true, Category: CategoryTemp},
@@ -131,7 +131,7 @@ func TestTempCleanerCleanSkipsDirectories(t *testing.T) {
 func TestTempCleanerCleanNonExistentFile(t *testing.T) {
 	c := NewTempCleaner()
 	entries := []FileEntry{
-		{Path: "/tmp/does-not-exist-tidymymac-test", Size: 100, Category: CategoryTemp},
+		{Path: filepath.Join(resolveScanRoot("/tmp"), "does-not-exist-tidymymac-test"), Size: 100, Category: CategoryTemp},
 	}
 
 	result, err := c.Clean(t.Context(), entries, false, nil)
@@ -160,7 +160,7 @@ func TestTempCleanerCleanContextCancellation(t *testing.T) {
 }
 
 func TestTempCleanerCleanProgress(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	var files []FileEntry
 	for i := range 3 {
 		f := createTempFile(t, dir, filepath.Base(filepath.Join(dir, string(rune('a'+i))+".tmp")), 100)

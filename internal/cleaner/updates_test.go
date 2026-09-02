@@ -16,18 +16,21 @@ import (
 func TestUpdatesCleanerScanRecordsEachFilesOwnPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// The cleaner resolves its scan roots through symlinks (/var -> private/var
+	// on macOS), so the paths it reports are the resolved ones.
+	resolvedHome := resolveScanRoot(home)
 
 	updates := filepath.Join(home, "Library", "Updates")
 	if err := os.MkdirAll(filepath.Join(updates, "nested"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	first := filepath.Join(updates, "installer.pkg")
-	second := filepath.Join(updates, "nested", "residue.dmg")
-	if err := os.WriteFile(first, make([]byte, 10), 0o600); err != nil {
+	first := filepath.Join(resolvedHome, "Library", "Updates", "installer.pkg")
+	second := filepath.Join(resolvedHome, "Library", "Updates", "nested", "residue.dmg")
+	if err := os.WriteFile(filepath.Join(updates, "installer.pkg"), make([]byte, 10), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if err := os.WriteFile(second, make([]byte, 25), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(updates, "nested", "residue.dmg"), make([]byte, 25), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
@@ -48,7 +51,7 @@ func TestUpdatesCleanerScanRecordsEachFilesOwnPath(t *testing.T) {
 	bySize := map[string]int64{}
 	paths := make([]string, 0, len(result.Entries))
 	for _, e := range result.Entries {
-		if e.Path == updates {
+		if e.Path == filepath.Join(resolvedHome, "Library", "Updates") {
 			t.Fatalf("entry Path is the walk root %q, want the file itself", e.Path)
 		}
 		if e.IsDir {

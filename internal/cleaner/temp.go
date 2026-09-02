@@ -60,7 +60,7 @@ func tempScanRoots(homeDir, tmpDir string, euid int) []string {
 		roots = append(roots, userTmp)
 	}
 
-	return roots
+	return resolveScanRoots(roots)
 }
 
 func (c *TempCleaner) Category() Category { return CategoryTemp }

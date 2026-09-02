@@ -526,14 +526,16 @@ func TestTempScanRootsRejectsHostileTMPDIR(t *testing.T) {
 				return false
 			}
 
-			if tt.wantHas != "" && !has(tt.wantHas) {
+			// Roots come back resolved through symlinks, so expectations are
+			// resolved the same way rather than spelled out twice.
+			if tt.wantHas != "" && !has(resolveScanRoot(tt.wantHas)) {
 				t.Fatalf("roots = %v, want it to contain %q", roots, tt.wantHas)
 			}
-			if tt.wantNot != "" && has(tt.wantNot) {
+			if tt.wantNot != "" && has(resolveScanRoot(tt.wantNot)) {
 				t.Fatalf("roots = %v, want it NOT to contain %q", roots, tt.wantNot)
 			}
 			// The unconditional roots are always present.
-			if !has("/tmp") || !has("/var/tmp") {
+			if !has(resolveScanRoot("/tmp")) || !has(resolveScanRoot("/var/tmp")) {
 				t.Fatalf("roots = %v, want /tmp and /var/tmp", roots)
 			}
 		})
@@ -748,5 +750,71 @@ func TestFileEntryIdentityNeverCrossesATrustBoundary(t *testing.T) {
 	}
 	if decoded.Dev != 0 || decoded.Ino != 0 {
 		t.Fatalf("decoded identity = (%d,%d), want it ignored", decoded.Dev, decoded.Ino)
+	}
+}
+
+// TestScanRootsAreResolvedThroughSymlinks covers a pre-existing bug that
+// predates the confinement work and silently emptied the Temp cleaner's most
+// important domain.
+//
+// macOS ships /tmp as a symlink to private/tmp, and filepath.WalkDir only
+// Lstats its root: handed a symlink it reports that symlink as the single
+// entry and never descends. So "/tmp" as a scan root produced exactly one
+// candidate -- /tmp itself -- and nothing underneath it was ever scanned,
+// reviewed or cleaned, despite the docs promising the elevated path covers
+// /tmp explicitly.
+func TestScanRootsAreResolvedThroughSymlinks(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	buried := mustWrite(t, filepath.Join(realDir, "nested", "a.log"), "content")
+
+	link := filepath.Join(base, "via-symlink")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// Walking the symlink directly is the broken behavior being guarded
+	// against: one non-directory entry, the link, and no descent.
+	var walked []string
+	_ = filepath.WalkDir(link, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			walked = append(walked, p)
+		}
+		return nil
+	})
+	if len(walked) != 1 || walked[0] != link {
+		t.Fatalf("WalkDir(symlink) = %v; this test's premise no longer holds", walked)
+	}
+
+	c := &LogsCleaner{homeDir: base, roots: resolveScanRoots([]string{link})}
+	result, err := c.Scan(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	want := filepath.Join(resolveScanRoot(realDir), "nested", "a.log")
+	if len(result.Entries) != 1 || result.Entries[0].Path != want {
+		t.Fatalf("Scan through a symlinked root = %+v, want just %s", result.Entries, want)
+	}
+
+	// And the file is reachable for deletion under its resolved spelling.
+	if err := newRootedRemover(c.roots...).Remove(result.Entries[0]); err != nil {
+		t.Fatalf("Remove = %v, want nil", err)
+	}
+	mustNotExist(t, buried)
+}
+
+func TestResolveScanRootsDedupesCollapsedSpellings(t *testing.T) {
+	// "/tmp" and a TMPDIR of "/private/tmp" collapse onto one path; walking
+	// both would double-count every file under it.
+	roots := resolveScanRoots([]string{"/tmp", "/private/tmp"})
+	if len(roots) != 1 {
+		t.Fatalf("roots = %v, want the two spellings deduped to one", roots)
+	}
+
+	// A root that cannot be resolved is kept as written rather than dropped.
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if got := resolveScanRoots([]string{missing}); len(got) != 1 || got[0] != missing {
+		t.Fatalf("resolveScanRoots(missing) = %v, want it kept unchanged", got)
 	}
 }

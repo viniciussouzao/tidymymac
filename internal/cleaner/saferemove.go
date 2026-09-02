@@ -104,6 +104,51 @@ type rootedRemover struct {
 	parentRoot *os.Root
 }
 
+// resolveScanRoot returns the path a scan root should actually be addressed
+// by, following symlinks in the root itself.
+//
+// This is not cosmetic. macOS ships /tmp as a symlink to private/tmp, and
+// filepath.WalkDir only Lstats its root: handed "/tmp" it sees a symlink, not
+// a directory, reports the symlink itself as the single entry, and never
+// descends. The Temp cleaner therefore scanned nothing at all under the one
+// world-writable directory it most needs to cover. ("/var/tmp" escaped this
+// because only the *final* component is Lstat'd, and "tmp" there is a real
+// directory.)
+//
+// Resolving also keeps a root and the entries beneath it spelled the same way,
+// which is what locate's prefix match depends on. Protected paths are
+// unaffected: internal/config stores every protected entry under its literal
+// spelling, its firmlink alias, and its EvalSymlinks resolution.
+//
+// A root that cannot be resolved -- most often because it does not exist on
+// this machine -- is returned unchanged and simply fails later.
+func resolveScanRoot(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return path
+	}
+	return resolved
+}
+
+// resolveScanRoots resolves each root and drops duplicates, preserving order.
+// Deduping matters after resolution because distinct spellings can collapse
+// onto one another -- "/tmp" and a TMPDIR of "/private/tmp" being the case
+// that actually occurs -- and walking the same tree twice would double-count
+// every file in it.
+func resolveScanRoots(paths []string) []string {
+	resolved := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		r := resolveScanRoot(p)
+		if _, dup := seen[r]; dup {
+			continue
+		}
+		seen[r] = struct{}{}
+		resolved = append(resolved, r)
+	}
+	return resolved
+}
+
 // newRootedRemover builds a remover confined to roots. Empty, relative and
 // duplicate roots are dropped, as is "/" -- a cleaner whose domain is the
 // whole filesystem would make the confinement meaningless.

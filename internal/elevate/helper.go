@@ -268,13 +268,20 @@ func validatePlan(plan Plan, registry *cleaner.Registry, cfg *config.Config) err
 		if !c.RequiresSudo() {
 			return fmt.Errorf("plan contains category %q, which does not require elevation; refusing the whole plan", planCategory.Category)
 		}
-		// disabled_categories is a user decision the ordinary path honors via
-		// config.FilterRegistry. Elevation must not become the way around it:
-		// a plan built before the category was disabled -- or built by
-		// something else entirely -- would otherwise run it as root.
-		if cfg.IsCategoryDisabled(string(planCategory.Category)) {
-			return fmt.Errorf("plan contains category %q, which is disabled in your config (disabled_categories); refusing the whole plan", planCategory.Category)
-		}
+		// disabled_categories is deliberately NOT checked here.
+		//
+		// It is documented as a soft default -- "do not include this unless I
+		// ask for it" -- and an explicit selection overrides it everywhere
+		// else in the CLI (see resolveCleaners). Enforcing it only for the
+		// categories that happen to need root gave the tool two contradictory
+		// policies separated by nothing but a privilege requirement.
+		//
+		// It is also not a security control, and treating it as one would be
+		// misleading: the guards that bound this plan are the category being
+		// known and RequiresSudo (above), and fence 2 restricting every
+		// deletion to what a fresh privileged scan returns. Neither depends on
+		// config. If a hard, plan-vetoing block is ever wanted, it belongs in
+		// its own config concept rather than overloading this one.
 		total += len(planCategory.Entries)
 	}
 

@@ -213,7 +213,7 @@ func TestSplitSudoCategories_DedupesDuplicateSelection(t *testing.T) {
 	}
 }
 
-func TestSplitSudoCategories_DisabledSudoCategoryIsDroppedBeforeAnyPrompt(t *testing.T) {
+func TestSplitSudoCategories_ExplicitSelectionOverridesDisabled(t *testing.T) {
 	registry := cleaner.NewRegistry()
 	registry.Register(cleaner.NewTempCleaner())
 	registry.Register(cleaner.NewCachesCleaner())
@@ -223,22 +223,45 @@ func TestSplitSudoCategories_DisabledSudoCategoryIsDroppedBeforeAnyPrompt(t *tes
 		t.Fatalf("config.New: %v", err)
 	}
 
-	// An explicit selection naming a disabled sudo category must drop just
-	// that category here, before any password prompt -- the elevated helper
-	// would reject the whole plan anyway (see validatePlan in
-	// internal/elevate/helper.go), but only after collecting the user's
-	// password for nothing. The rest of the explicit selection must still
-	// run, matching this package's "explicit selection wins over
-	// disabled_categories" rule for every other category.
+	// "An explicit selection wins over disabled_categories" is this package's
+	// rule for every category (see resolveCleaners), and needing root is not a
+	// reason to apply a second, contradictory policy. Naming a disabled sudo
+	// category therefore elevates it, exactly as naming a disabled non-sudo
+	// category runs it.
 	sudo, rest, err := splitSudoCategories(registry, cfg, []string{string(cleaner.CategoryTemp), string(cleaner.CategoryApplicationCaches)})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(sudo) != 0 {
-		t.Errorf("sudo = %v, want the disabled category dropped, not surfaced for elevation", sudo)
+	if len(sudo) != 1 || sudo[0] != string(cleaner.CategoryTemp) {
+		t.Errorf("sudo = %v, want [%s]: an explicit selection overrides disabled_categories", sudo, cleaner.CategoryTemp)
 	}
 	if len(rest) != 1 || rest[0] != string(cleaner.CategoryApplicationCaches) {
-		t.Errorf("rest = %v, want [%s] unaffected by the disabled sudo category", rest, cleaner.CategoryApplicationCaches)
+		t.Errorf("rest = %v, want [%s]", rest, cleaner.CategoryApplicationCaches)
+	}
+}
+
+// TestSplitSudoCategories_DefaultSelectionStillHonorsDisabled pins the other
+// half: with no categories named, disabled_categories still applies, because
+// the expansion goes through config.FilterRegistry.
+func TestSplitSudoCategories_DefaultSelectionStillHonorsDisabled(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewTempCleaner())
+	registry.Register(cleaner.NewCachesCleaner())
+
+	cfg, err := config.New(nil, []string{string(cleaner.CategoryTemp)})
+	if err != nil {
+		t.Fatalf("config.New: %v", err)
+	}
+
+	sudo, rest, err := splitSudoCategories(registry, cfg, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(sudo) != 0 {
+		t.Errorf("sudo = %v, want none: a disabled category must not be picked up by default", sudo)
+	}
+	if len(rest) != 1 || rest[0] != string(cleaner.CategoryApplicationCaches) {
+		t.Errorf("rest = %v, want [%s]", rest, cleaner.CategoryApplicationCaches)
 	}
 }
 

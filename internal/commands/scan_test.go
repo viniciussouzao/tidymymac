@@ -743,3 +743,36 @@ func TestWriteTable_EscapesControlCharactersInPaths(t *testing.T) {
 		t.Fatalf("forged row escaped onto its own line:\n%s", out)
 	}
 }
+
+// TestResolveCleanersDedupesRepeatedCategories covers a pre-existing quirk:
+// "tidymymac clean docker docker --execute" resolved to two Docker cleaners
+// and ran the category twice, scanning and deleting the same domain in two
+// passes. The sudo half of clean already deduped its own selection; this makes
+// the ordinary path agree.
+func TestResolveCleanersDedupesRepeatedCategories(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewCachesCleaner())
+	registry.Register(cleaner.NewDownloadsCleaner())
+
+	selected := []string{
+		string(cleaner.CategoryApplicationCaches),
+		string(cleaner.CategoryDownloads),
+		string(cleaner.CategoryApplicationCaches),
+	}
+
+	cleaners, err := resolveCleaners(registry, selected, nil)
+	if err != nil {
+		t.Fatalf("resolveCleaners: %v", err)
+	}
+
+	if len(cleaners) != 2 {
+		t.Fatalf("got %d cleaners, want 2", len(cleaners))
+	}
+	// First-seen order is preserved, so the output still reads the way the
+	// user wrote the command.
+	if cleaners[0].Category() != cleaner.CategoryApplicationCaches ||
+		cleaners[1].Category() != cleaner.CategoryDownloads {
+		t.Fatalf("order = %q, %q; want first-seen order preserved",
+			cleaners[0].Category(), cleaners[1].Category())
+	}
+}

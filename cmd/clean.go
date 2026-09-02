@@ -530,23 +530,11 @@ func splitSudoCategories(registry *cleaner.Registry, cfg *config.Config, selecte
 			restNames = append(restNames, name)
 			continue
 		}
-		// The elevated helper rejects a plan containing any disabled
-		// category outright (see validatePlan in internal/elevate/helper.go)
-		// -- catch that here too, before any password prompt, rather than
-		// asking for credentials for work that is guaranteed to be refused.
-		// Categories reached via the empty-selection expansion above are
-		// never disabled to begin with (FilterRegistry already excludes
-		// them), so this only ever fires for an explicit selection.
-		//
-		// Dropped rather than failing the whole command: "an explicit
-		// selection always wins over disabled_categories" is this package's
-		// rule for every other category (see resolveCleaners), and sudo
-		// elevation simply cannot honor that for this one category -- the
-		// rest of an explicit selection should still run.
-		if cfg.IsCategoryDisabled(name) {
-			fmt.Fprintf(os.Stderr, "warning: %s is disabled via config; skipping it rather than requesting a sudo password the elevated helper would refuse anyway\n", name)
-			continue
-		}
+		// disabled_categories is not consulted for an explicit selection --
+		// it is a default, and naming a category on the command line
+		// overrides it, exactly as it does for every non-sudo category.
+		// Categories reached via the empty-selection expansion above already
+		// had it applied by FilterRegistry.
 		sudoNames = append(sudoNames, name)
 	}
 	return sudoNames, restNames, nil

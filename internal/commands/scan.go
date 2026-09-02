@@ -187,6 +187,11 @@ func resolveCleaners(registry *cleaner.Registry, selected []string, cfg *config.
 	}
 
 	cleaners := make([]cleaner.Cleaner, 0, len(selected))
+	// Deduped by category: "clean docker docker" would otherwise run the
+	// cleaner twice, scanning and deleting the same domain in two passes. The
+	// sudo half of clean already deduped its own selection; this makes the
+	// ordinary path agree, for scan and clean alike.
+	seen := make(map[cleaner.Category]struct{}, len(selected))
 
 	for _, raw := range selected {
 		category := cleaner.Category(raw)
@@ -195,6 +200,11 @@ func resolveCleaners(registry *cleaner.Registry, selected []string, cfg *config.
 		if !ok {
 			return nil, fmt.Errorf("unknown category %q", raw)
 		}
+
+		if _, dup := seen[category]; dup {
+			continue
+		}
+		seen[category] = struct{}{}
 
 		cleaners = append(cleaners, c)
 	}

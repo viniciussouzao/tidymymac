@@ -591,8 +591,9 @@ This is enforced at multiple levels:
 5. **Protected paths are a hard block**: `config.StripProtected` runs immediately before *every* `Clean` invocation and before any generated deletion script, unconditionally. There is no CLI flag that overrides `protected_paths` — by design. Protection is not filtering: `Tag` only marks entries, so scans and dry-run previews still *show* protected files, they simply are never passed to `Clean`. Containment applies in both directions, so a directory entry that contains a protected path is protected as a whole (deleting it would take the protected path with it).
 6. **Whole-domain cleaners skip rather than under-honor**: when a protected path lands in a category whose cleaner reports `DeletesWholeDomain()`, there is no way to run it while sparing that path. The category is skipped entirely, with an error explaining why, instead of running with a silently-filtered list.
 7. **Privileges are scoped, not global**: root is never granted to the whole program. Only the deletion of an already-approved plan runs elevated, and even then it is re-bounded by a fresh root scan — see [Elevation Model](#elevation-model).
-8. **The program refuses to delete while it is itself root**: `sudo tidymymac clean --execute` (or `sudo tidymymac execute`) bypasses the elevation model entirely — there is no plan/fresh-scan intersection, and `RequiresSudo() == false` never meant "cannot run as root", only "the helper will not accept this category in a plan". Every execute-mode entry point calls `guardRootDeletion` (`cmd/root_privileges.go`) and refuses. Dry runs are unaffected. The hidden helper is exempt by construction: the guard lives in each `RunE`, never in the shared `PersistentPreRunE`.
-9. **Deletion is confined to the scanning domain**: the cleaners that can run elevated (`temp`, `logs`, `macos-updates`) do not call `os.Remove` on a path string. Every removal goes through an `os.Root` anchored at one of that cleaner's own scan roots, so a path component swapped for a symlink between approval and deletion cannot redirect the unlink out of the domain — see [Confined removal](#confined-removal).
+8. **`disabled_categories` is a default, never a veto**: naming a category explicitly runs it, whether or not it needs root. The elevated helper does not consult it either — enforcing it only for privileged categories gave the CLI two contradictory policies separated by nothing but a privilege requirement, and it is not a security control (what bounds an elevated plan is the category being known and `RequiresSudo`, plus fence 2). A hard, plan-vetoing block, if ever wanted, belongs in its own config concept.
+9. **The program refuses to delete while it is itself root**: `sudo tidymymac clean --execute` (or `sudo tidymymac execute`) bypasses the elevation model entirely — there is no plan/fresh-scan intersection, and `RequiresSudo() == false` never meant "cannot run as root", only "the helper will not accept this category in a plan". Every execute-mode entry point calls `guardRootDeletion` (`cmd/root_privileges.go`) and refuses. Dry runs are unaffected. The hidden helper is exempt by construction: the guard lives in each `RunE`, never in the shared `PersistentPreRunE`.
+10. **Deletion is confined to the scanning domain**: the cleaners that can run elevated (`temp`, `logs`, `macos-updates`) do not call `os.Remove` on a path string. Every removal goes through an `os.Root` anchored at one of that cleaner's own scan roots, so a path component swapped for a symlink between approval and deletion cannot redirect the unlink out of the domain — see [Confined removal](#confined-removal).
 
 ```mermaid
 flowchart TD
@@ -666,6 +667,23 @@ flowchart LR
     X -->|approved but absent| M[reported as missing/skipped]
     RC --> R[Result JSON on stdout]
 ```
+
+### Threat model: what this boundary does and does not defend against
+
+The elevation boundary defends against **the tool itself doing more as root than the user approved**. That is what the two fences, the confined removal and the honest-outcome contract are for.
+
+It does **not** defend against a hostile process already running as the invoking user. That is a deliberate, documented limit, not an oversight:
+
+| Vector | Status |
+|---|---|
+| Another local **user** reading or altering the plan | Defended. Private temp dir (`0700`), plan file `0600`, opened `O_NOFOLLOW`, ownership and mode validated through the opened descriptor. |
+| A **same-UID** process replacing the binary between `selfPath` resolution and `sudo` exec | **Out of scope.** `selfPath` resolves symlinks so the *target* cannot be swapped, but the executable file itself is writable by its owner wherever the tool is normally installed. Defending this would require refusing to run from any non-root-owned path, which breaks Homebrew prefixes and every developer build. |
+| A **same-UID** process rewriting the plan file before root reads it | **Out of scope**, and bounded: fence 2 confines any such edit to paths the cleaner's own privileged scan still returns, so it can at most reorder or subset work inside the category's own domain. |
+| A **same-UID** process swapping a path component between scan and deletion | Defended — this is exactly what [Confined removal](#confined-removal) exists for. |
+
+The distinction is that the last row crosses the privilege boundary (root deleting outside the domain) while the first two do not: a process with the user's UID that can rewrite the user's own binary can already do anything the user can do, with or without this tool. The user is also the one explicitly authorizing `sudo` at that moment.
+
+If same-UID compromise ever moves into scope, the plan should travel over an inherited pipe rather than a pathname, with `sudo` prompting through `/dev/tty` instead of stdin.
 
 ### IPC contract
 

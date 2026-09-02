@@ -104,14 +104,20 @@ func writeTestPlan(t *testing.T, plan Plan) string {
 	return path
 }
 
-func TestRunHelperGuards(t *testing.T) {
-	validPlan := Plan{
+// validGuardPlan is the shape every guard test starts from: schema-correct,
+// one known sudo category, one entry. Each case then breaks exactly one thing.
+func validGuardPlan() Plan {
+	return Plan{
 		Version: PlanSchemaVersion,
 		Categories: []PlanCategory{{
 			Category: cleaner.CategoryTemp,
 			Entries:  []cleaner.FileEntry{{Path: "/tmp/nope"}},
 		}},
 	}
+}
+
+func TestRunHelperGuards(t *testing.T) {
+	validPlan := validGuardPlan()
 
 	tests := []struct {
 		name    string
@@ -186,19 +192,6 @@ func TestRunHelperGuards(t *testing.T) {
 			wantErr: "does not require elevation",
 		},
 		{
-			// The elevated path must be strictly narrower than the interactive
-			// one: elevation cannot become the way around disabled_categories.
-			name: "rejects the whole plan when a category is disabled in the config",
-			env: func(e helperEnv) helperEnv {
-				e.loadConfig = func() (*config.Config, error) {
-					return config.New(nil, []string{string(cleaner.CategoryTemp)})
-				}
-				return e
-			},
-			plan:    validPlan,
-			wantErr: "disabled in your config",
-		},
-		{
 			name: "rejects a plan listing the same category twice",
 			plan: Plan{
 				Version: PlanSchemaVersion,
@@ -234,6 +227,28 @@ func TestRunHelperGuards(t *testing.T) {
 				t.Fatalf("runHelper() error = %q, want it to contain %q", err.Error(), tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestRunHelperAcceptsADisabledCategory pins the F5 contract on the root side.
+//
+// disabled_categories is a soft default -- "do not include this unless I ask
+// for it" -- and an explicit selection overrides it for every non-sudo
+// category. Enforcing it here as a plan veto gave the tool two contradictory
+// policies separated by nothing but a privilege requirement. It is also not a
+// security control: what bounds this plan is the category being known and
+// RequiresSudo, plus fence 2 restricting deletion to a fresh privileged scan,
+// and none of that depends on config.
+func TestRunHelperAcceptsADisabledCategory(t *testing.T) {
+	reg := testRegistry(&fakeCleaner{category: cleaner.CategoryTemp, requiresSudo: true})
+
+	env := testEnv(reg)
+	env.loadConfig = func() (*config.Config, error) {
+		return config.New(nil, []string{string(cleaner.CategoryTemp)})
+	}
+
+	if _, err := runHelper(context.Background(), writeTestPlan(t, validGuardPlan()), env); err != nil {
+		t.Fatalf("runHelper() with a disabled category = %v, want it accepted", err)
 	}
 }
 

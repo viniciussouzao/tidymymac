@@ -52,8 +52,10 @@ import (
 // the same binary, so a mismatch means something unexpected is on the other
 // end of the pipe, which is exactly when a security boundary should stop.
 const (
-	PlanSchemaVersion   = 1
-	ResultSchemaVersion = 1
+	PlanSchemaVersion = 1
+	// 2: CleanCategoryResult gained partial_errors / partial_error_details /
+	// partial_errors_truncated, and a partial failure now sets HasErrors.
+	ResultSchemaVersion = 2
 )
 
 // Plan is the approved work handed to the elevated helper.

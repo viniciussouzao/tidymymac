@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -489,6 +490,8 @@ func markCleaning(t *testing.T, app *App, cat cleaner.Category) {
 	t.Fatalf("category %q not found in cleaning screen", cat)
 }
 
+func app0Time() time.Time { return time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC) }
+
 func loadHistoryRuns(t *testing.T) []history.RunRecord {
 	t.Helper()
 	rec, err := history.Load()
@@ -645,5 +648,62 @@ func TestHandleElevateComplete_NoDeletionRecordOnFailureOrUnknown(t *testing.T) 
 				t.Fatal("only a successful elevation is recorded early; failures stay with the final run record")
 			}
 		})
+	}
+}
+
+// TestHandleElevateComplete_PartialErrorsSurfaceInResults: per-item failures
+// collected on the root side arrive through the helper's JSON result and
+// must reach the summary the same way a locally cleaned category's would --
+// never rendering as an unqualified success.
+func TestHandleElevateComplete_PartialErrorsSurfaceInResults(t *testing.T) {
+	resetHistory(t)
+	entries := []cleaner.FileEntry{{Path: "/private/var/tmp/foo", Size: 1024, Category: cleaner.CategoryTemp}}
+	app := newSudoReviewApp(t, entries)
+	markCleaning(t, &app, cleaner.CategoryTemp)
+
+	msg := elevatedTempSuccess(entries)
+	msg.result.Clean.Categories[0].PartialErrors = 3
+	msg.result.Clean.Categories[0].PartialErrorDetails = []commands.ItemError{
+		{Path: "/private/var/tmp/locked", Reason: "operation not permitted"},
+	}
+	msg.result.Clean.Categories[0].PartialErrorsTruncated = true
+
+	model, _ := app.handleElevateComplete(msg)
+	app = model.(App)
+
+	results := app.cleaningScr.Results()
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1", len(results))
+	}
+	r := results[0]
+	if r.FilesDeleted != 1 || r.BytesFreed != 1024 {
+		t.Fatalf("deleted counts = %d/%d, want 1/1024 preserved alongside the errors", r.FilesDeleted, r.BytesFreed)
+	}
+	if len(r.Errors) != 2 {
+		t.Fatalf("Errors = %v, want the one detail plus a '2 more' summary", r.Errors)
+	}
+	if got := r.Errors[0].Error(); !strings.Contains(got, "/private/var/tmp/locked") || !strings.Contains(got, "operation not permitted") {
+		t.Fatalf("Errors[0] = %q, want path and reason", got)
+	}
+	if got := r.Errors[1].Error(); !strings.Contains(got, "2 more") {
+		t.Fatalf("Errors[1] = %q, want the truncated remainder", got)
+	}
+
+	// And the deletion that did happen is still in the audit trail.
+	runs := loadHistoryRuns(t)
+	if len(runs) != 1 || runs[0].TotalFiles != 1 {
+		t.Fatalf("history = %+v, want the partial deletion recorded", runs)
+	}
+}
+
+func TestBuildTUIRunRecord_KeepsDeletionsFromCategoriesWithErrors(t *testing.T) {
+	record := buildTUIRunRecord([]*cleaner.CleanResult{
+		{Category: cleaner.CategoryTemp, FilesDeleted: 5, BytesFreed: 50, Errors: []error{errors.New("one failed")}},
+		{Category: "cat_skipped", Skipped: true},
+		{Category: "cat_failed", Errors: []error{errors.New("nothing deleted")}},
+	}, app0Time(), 0)
+
+	if len(record.Categories) != 1 || record.Categories[0].Name != string(cleaner.CategoryTemp) || record.TotalFiles != 5 {
+		t.Fatalf("record = %+v, want only the Temp deletion (with its 5 files) recorded", record)
 	}
 }

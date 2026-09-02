@@ -3,8 +3,10 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sync"
 	"time"
 
@@ -29,10 +31,50 @@ type CleanCategoryResult struct {
 	Files        []cleaner.FileEntry `json:"files,omitempty"`
 	Err          error               `json:"-"`
 	ErrMsg       string              `json:"error,omitempty"`
-	// PartialErrors counts non-fatal per-file errors collected by the cleaner
-	// while it still reclaimed some space. Kept out of the JSON output to
-	// preserve the machine-readable schema.
-	PartialErrors int `json:"-"`
+	// PartialErrors counts non-fatal per-item errors the cleaner collected
+	// while continuing with the rest of its entries. The category may still
+	// have reclaimed space; DeletedFiles/DeletedSize stay accurate and are
+	// still folded into the totals, but HasErrors is set on the overall
+	// result so a partial failure never renders as a clean success.
+	PartialErrors int `json:"partial_errors,omitempty"`
+	// PartialErrorDetails carries the first MaxPartialErrorDetails of those
+	// errors, so the user can be told which path failed and why. It is
+	// bounded to keep the JSON output (and the elevated helper's stdout
+	// result) small even for a category with thousands of failures;
+	// PartialErrorsTruncated says when the bound was hit.
+	PartialErrorDetails    []ItemError `json:"partial_error_details,omitempty"`
+	PartialErrorsTruncated bool        `json:"partial_errors_truncated,omitempty"`
+}
+
+// ItemError is one non-fatal per-item failure inside a category. Path is
+// empty when the underlying error did not identify one.
+type ItemError struct {
+	Path   string `json:"path,omitempty"`
+	Reason string `json:"reason"`
+}
+
+// MaxPartialErrorDetails bounds CleanCategoryResult.PartialErrorDetails.
+const MaxPartialErrorDetails = 50
+
+// itemErrors converts a cleaner's collected errors into bounded, structured
+// ItemError values. *fs.PathError (what os.Remove & co. return) is split into
+// path and reason; anything else is carried as its message.
+func itemErrors(errs []error) (details []ItemError, truncated bool) {
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if len(details) == MaxPartialErrorDetails {
+			return details, true
+		}
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			details = append(details, ItemError{Path: pathErr.Path, Reason: pathErr.Err.Error()})
+			continue
+		}
+		details = append(details, ItemError{Reason: err.Error()})
+	}
+	return details, false
 }
 
 // CleanResult represents the overall result of the cleaning process.
@@ -177,6 +219,7 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 				item.DeletedFiles = cleanRunResult.FilesDeleted
 				item.DeletedSize = cleanRunResult.BytesFreed
 				item.PartialErrors = len(cleanRunResult.Errors)
+				item.PartialErrorDetails, item.PartialErrorsTruncated = itemErrors(cleanRunResult.Errors)
 			}
 
 			if scanErr != nil {
@@ -191,9 +234,12 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 			defer mu.Unlock()
 
 			result.Categories = append(result.Categories, item)
-			if item.Err != nil {
+			// A partial failure is still a failure for exit-status purposes,
+			// but what was reclaimed is real and stays in the totals.
+			if item.Err != nil || item.PartialErrors > 0 {
 				result.HasErrors = true
-			} else {
+			}
+			if item.Err == nil {
 				result.TotalSize += item.DeletedSize
 				result.TotalFiles += item.DeletedFiles
 			}

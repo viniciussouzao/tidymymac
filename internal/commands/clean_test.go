@@ -2,7 +2,10 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"testing"
 	"time"
 
@@ -454,5 +457,95 @@ func TestRunClean_FailedCategoryExcludedFromTotals(t *testing.T) {
 	}
 	if result.TotalFiles != 1 {
 		t.Errorf("TotalFiles = %d, want 1", result.TotalFiles)
+	}
+}
+
+// TestRunClean_PartialErrorsAreStructuredAndSetHasErrors: a cleaner that
+// deletes some entries and fails on others must report both -- the reclaimed
+// counts stay in the totals, the failures are carried as path+reason, and
+// the run as a whole is flagged so a partial failure never exits as success.
+func TestRunClean_PartialErrorsAreStructuredAndSetHasErrors(t *testing.T) {
+	r := newMockCleanRegistry(&mockCleanRunner{
+		category: "cat_a",
+		entries:  []cleaner.FileEntry{{Path: "/tmp/a", Size: 10}, {Path: "/tmp/b", Size: 20}},
+		cleanResult: &cleaner.CleanResult{
+			Category:     "cat_a",
+			FilesDeleted: 1,
+			BytesFreed:   10,
+			Errors: []error{
+				&fs.PathError{Op: "remove", Path: "/tmp/b", Err: errors.New("operation not permitted")},
+				errors.New("something else went wrong"),
+			},
+		},
+	})
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if !result.HasErrors {
+		t.Fatal("HasErrors = false, want true for a partial failure")
+	}
+	if result.TotalFiles != 1 || result.TotalSize != 10 {
+		t.Fatalf("totals = %d files / %d bytes, want the reclaimed 1 / 10 kept", result.TotalFiles, result.TotalSize)
+	}
+
+	cat := result.Categories[0]
+	if cat.Err != nil || cat.ErrMsg != "" {
+		t.Fatalf("a partial failure must not be reported as a fatal category error: %+v", cat)
+	}
+	if cat.PartialErrors != 2 || cat.PartialErrorsTruncated {
+		t.Fatalf("PartialErrors/Truncated = %d/%t, want 2/false", cat.PartialErrors, cat.PartialErrorsTruncated)
+	}
+	want := []ItemError{
+		{Path: "/tmp/b", Reason: "operation not permitted"},
+		{Reason: "something else went wrong"},
+	}
+	if len(cat.PartialErrorDetails) != len(want) {
+		t.Fatalf("PartialErrorDetails = %+v, want %+v", cat.PartialErrorDetails, want)
+	}
+	for i := range want {
+		if cat.PartialErrorDetails[i] != want[i] {
+			t.Fatalf("PartialErrorDetails[%d] = %+v, want %+v", i, cat.PartialErrorDetails[i], want[i])
+		}
+	}
+
+	// The whole point: it must survive the trip through JSON, which is how
+	// both --output json and the elevated helper's result carry it.
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded CleanResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.Categories[0]
+	if got.PartialErrors != 2 || len(got.PartialErrorDetails) != 2 || got.PartialErrorDetails[0].Path != "/tmp/b" {
+		t.Fatalf("partial errors did not survive JSON: %+v", got)
+	}
+}
+
+func TestRunClean_PartialErrorDetailsAreBounded(t *testing.T) {
+	errs := make([]error, MaxPartialErrorDetails+7)
+	for i := range errs {
+		errs[i] = &fs.PathError{Op: "remove", Path: fmt.Sprintf("/tmp/%d", i), Err: errors.New("busy")}
+	}
+	r := newMockCleanRegistry(&mockCleanRunner{
+		category:    "cat_a",
+		entries:     []cleaner.FileEntry{{Path: "/tmp/a", Size: 10}},
+		cleanResult: &cleaner.CleanResult{Category: "cat_a", Errors: errs},
+	})
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	cat := result.Categories[0]
+	if cat.PartialErrors != len(errs) {
+		t.Fatalf("PartialErrors = %d, want the full count %d even when details are cut", cat.PartialErrors, len(errs))
+	}
+	if len(cat.PartialErrorDetails) != MaxPartialErrorDetails || !cat.PartialErrorsTruncated {
+		t.Fatalf("details/truncated = %d/%t, want %d/true", len(cat.PartialErrorDetails), cat.PartialErrorsTruncated, MaxPartialErrorDetails)
 	}
 }

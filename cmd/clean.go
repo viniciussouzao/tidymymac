@@ -151,13 +151,7 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 			return writeErr
 		}
 		if result.HasErrors {
-			var failed []string
-			for _, cat := range result.Categories {
-				if cat.Err != nil {
-					failed = append(failed, cat.Name)
-				}
-			}
-			return fmt.Errorf("clean completed with errors in: %s", strings.Join(failed, ", "))
+			return fmt.Errorf("clean completed with errors in: %s", strings.Join(failedCategoryNames(result), ", "))
 		}
 		return nil
 	}
@@ -177,6 +171,7 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 		}
 
 		fmt.Fprintf(&b, "- %s: %s, %d files %s\n", category.Name, actionSize(category.DeletedSize), category.DeletedFiles, actionVerb)
+		writePartialErrors(&b, category, "  ")
 		if detailed {
 			for _, file := range category.Files {
 				fmt.Fprintf(&b, "  %s\n", file.Path)
@@ -187,16 +182,43 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 	_, _ = fmt.Fprint(os.Stdout, b.String())
 
 	if result.HasErrors {
-		var failed []string
-		for _, cat := range result.Categories {
-			if cat.Err != nil {
-				failed = append(failed, cat.Name)
-			}
-		}
-		return fmt.Errorf("clean completed with errors in: %s", strings.Join(failed, ", "))
+		return fmt.Errorf("clean completed with errors in: %s", strings.Join(failedCategoryNames(result), ", "))
 	}
 
 	return nil
+}
+
+// failedCategoryNames lists every category that failed outright or only
+// partially -- both set HasErrors, and the exit-status message must name
+// whichever it was.
+func failedCategoryNames(result commands.CleanResult) []string {
+	var failed []string
+	for _, cat := range result.Categories {
+		if cat.Err != nil || cat.PartialErrors > 0 {
+			failed = append(failed, cat.Name)
+		}
+	}
+	return failed
+}
+
+// writePartialErrors renders a category's non-fatal per-item failures as
+// "path: reason" lines under it, so a partial failure is never mistaken for
+// a clean success and the user knows exactly which items to look at.
+func writePartialErrors(b *strings.Builder, category commands.CleanCategoryResult, indent string) {
+	if category.PartialErrors == 0 {
+		return
+	}
+	fmt.Fprintf(b, "%s%d item(s) could not be cleaned:\n", indent, category.PartialErrors)
+	for _, ie := range category.PartialErrorDetails {
+		if ie.Path != "" {
+			fmt.Fprintf(b, "%s  %s: %s\n", indent, ie.Path, ie.Reason)
+		} else {
+			fmt.Fprintf(b, "%s  %s\n", indent, ie.Reason)
+		}
+	}
+	if category.PartialErrorsTruncated {
+		fmt.Fprintf(b, "%s  ... %d more not shown\n", indent, category.PartialErrors-len(category.PartialErrorDetails))
+	}
 }
 
 func executeClean(
@@ -620,7 +642,12 @@ func mergeCleanResults(base commands.CleanResult, extra []commands.CleanCategory
 	for _, r := range extra {
 		// Mirrors runClean's own totals computation (internal/commands/clean.go):
 		// an errored category's counts, even if partially non-zero, are never
-		// folded into the displayed total -- only HasErrors is set for it.
+		// folded into the displayed total -- only HasErrors is set for it. A
+		// partial failure also sets HasErrors, but what it reclaimed is real
+		// and stays in the totals.
+		if r.PartialErrors > 0 {
+			merged.HasErrors = true
+		}
 		if r.Err != nil {
 			merged.HasErrors = true
 			continue

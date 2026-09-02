@@ -407,3 +407,59 @@ func TestMergeCleanResults_NoExtraReturnsBaseUnchanged(t *testing.T) {
 		t.Errorf("merged = %+v, want base unchanged when extra is empty", merged)
 	}
 }
+
+func TestMergeCleanResults_PartialErrorsSetHasErrorsButKeepTotals(t *testing.T) {
+	base := commands.CleanResult{TotalFiles: 1, TotalSize: 5}
+	extra := []commands.CleanCategoryResult{{
+		Category:      cleaner.CategoryTemp,
+		Name:          "Temp Files",
+		DeletedFiles:  3,
+		DeletedSize:   30,
+		PartialErrors: 1,
+		PartialErrorDetails: []commands.ItemError{
+			{Path: "/private/tmp/locked", Reason: "operation not permitted"},
+		},
+	}}
+
+	merged := mergeCleanResults(base, extra)
+	if !merged.HasErrors {
+		t.Fatal("HasErrors = false, want true for an elevated category with partial failures")
+	}
+	if merged.TotalFiles != 4 || merged.TotalSize != 35 {
+		t.Fatalf("totals = %d/%d, want 4/35 (partial failures keep what was reclaimed)", merged.TotalFiles, merged.TotalSize)
+	}
+	if got := failedCategoryNames(merged); len(got) != 1 || got[0] != "Temp Files" {
+		t.Fatalf("failedCategoryNames = %v, want [Temp Files]", got)
+	}
+}
+
+func TestWritePartialErrors_RendersPathReasonAndTruncation(t *testing.T) {
+	var b strings.Builder
+	writePartialErrors(&b, commands.CleanCategoryResult{
+		Name:          "Temp Files",
+		PartialErrors: 3,
+		PartialErrorDetails: []commands.ItemError{
+			{Path: "/private/tmp/locked", Reason: "operation not permitted"},
+			{Reason: "no path in this one"},
+		},
+		PartialErrorsTruncated: true,
+	}, "  ")
+
+	out := b.String()
+	for _, want := range []string{
+		"  3 item(s) could not be cleaned:",
+		"    /private/tmp/locked: operation not permitted",
+		"    no path in this one",
+		"    ... 1 more not shown",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q missing %q", out, want)
+		}
+	}
+
+	b.Reset()
+	writePartialErrors(&b, commands.CleanCategoryResult{Name: "Clean"}, "  ")
+	if b.Len() != 0 {
+		t.Fatalf("a category without partial errors must render nothing, got %q", b.String())
+	}
+}

@@ -303,6 +303,7 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 					FilesDeleted: ccr.DeletedFiles,
 					BytesFreed:   ccr.DeletedSize,
 					DryRun:       msg.plan.DryRun,
+					Errors:       partialErrorsFromResult(ccr),
 				}
 				var cerr error
 				if ccr.ErrMsg != "" {
@@ -820,10 +821,38 @@ func (a App) Model() tea.Model {
 	return a
 }
 
+// partialErrorsFromResult rebuilds the per-item errors a cleaner collected
+// on the root side, as they arrive over the helper's JSON result, so the
+// summary screen shows them exactly as it would for a category cleaned in
+// this process. The helper bounds the detail list; the count is preserved
+// through a trailing summary error when it was cut.
+func partialErrorsFromResult(ccr commands.CleanCategoryResult) []error {
+	if ccr.PartialErrors == 0 {
+		return nil
+	}
+	errs := make([]error, 0, len(ccr.PartialErrorDetails)+1)
+	for _, ie := range ccr.PartialErrorDetails {
+		if ie.Path != "" {
+			errs = append(errs, fmt.Errorf("%s: %s", ie.Path, ie.Reason))
+		} else {
+			errs = append(errs, errors.New(ie.Reason))
+		}
+	}
+	if more := ccr.PartialErrors - len(ccr.PartialErrorDetails); more > 0 {
+		errs = append(errs, fmt.Errorf("%d more item(s) could not be cleaned", more))
+	}
+	return errs
+}
+
+// buildTUIRunRecord turns the cleaning screen's results into a history
+// record. Skipped categories and those that deleted nothing are left out;
+// a category that deleted some files and then hit errors IS recorded with
+// what it deleted -- the audit trail must reflect what happened on disk,
+// and the errors are the summary screen's job.
 func buildTUIRunRecord(results []*cleaner.CleanResult, ranAt time.Time, durationMs int64) history.RunRecord {
 	var categories []history.CategoryRecord
 	for _, r := range results {
-		if r == nil || r.Skipped || len(r.Errors) > 0 || (r.FilesDeleted == 0 && r.BytesFreed == 0) {
+		if r == nil || r.Skipped || (r.FilesDeleted == 0 && r.BytesFreed == 0) {
 			continue
 		}
 		categories = append(categories, history.CategoryRecord{

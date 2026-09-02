@@ -488,7 +488,16 @@ func TestPlanAndResultJSONRoundTrip(t *testing.T) {
 
 	result := Result{
 		Version: ResultSchemaVersion,
-		Clean:   commands.CleanResult{TotalFiles: 1, TotalSize: 12, HasErrors: true},
+		Clean: commands.CleanResult{TotalFiles: 1, TotalSize: 12, HasErrors: true, Categories: []commands.CleanCategoryResult{{
+			Category:      cleaner.CategoryLogs,
+			DeletedFiles:  1,
+			DeletedSize:   12,
+			PartialErrors: 2,
+			PartialErrorDetails: []commands.ItemError{
+				{Path: "/var/log/locked", Reason: "operation not permitted"},
+			},
+			PartialErrorsTruncated: true,
+		}}},
 		Intersections: []CategoryIntersection{{
 			Category: cleaner.CategoryLogs,
 			Name:     "System Logs",
@@ -512,6 +521,13 @@ func TestPlanAndResultJSONRoundTrip(t *testing.T) {
 		len(decodedResult.Intersections) != 1 || decodedResult.Intersections[0].Missing != 1 ||
 		decodedResult.Intersections[0].ErrMsg != "boom" {
 		t.Fatalf("round-tripped result = %+v, want %+v", decodedResult, result)
+	}
+	// Per-item failures are the reason the schema is at version 2: they must
+	// cross the helper boundary intact, not collapse into a bare success.
+	cat := decodedResult.Clean.Categories[0]
+	if cat.PartialErrors != 2 || !cat.PartialErrorsTruncated ||
+		len(cat.PartialErrorDetails) != 1 || cat.PartialErrorDetails[0].Path != "/var/log/locked" {
+		t.Fatalf("round-tripped partial errors = %+v, want count 2, truncated, one detail", cat)
 	}
 }
 

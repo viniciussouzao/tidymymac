@@ -127,7 +127,7 @@ func TestElevateHelperProcess(t *testing.T) {
 // stubSudo swaps the sudoCommand and sudoAuthCommand seams for the stub
 // process above, restoring them afterwards. Tests using it must not run in
 // parallel: the seams are package level precisely so they stay a single,
-// obvious, minimal hook. Auth-stub behaviour is driven by the same env map
+// obvious, minimal hook. Auth-stub behavior is driven by the same env map
 // (TIDYMYMAC_TEST_AUTH_* keys); by default it succeeds.
 func stubSudo(t *testing.T, env map[string]string) {
 	t.Helper()

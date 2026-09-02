@@ -98,6 +98,12 @@ type App struct {
 	cleanStartTime time.Time
 	cfg            *config.Config
 
+	// elevatedRecorded holds the categories whose deletion has already been
+	// written to history by handleElevateComplete, so finishCleaning does
+	// not record them a second time. See recordElevatedHistory for why the
+	// elevated part is persisted early rather than with the rest of the run.
+	elevatedRecorded map[cleaner.Category]struct{}
+
 	// scriptMessage will support the generate-script-only flow.
 }
 
@@ -322,6 +328,8 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 			a.cleaningScr.UpdateCleanResult(pc.Category, nil, errors.New("the elevated helper returned no result for this category; outcome unknown"))
 		}
 
+		a.recordElevatedHistory(msg.plan)
+
 	case errors.Is(msg.err, elevate.ErrElevationFailed):
 		// msg.err always carries elevate.Invoke's own explanation (auth
 		// failure, a guard rejection, or a spawn failure) -- surface it
@@ -348,6 +356,47 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 	return a.startNextClean()
 }
 
+// recordElevatedHistory persists the outcome of a completed elevate.Invoke
+// immediately, before any later non-sudo category starts cleaning.
+//
+// The elevated deletion is real and final the moment the helper returns, but
+// the run as a whole only reaches finishCleaning once every remaining
+// category has resolved -- and the quit key (see Update) cancels and exits
+// right away without going through finishCleaning. Without this, pressing q
+// during the non-sudo phase would take the audit trail of an already-completed
+// root deletion with it. Interactive `clean --execute` records its elevated
+// part the same way, for the same reason; the cost is that a mixed run shows
+// up as two history records.
+//
+// Only categories with a recorded deletion are written (the same rule
+// buildTUIRunRecord applies); every plan category is marked regardless so
+// finishCleaning does not revisit it.
+func (a *App) recordElevatedHistory(plan elevate.Plan) {
+	if !a.executeMode || plan.DryRun {
+		return
+	}
+	if a.elevatedRecorded == nil {
+		a.elevatedRecorded = make(map[cleaner.Category]struct{}, len(plan.Categories))
+	}
+	planned := make(map[cleaner.Category]struct{}, len(plan.Categories))
+	for _, pc := range plan.Categories {
+		planned[pc.Category] = struct{}{}
+		a.elevatedRecorded[pc.Category] = struct{}{}
+	}
+
+	var results []*cleaner.CleanResult
+	for _, r := range a.cleaningScr.Results() {
+		if _, ok := planned[r.Category]; ok {
+			results = append(results, r)
+		}
+	}
+	record := buildTUIRunRecord(results, a.cleanStartTime, time.Since(a.cleanStartTime).Milliseconds())
+	if len(record.Categories) == 0 {
+		return
+	}
+	_ = history.Append(record)
+}
+
 // finishCleaning is the single terminal response for a completed cleaning
 // run: it appends the run to history (execute mode only) and returns a nil
 // command. Every place that can make cleaningScr.Done flip true -- including
@@ -355,10 +404,25 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 // with no cleanCompleteMsg or elevateCompleteMsg ever arriving -- must route
 // through here, or that run goes unrecorded even though it may have deleted
 // real files as root.
+//
+// Categories already persisted by recordElevatedHistory are left out so a
+// mixed run is not double-counted; if nothing but those ran, there is no
+// second record to write at all.
 func (a App) finishCleaning() (tea.Model, tea.Cmd) {
-	if a.executeMode {
-		_ = history.Append(buildTUIRunRecord(a.cleaningScr.Results(), a.cleanStartTime, time.Since(a.cleanStartTime).Milliseconds()))
+	if !a.executeMode {
+		return a, nil
 	}
+	var results []*cleaner.CleanResult
+	for _, r := range a.cleaningScr.Results() {
+		if _, done := a.elevatedRecorded[r.Category]; done {
+			continue
+		}
+		results = append(results, r)
+	}
+	if len(results) == 0 && len(a.elevatedRecorded) > 0 {
+		return a, nil
+	}
+	_ = history.Append(buildTUIRunRecord(results, a.cleanStartTime, time.Since(a.cleanStartTime).Milliseconds()))
 	return a, nil
 }
 

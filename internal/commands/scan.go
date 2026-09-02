@@ -251,7 +251,9 @@ func writeTable(w io.Writer, result ScanResult, printAll bool) error {
 		fmt.Fprintf(w, "== %s ==\n", cat.Name)
 
 		if cat.Err != nil {
-			fmt.Fprintf(w, "  error: %s (category skipped; re-run 'tidymymac scan %s' to retry)\n\n", cat.ErrMsg, cat.Category)
+			// Error text can embed a file name (fs.PathError does), so it
+			// gets the same treatment as the paths below.
+			fmt.Fprintf(w, "  error: %s (category skipped; re-run 'tidymymac scan %s' to retry)\n\n", utils.SanitizeForTerminal(cat.ErrMsg), cat.Category)
 			continue
 		}
 
@@ -315,7 +317,11 @@ func writeEntryTable(w io.Writer, entries []cleaner.FileEntry, printAll bool, in
 	}
 
 	for _, e := range shown {
-		fmt.Fprintf(w, "%s%10s  %s\n", indent, utils.FormatBytes(e.Size), e.Path)
+		// Paths are untrusted: a file name (or a Docker image tag) can carry
+		// a newline or an escape sequence that would inject a fake row or
+		// rewrite what the terminal shows. Escape for display only -- the
+		// entry itself is never modified.
+		fmt.Fprintf(w, "%s%10s  %s\n", indent, utils.FormatBytes(e.Size), utils.SanitizeForTerminal(e.Path))
 	}
 
 	if omitted > 0 {

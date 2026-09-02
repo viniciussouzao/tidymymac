@@ -166,7 +166,7 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 	fmt.Fprintf(&b, "%s %s across %d files.\n", actionSummary, result.TotalSizeHuman, result.TotalFiles)
 	for _, category := range result.Categories {
 		if category.Err != nil {
-			fmt.Fprintf(&b, "- %s: error: %s\n", category.Name, category.ErrMsg)
+			fmt.Fprintf(&b, "- %s: error: %s\n", category.Name, utils.SanitizeForTerminal(category.ErrMsg))
 			continue
 		}
 
@@ -174,7 +174,7 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 		writePartialErrors(&b, category, "  ")
 		if detailed {
 			for _, file := range category.Files {
-				fmt.Fprintf(&b, "  %s\n", file.Path)
+				fmt.Fprintf(&b, "  %s\n", utils.SanitizeForTerminal(file.Path))
 			}
 		}
 	}
@@ -210,10 +210,11 @@ func writePartialErrors(b *strings.Builder, category commands.CleanCategoryResul
 	}
 	fmt.Fprintf(b, "%s%d item(s) could not be cleaned:\n", indent, category.PartialErrors)
 	for _, ie := range category.PartialErrorDetails {
-		if ie.Path != "" {
-			fmt.Fprintf(b, "%s  %s: %s\n", indent, ie.Path, ie.Reason)
+		path, reason := utils.SanitizeForTerminal(ie.Path), utils.SanitizeForTerminal(ie.Reason)
+		if path != "" {
+			fmt.Fprintf(b, "%s  %s: %s\n", indent, path, reason)
 		} else {
-			fmt.Fprintf(b, "%s  %s\n", indent, ie.Reason)
+			fmt.Fprintf(b, "%s  %s\n", indent, reason)
 		}
 	}
 	if category.PartialErrorsTruncated {

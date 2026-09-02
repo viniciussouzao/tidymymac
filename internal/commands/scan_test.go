@@ -679,3 +679,67 @@ func mustParseCSV(t *testing.T, buf *bytes.Buffer) [][]string {
 func containsString(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
+
+// TestWriteTable_EscapesControlCharactersInPaths: the table exists for human
+// review, so a file name must not be able to forge rows, hide text, or drive
+// the terminal. Ordinary Unicode names stay readable.
+func TestWriteTable_EscapesControlCharactersInPaths(t *testing.T) {
+	result := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Category:   cleaner.CategoryTemp,
+				Name:       "Temp Files",
+				TotalFiles: 3,
+				TotalSize:  300,
+				Files: []cleaner.FileEntry{
+					{Path: "/tmp/a\n   9.0 GB  /etc/forged-row", Size: 100},
+					{Path: "/tmp/\x1b[2Jcleared", Size: 90},
+					{Path: "/tmp/relatório – ção 📦", Size: 80},
+				},
+			},
+			{
+				Category:   cleaner.CategoryDocker,
+				Name:       "Docker",
+				TotalFiles: 1,
+				TotalSize:  50,
+				Files: []cleaner.FileEntry{
+					{Path: "docker://image/evil\rtag", Size: 50, ResourceKind: cleaner.DockerResourceKindImageDangling},
+				},
+			},
+			{
+				Category: cleaner.CategoryLogs,
+				Name:     "System Logs",
+				Err:      errors.New("x"),
+				ErrMsg:   "open /var/log/\x1b]0;pwned\x07: permission denied",
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := WriteOutput(&buf, result, "table", true, false); err != nil {
+		t.Fatalf("WriteOutput() error: %v", err)
+	}
+	out := buf.String()
+
+	for _, raw := range []string{"\x1b", "\r", "\x07"} {
+		if strings.Contains(out, raw) {
+			t.Fatalf("table output contains raw control character %q:\n%s", raw, out)
+		}
+	}
+	for _, want := range []string{
+		`/tmp/a\n   9.0 GB  /etc/forged-row`,
+		`/tmp/\e[2Jcleared`,
+		"/tmp/relatório – ção 📦",
+		`docker://image/evil\rtag`,
+		`open /var/log/\e]0;pwned\x07: permission denied`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("table output missing %q:\n%s", want, out)
+		}
+	}
+	// The forged row must stay inside the first entry's own line, right
+	// after its real size, rather than becoming a line of its own.
+	if !strings.Contains(out, `100 B  /tmp/a\n   9.0 GB  /etc/forged-row`) {
+		t.Fatalf("forged row escaped onto its own line:\n%s", out)
+	}
+}

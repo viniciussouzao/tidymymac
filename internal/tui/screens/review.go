@@ -671,7 +671,9 @@ func (m ReviewModel) View() string {
 
 // displayPath formats a path for display, with special handling for caches.
 func displayPath(category string, f fileSummary, showFull bool) string {
-	path := f.Path
+	// Display only: a file name or Docker tag carrying control characters
+	// must not be able to inject rows or escape sequences into the screen.
+	path := utils.SanitizeForTerminal(f.Path)
 	// Home substitution if possible
 	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home) {
 		path = "~" + path[len(home):]

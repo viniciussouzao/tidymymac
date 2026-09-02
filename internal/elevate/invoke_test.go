@@ -355,9 +355,17 @@ func TestInvokeAuthenticatesBeforeHelper(t *testing.T) {
 // and Wait then blocked on the inherited stdout pipe anyway.
 func TestInvokeCancellationReturnsUnknownOutcome(t *testing.T) {
 	stubSudo(t, map[string]string{"TIDYMYMAC_TEST_HELPER_MODE": "sleep"})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// The auth step precedes the helper and shares the same context. Start
+	// the clock only once the helper is actually running, so a slow test
+	// binary start-up (e.g. under -race) cannot expire the context during
+	// authentication and turn this into an ErrElevationFailed instead.
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	helperStub := sudoCommand
+	sudoCommand = func(ctx context.Context, exePath, planPath string) *exec.Cmd {
+		time.AfterFunc(200*time.Millisecond, cancel)
+		return helperStub(ctx, exePath, planPath)
+	}
 
 	start := time.Now()
 	_, err := Invoke(ctx, invokablePlan())

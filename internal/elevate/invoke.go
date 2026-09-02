@@ -78,6 +78,15 @@ var sudoCommand = func(ctx context.Context, exePath, planPath string) *exec.Cmd 
 	return exec.CommandContext(ctx, sudoPath, "-p", sudoPrompt, exePath, HelperCommandName, planFileFlag, planPath)
 }
 
+// sudoAuthCommand builds the argv for the authentication step that precedes
+// the helper: "sudo -v" prompts for (or refreshes) the user's credentials and
+// runs nothing. It is a separate seam from sudoCommand for the same reason
+// that one exists -- tests substitute a stub -- and stays this small for the
+// same reason too.
+var sudoAuthCommand = func(ctx context.Context) *exec.Cmd {
+	return exec.CommandContext(ctx, sudoPath, "-p", sudoPrompt, "-v")
+}
+
 // Invoke is the unprivileged side of the elevation. It writes plan to a
 // private temp file, re-executes this same binary under sudo pointed at that
 // file, and decodes the Result the helper prints on stdout.
@@ -89,23 +98,39 @@ var sudoCommand = func(ctx context.Context, exePath, planPath string) *exec.Cmd 
 // path chosen by an unprivileged caller is a symlink-attack surface, whereas a
 // pipe it inherited has no name to attack.
 //
+// Authentication is a separate step. Invoke first runs "sudo -v", which
+// prompts for the password and executes nothing; only once that succeeds does
+// it run the helper (which sudo then normally admits without a second prompt,
+// on the cached credential). The split exists because sudo's own failure code
+// is 1, and 1 is also what the helper -- or the Go runtime, or cobra -- can
+// exit with *after* deleting: an "exit 1, empty stdout" observation on a
+// single combined invocation cannot distinguish "the password was wrong" from
+// "the root clean ran and then failed to report". With authentication proven
+// separately, a failure there is provably pre-deletion, and every abnormal
+// exit of the helper itself can be treated as the unknown outcome it is.
+//
 // Error mapping. The parent cannot see what the root child did, so it reports
 // only what it can actually prove:
 //
 //	observation                                   | error
 //	----------------------------------------------|---------------------------
-//	could not even spawn / write the plan          | ErrElevationFailed
+//	could not even write the plan                  | ErrElevationFailed
+//	sudo -v failed / cancelled / unspawnable       | ErrElevationFailed
+//	helper could not be spawned                    | ErrElevationFailed
 //	exit HelperGuardRejectedExitCode (3)           | ErrElevationFailed
-//	exit 1, empty stdout, ctx not cancelled        | ErrElevationFailed (sudo auth)
-//	ctx cancelled during the run                   | ErrElevationOutcomeUnknown
-//	killed by a signal / any other non-zero exit   | ErrElevationOutcomeUnknown
+//	ctx cancelled during the helper run            | ErrElevationOutcomeUnknown
+//	any other non-zero exit, signal, or kill       | ErrElevationOutcomeUnknown
 //	exit 0 but empty or undecodable stdout         | ErrElevationOutcomeUnknown
 //	exit 0, decodable, schema mismatch             | plain error (helper ran)
 //	exit 0, decodable Result                       | nil
 //
 // Only ErrElevationFailed licenses the caller to say "nothing was deleted".
 // ErrElevationOutcomeUnknown means the helper was past its guards, so a
-// partial clean is possible and the caller must say so.
+// partial clean is possible and the caller must say so. Note that exit 1 is
+// deliberately NOT special-cased for the helper: if the cached credential has
+// expired between the two steps sudo prompts again, and a failure at that
+// second prompt is reported conservatively as unknown rather than risking the
+// reverse mistake.
 //
 // A nil error means the helper ran to completion; the caller must still
 // inspect Result.HasErrors for per-category outcomes.
@@ -134,6 +159,10 @@ func Invoke(ctx context.Context, plan Plan) (Result, error) {
 	}
 	defer os.RemoveAll(dir)
 
+	if err := authenticate(ctx); err != nil {
+		return Result{}, err
+	}
+
 	var stdout bytes.Buffer
 	cmd := sudoCommand(ctx, exePath, planPath)
 	cmd.Stdin = os.Stdin
@@ -160,16 +189,20 @@ func Invoke(ctx context.Context, plan Plan) (Result, error) {
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		switch {
-		case errors.As(runErr, &exitErr) && exitErr.ExitCode() == HelperGuardRejectedExitCode:
+		case !errors.As(runErr, &exitErr):
+			// The process never started (sudo missing, exec failure): nothing
+			// could have run.
+			return Result{}, fmt.Errorf("%w: %v", ErrElevationFailed, runErr)
+		case exitErr.ExitCode() == HelperGuardRejectedExitCode:
 			// The helper's dedicated "guard rejected, nothing deleted" code.
 			return Result{}, fmt.Errorf("%w: %v", ErrElevationFailed, runErr)
-		case errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 && stdout.Len() == 0:
-			// sudo's own failure code: authentication failed or was cancelled,
-			// so our binary was never executed at all.
-			return Result{}, fmt.Errorf("%w: %v", ErrElevationFailed, runErr)
 		default:
-			// A signal, an unexpected code, or a WaitDelay kill: the helper may
-			// have been past its guards and already deleting.
+			// A signal, a WaitDelay kill, or any other exit code -- including
+			// 1, which is both sudo's own failure code and what cobra or the
+			// Go runtime exit with on an error after the clean. Authentication
+			// was proven separately above, so none of these can be assumed
+			// pre-deletion: the helper may have been past its guards and
+			// already deleting.
 			return Result{}, fmt.Errorf("%w: %v", ErrElevationOutcomeUnknown, runErr)
 		}
 	}
@@ -190,6 +223,30 @@ func Invoke(ctx context.Context, plan Plan) (Result, error) {
 	}
 
 	return result, nil
+}
+
+// authenticate runs "sudo -v" with the branded prompt so the user's credential
+// is validated (and cached by sudo) before the helper is launched. Nothing is
+// executed as root here, so every failure -- a wrong password, a cancelled
+// prompt, a policy refusal, a cancelled context, an unspawnable sudo -- is
+// provably pre-deletion and maps to ErrElevationFailed.
+//
+// stdin and stderr are inherited so the prompt reaches the terminal; stdout
+// is discarded because "sudo -v" has nothing to say on it and, unlike the
+// helper's, is not a result channel.
+func authenticate(ctx context.Context) error {
+	cmd := sudoAuthCommand(ctx)
+	cmd.Stdin = os.Stdin
+	cmd.Stderr = os.Stderr
+	cmd.Stdout = nil
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("%w: cancelled while authenticating: %v", ErrElevationFailed, ctx.Err())
+		}
+		return fmt.Errorf("%w: sudo authentication failed: %v", ErrElevationFailed, err)
+	}
+	return nil
 }
 
 // selfPath resolves an absolute, symlink-free path to the running binary. The

@@ -653,15 +653,17 @@ The helper's contract with `Invoke`: if it actually ran, it prints a `Result` an
 
 ### Honest outcomes
 
+Authentication is a **separate `sudo` invocation**. `Invoke` first runs `sudo -v` with the branded prompt, which validates (and caches) the credential and executes nothing; only once that succeeds does it launch the helper, which `sudo` then normally admits on the cached credential without a second prompt. The split exists because `sudo`'s own failure code is `1`, and `1` is also what cobra or the Go runtime exit with on an error *after* the clean — so on a single combined invocation, "exit 1, empty stdout" cannot distinguish a wrong password from a root clean that ran and then failed to report. With authentication proven separately, a failure there is provably pre-deletion, and every abnormal exit of the helper itself is treated as the unknown outcome it is. (If the cached credential has expired between the two steps `sudo` simply prompts again; a failure at that second prompt is reported conservatively as unknown.)
+
 `Invoke` therefore reports only what it can prove, through two distinct sentinel errors:
 
 | Observation | Error | Caller may say |
 |---|---|---|
-| could not spawn the child / write the plan | `ErrElevationFailed` | nothing was deleted |
+| could not write the plan / spawn a child | `ErrElevationFailed` | nothing was deleted |
+| `sudo -v` failed, was cancelled, or refused | `ErrElevationFailed` | nothing was deleted |
 | exit 3 — guard rejected the plan | `ErrElevationFailed` | nothing was deleted |
-| exit 1 with empty stdout — sudo auth failed/cancelled | `ErrElevationFailed` | nothing was deleted |
-| context cancelled during the run | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
-| killed by a signal, or any other abnormal exit | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
+| context cancelled during the helper run | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
+| any other non-zero exit (including 1), signal, or kill | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
 | exit 0 but empty or undecodable stdout | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
 | exit 0, decodable `Result` | `nil` | inspect `Result.HasErrors` |
 

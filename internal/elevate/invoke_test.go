@@ -25,7 +25,24 @@ import (
 //	TIDYMYMAC_TEST_HELPER_MODE     result | invalid | silent | fail
 //	TIDYMYMAC_TEST_HELPER_ARGV     file to record os.Args into
 //	TIDYMYMAC_TEST_HELPER_PLAN     file to record the plan file's mode/dir mode
+//
+// The same stub also stands in for the "sudo -v" authentication step, which
+// Invoke runs before the helper:
+//
+//	TIDYMYMAC_TEST_AUTH=1          marks the process as the auth stub
+//	TIDYMYMAC_TEST_AUTH_MODE       ok (default) | fail
+//	TIDYMYMAC_TEST_AUTH_MARK       file to create so tests can prove auth ran
 func TestElevateHelperProcess(t *testing.T) {
+	if os.Getenv("TIDYMYMAC_TEST_AUTH") == "1" {
+		if mark := os.Getenv("TIDYMYMAC_TEST_AUTH_MARK"); mark != "" {
+			_ = os.WriteFile(mark, []byte("authenticated\n"), 0o600)
+		}
+		if os.Getenv("TIDYMYMAC_TEST_AUTH_MODE") == "fail" {
+			// Wrong password / cancelled prompt: sudo's own exit code.
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("TIDYMYMAC_TEST_HELPER") != "1" {
 		t.Skip("not the helper process")
 	}
@@ -72,7 +89,10 @@ func TestElevateHelperProcess(t *testing.T) {
 		// was deleted".
 		os.Stdout.WriteString(`{"version":1,"clean":{"total_files":2,`)
 	case "fail":
-		// Authentication failed or cancelled: non-zero exit, nothing on stdout.
+		// Exit 1 with nothing on stdout. Before authentication was split out
+		// this was read as "sudo rejected the password"; now that the helper
+		// only runs after a proven auth, it is what cobra or the Go runtime
+		// exit with on an error AFTER the clean, and must be unknown.
 		os.Exit(1)
 	case "guard-rejected":
 		// The helper's dedicated pre-deletion guard channel.
@@ -104,14 +124,25 @@ func TestElevateHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-// stubSudo swaps the sudoCommand seam for the helper process above, restoring
-// it afterwards. Tests using it must not run in parallel: the seam is package
-// level precisely so it stays a single, obvious, minimal hook.
+// stubSudo swaps the sudoCommand and sudoAuthCommand seams for the stub
+// process above, restoring them afterwards. Tests using it must not run in
+// parallel: the seams are package level precisely so they stay a single,
+// obvious, minimal hook. Auth-stub behaviour is driven by the same env map
+// (TIDYMYMAC_TEST_AUTH_* keys); by default it succeeds.
 func stubSudo(t *testing.T, env map[string]string) {
 	t.Helper()
 
-	original := sudoCommand
-	t.Cleanup(func() { sudoCommand = original })
+	originalSudo, originalAuth := sudoCommand, sudoAuthCommand
+	t.Cleanup(func() { sudoCommand, sudoAuthCommand = originalSudo, originalAuth })
+
+	sudoAuthCommand = func(ctx context.Context) *exec.Cmd {
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestElevateHelperProcess", "--", "-v")
+		cmd.Env = append(os.Environ(), "TIDYMYMAC_TEST_AUTH=1")
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
+		return cmd
+	}
 
 	sudoCommand = func(ctx context.Context, exePath, planPath string) *exec.Cmd {
 		cmd := exec.CommandContext(ctx, os.Args[0],
@@ -205,9 +236,9 @@ func TestInvokeErrorMapping(t *testing.T) {
 		wantErr     string
 	}{
 		{
-			name:       "sudo authentication failure means our binary never ran",
-			mode:       "fail",
-			wantFailed: true,
+			name:        "exit 1 with empty stdout from the helper is an unknown outcome, not an auth failure",
+			mode:        "fail",
+			wantUnknown: true,
 		},
 		{
 			name:       "the guard exit code means a plan was rejected before any deletion",
@@ -267,6 +298,55 @@ func TestInvokeErrorMapping(t *testing.T) {
 				t.Fatalf("error = %q, must not claim nothing was deleted when the helper was past its guards", err.Error())
 			}
 		})
+	}
+}
+
+// TestInvokeAuthFailureMeansNothingRan pins the reason authentication is a
+// separate sudo invocation: a failure there is provably pre-deletion, so it is
+// the one sudo-side failure that may be reported as "nothing was deleted" --
+// and the helper must not have been spawned at all.
+func TestInvokeAuthFailureMeansNothingRan(t *testing.T) {
+	dir := t.TempDir()
+	mark := filepath.Join(dir, "auth-ran")
+	argvFile := filepath.Join(dir, "argv")
+
+	stubSudo(t, map[string]string{
+		"TIDYMYMAC_TEST_AUTH_MODE":   "fail",
+		"TIDYMYMAC_TEST_AUTH_MARK":   mark,
+		"TIDYMYMAC_TEST_HELPER_ARGV": argvFile,
+	})
+
+	_, err := Invoke(context.Background(), invokablePlan())
+	if !errors.Is(err, ErrElevationFailed) {
+		t.Fatalf("Invoke() error = %v, want ErrElevationFailed", err)
+	}
+	if errors.Is(err, ErrElevationOutcomeUnknown) {
+		t.Fatalf("an authentication failure must not be reported as an unknown outcome: %v", err)
+	}
+	if !strings.Contains(err.Error(), "authentication") {
+		t.Fatalf("error = %q, want it to name authentication as the cause", err.Error())
+	}
+	if _, statErr := os.Stat(mark); statErr != nil {
+		t.Fatalf("auth step should have run (mark file missing): %v", statErr)
+	}
+	if _, statErr := os.Stat(argvFile); !os.IsNotExist(statErr) {
+		t.Fatalf("the helper must never be spawned after a failed authentication (argv file stat err = %v)", statErr)
+	}
+}
+
+// TestInvokeAuthenticatesBeforeHelper proves the ordering: the helper only
+// runs once the auth step has succeeded.
+func TestInvokeAuthenticatesBeforeHelper(t *testing.T) {
+	dir := t.TempDir()
+	mark := filepath.Join(dir, "auth-ran")
+
+	stubSudo(t, map[string]string{"TIDYMYMAC_TEST_AUTH_MARK": mark})
+
+	if _, err := Invoke(context.Background(), invokablePlan()); err != nil {
+		t.Fatalf("Invoke() error: %v", err)
+	}
+	if _, err := os.Stat(mark); err != nil {
+		t.Fatalf("auth step should have run before the helper: %v", err)
 	}
 }
 
@@ -355,6 +435,24 @@ func TestSudoCommandArgv(t *testing.T) {
 	for _, a := range cmd.Args {
 		if a == "-S" || a == "--stdin" {
 			t.Fatalf("argv must never ask sudo to read the password from stdin: %v", cmd.Args)
+		}
+	}
+}
+
+// TestSudoAuthCommandArgv pins the real authentication argv: "-v" validates
+// the credential without running anything, with the same branded prompt.
+func TestSudoAuthCommandArgv(t *testing.T) {
+	cmd := sudoAuthCommand(context.Background())
+
+	want := []string{sudoPath, "-p", sudoPrompt, "-v"}
+	if strings.Join(cmd.Args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("argv = %v, want %v", cmd.Args, want)
+	}
+	for _, a := range cmd.Args {
+		if a == "-S" || a == "--stdin" || a == "-n" {
+			// -n would make an expired credential cache a hard failure the
+			// parent could not tell from a crash; -S must never be used.
+			t.Fatalf("auth argv must not contain %q: %v", a, cmd.Args)
 		}
 	}
 }

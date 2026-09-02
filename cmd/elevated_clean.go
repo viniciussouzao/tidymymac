@@ -34,9 +34,10 @@ var elevatedCleanPlanFile string
 // rejected the plan and nothing was deleted" channel of the IPC contract:
 // RunHelper's error return is, by its own contract, only ever a pre-deletion
 // guard rejection, whereas a generic non-zero exit is indistinguishable from
-// the helper crashing or being killed halfway through deleting. Collapsing
-// both into "exit 1" is what would let the parent tell the user "nothing was
-// deleted" after a partial root clean.
+// the helper crashing or being killed halfway through deleting. The parent
+// maps every non-zero exit other than this code -- including the exit 1 cobra
+// produces if the Encode below fails after the clean -- to "outcome unknown",
+// never to "nothing was deleted".
 //
 // The root command's PersistentPreRunE still runs config.Load() first. That is
 // intentional: as root it succeeds only when SUDO_USER resolves, so an

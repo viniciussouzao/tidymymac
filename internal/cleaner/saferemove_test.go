@@ -753,55 +753,100 @@ func TestFileEntryIdentityNeverCrossesATrustBoundary(t *testing.T) {
 	}
 }
 
-// TestScanRootsAreResolvedThroughSymlinks covers a pre-existing bug that
-// predates the confinement work and silently emptied the Temp cleaner's most
-// important domain.
-//
-// macOS ships /tmp as a symlink to private/tmp, and filepath.WalkDir only
-// Lstats its root: handed a symlink it reports that symlink as the single
-// entry and never descends. So "/tmp" as a scan root produced exactly one
-// candidate -- /tmp itself -- and nothing underneath it was ever scanned,
-// reviewed or cleaned, despite the docs promising the elevated path covers
-// /tmp explicitly.
-func TestScanRootsAreResolvedThroughSymlinks(t *testing.T) {
-	base := t.TempDir()
-	realDir := filepath.Join(base, "real")
-	buried := mustWrite(t, filepath.Join(realDir, "nested", "a.log"), "content")
-
-	link := filepath.Join(base, "via-symlink")
-	if err := os.Symlink(realDir, link); err != nil {
-		t.Fatalf("symlink: %v", err)
+// TestScanRootResolutionDoesNotFollowArbitrarySymlinks is the regression for
+// the scan-root confused deputy: a user-writable cleaner root must not be able
+// to redefine its domain. If this link were followed, a Logs/Temp/Updates root
+// could point at /etc and the privileged helper's two fences would both agree
+// that /etc belonged to that cleaner.
+func TestScanRootResolutionDoesNotFollowArbitrarySymlinks(t *testing.T) {
+	tests := []struct {
+		name      string
+		rel       string
+		buildRoot func(home string) []string
+		cleaner   func(home, root string) Cleaner
+	}{
+		{
+			name:      "Logs",
+			rel:       filepath.Join("Library", "Logs"),
+			buildRoot: logsScanRoots,
+			cleaner: func(home, root string) Cleaner {
+				return &LogsCleaner{homeDir: home, roots: []string{root}}
+			},
+		},
+		{
+			name: "Temp",
+			rel:  filepath.Join("Library", "Caches", "TemporaryItems"),
+			buildRoot: func(home string) []string {
+				return tempScanRoots(home, "", 0)
+			},
+			cleaner: func(home, root string) Cleaner {
+				return &TempCleaner{homeDir: home, roots: []string{root}}
+			},
+		},
+		{
+			name:      "Updates",
+			rel:       filepath.Join("Library", "Updates"),
+			buildRoot: updatesScanRoots,
+			cleaner: func(home, root string) Cleaner {
+				return &UpdatesCleaner{homeDir: home, roots: []string{root}}
+			},
+		},
 	}
 
-	// Walking the symlink directly is the broken behavior being guarded
-	// against: one non-directory entry, the link, and no descent.
-	var walked []string
-	_ = filepath.WalkDir(link, func(p string, d fs.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			walked = append(walked, p)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base := t.TempDir()
+			home := filepath.Join(base, "home")
+			realDir := filepath.Join(base, "outside")
+			buried := mustWrite(t, filepath.Join(realDir, "nested", "a.log"), "content")
+			link := filepath.Join(home, tt.rel)
+			if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+				t.Fatalf("mkdir link parent: %v", err)
+			}
+			if err := os.Symlink(realDir, link); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+
+			if got := resolveScanRoot(link); got != link {
+				t.Fatalf("resolveScanRoot(%q) = %q, want the arbitrary symlink left untouched", link, got)
+			}
+
+			var foundLiteral, foundTarget bool
+			for _, root := range tt.buildRoot(home) {
+				foundLiteral = foundLiteral || root == link
+				foundTarget = foundTarget || root == realDir
+			}
+			if !foundLiteral || foundTarget {
+				t.Fatalf("roots must retain %q and never adopt target %q", link, realDir)
+			}
+
+			result, err := tt.cleaner(home, link).Scan(t.Context(), nil)
+			if err != nil {
+				t.Fatalf("Scan() error: %v", err)
+			}
+			if len(result.Entries) != 0 {
+				t.Fatalf("Scan through a symlinked root = %+v, want no entries", result.Entries)
+			}
+			mustExist(t, buried)
+		})
+	}
+}
+
+// TestTrustedSystemScanRootsStillResolve pins the narrow exception. macOS
+// ships /tmp as a symlink and WalkDir will not descend through a symlink used
+// as its root, so this one system-owned alias must remain canonicalized.
+func TestTrustedSystemScanRootsStillResolve(t *testing.T) {
+	for _, root := range []string{"/tmp", "/var/tmp", "/var/log"} {
+		want, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			// The project is macOS-only, but keeping the helper harmless on a
+			// host missing one of these roots makes the unit test portable.
+			want = filepath.Clean(root)
 		}
-		return nil
-	})
-	if len(walked) != 1 || walked[0] != link {
-		t.Fatalf("WalkDir(symlink) = %v; this test's premise no longer holds", walked)
+		if got := resolveScanRoot(root); got != want {
+			t.Errorf("resolveScanRoot(%q) = %q, want trusted alias %q", root, got, want)
+		}
 	}
-
-	c := &LogsCleaner{homeDir: base, roots: resolveScanRoots([]string{link})}
-	result, err := c.Scan(t.Context(), nil)
-	if err != nil {
-		t.Fatalf("Scan() error: %v", err)
-	}
-
-	want := filepath.Join(resolveScanRoot(realDir), "nested", "a.log")
-	if len(result.Entries) != 1 || result.Entries[0].Path != want {
-		t.Fatalf("Scan through a symlinked root = %+v, want just %s", result.Entries, want)
-	}
-
-	// And the file is reachable for deletion under its resolved spelling.
-	if err := newRootedRemover(c.roots...).Remove(result.Entries[0]); err != nil {
-		t.Fatalf("Remove = %v, want nil", err)
-	}
-	mustNotExist(t, buried)
 }
 
 func TestResolveScanRootsDedupesCollapsedSpellings(t *testing.T) {

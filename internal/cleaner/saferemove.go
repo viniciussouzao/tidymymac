@@ -105,7 +105,9 @@ type rootedRemover struct {
 }
 
 // resolveScanRoot returns the path a scan root should actually be addressed
-// by, following symlinks in the root itself.
+// by. It follows symlinks only for the fixed, system-owned macOS roots below;
+// an arbitrary root (in particular one under the user's home) is never allowed
+// to redefine a cleaner's deletion domain by pointing somewhere else.
 //
 // This is not cosmetic. macOS ships /tmp as a symlink to private/tmp, and
 // filepath.WalkDir only Lstats its root: handed "/tmp" it sees a symlink, not
@@ -115,26 +117,44 @@ type rootedRemover struct {
 // because only the *final* component is Lstat'd, and "tmp" there is a real
 // directory.)
 //
-// Resolving also keeps a root and the entries beneath it spelled the same way,
-// which is what locate's prefix match depends on. Protected paths are
-// unaffected: internal/config stores every protected entry under its literal
-// spelling, its firmlink alias, and its EvalSymlinks resolution.
+// Following every root was unsafe: a user-writable ~/Library/Logs symlink to
+// /etc made both the ordinary and privileged scans call /etc the Logs domain;
+// the plan/fresh-scan intersection and rootedRemover then correctly agreed on
+// /etc/hosts and authorized its removal as root. The two fences can only be as
+// safe as the domain definition they share.
+//
+// /tmp, /var/tmp and /var/log are different: their aliases are part of the
+// macOS filesystem layout and their parent components are system-owned. They
+// are the only roots for which following the platform alias is both necessary
+// and trusted. Resolving them also keeps a root and the entries beneath it
+// spelled the same way, which is what locate's prefix match depends on.
+// Protected paths are unaffected: internal/config stores every protected
+// entry under its literal spelling, its firmlink alias, and its EvalSymlinks
+// resolution.
 //
 // A root that cannot be resolved -- most often because it does not exist on
 // this machine -- is returned unchanged and simply fails later.
 func resolveScanRoot(path string) string {
-	resolved, err := filepath.EvalSymlinks(path)
+	cleaned := filepath.Clean(path)
+	switch cleaned {
+	case "/tmp", "/var/tmp", "/var/log":
+	default:
+		return cleaned
+	}
+
+	resolved, err := filepath.EvalSymlinks(cleaned)
 	if err != nil {
-		return path
+		return cleaned
 	}
 	return resolved
 }
 
-// resolveScanRoots resolves each root and drops duplicates, preserving order.
-// Deduping matters after resolution because distinct spellings can collapse
+// resolveScanRoots canonicalizes trusted system aliases and drops duplicates,
+// preserving order. Deduping matters because distinct spellings can collapse
 // onto one another -- "/tmp" and a TMPDIR of "/private/tmp" being the case
 // that actually occurs -- and walking the same tree twice would double-count
-// every file in it.
+// every file in it. Arbitrary symlink roots are deliberately left untouched;
+// filepath.WalkDir Lstats such a root and does not descend through it.
 func resolveScanRoots(paths []string) []string {
 	resolved := make([]string, 0, len(paths))
 	seen := make(map[string]struct{}, len(paths))

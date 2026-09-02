@@ -20,6 +20,25 @@ type FileEntry struct {
 	// Protected is set exclusively by internal/config's tagging layer; no
 	// Cleaner.Scan implementation should ever set it.
 	Protected bool
+
+	// Dev and Ino identify the filesystem object the scan actually measured,
+	// so Clean can refuse to delete a *different* object that has since taken
+	// this path. Confining removal to the scan root (see saferemove.go) stops
+	// a swapped path component from escaping the cleaner's domain; this stops
+	// it from redirecting onto another file *inside* the domain -- one the
+	// user deselected, or one config.StripProtected removed from the list,
+	// since protection is applied to entries and not to roots.
+	//
+	// json:"-" is deliberate and load-bearing. The identity is a local fact
+	// established by whichever process ran the scan. It must never arrive over
+	// the elevation IPC or out of a --from-file scan file, where it would be
+	// attacker-supplied; the elevated helper's intersection returns the fresh
+	// privileged scan's entries, so the value Clean checks is always one this
+	// process observed itself. Zero means "unknown", and the check is skipped.
+	//
+	// Only the cleaners that can run elevated populate these.
+	Dev uint64 `json:"-"`
+	Ino uint64 `json:"-"`
 }
 
 // ScanProgress reports the scanning progress back to the TUI

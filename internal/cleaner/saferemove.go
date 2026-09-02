@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 var (
@@ -23,6 +24,21 @@ var (
 	// directory, a symlink, a device node. Under elevation this is the shape a
 	// swap attempt leaves behind, so it is refused rather than removed.
 	ErrNotRegularFile = errors.New("path is no longer a regular file")
+
+	// ErrRootUnavailable is returned when one of the cleaner's scan roots
+	// cannot be opened at all -- renamed, unmounted or removed between the
+	// scan and the deletion.
+	//
+	// It deliberately does not wrap the underlying error. The cleaners treat a
+	// not-exist result as "already gone, count it as deleted", which is right
+	// for a single missing file and badly wrong for a missing root: every
+	// entry beneath it would be reported as reclaimed space that was never
+	// reclaimed.
+	ErrRootUnavailable = errors.New("scan root is no longer available")
+
+	// ErrIdentityChanged is returned when the path still resolves to a regular
+	// file, but not the same one the scan measured.
+	ErrIdentityChanged = errors.New("path no longer refers to the file that was scanned")
 )
 
 // rootedRemover deletes files without ever re-resolving an attacker-controlled
@@ -53,14 +69,21 @@ var (
 //     between the Lstat and the Remove is harmless on its own -- unlink(2)
 //     removes the link, never its target -- but refusing the transition keeps
 //     Clean honest about what it deleted.
+//   - The leaf must still be the same object the scan measured, compared by
+//     device and inode. Confinement alone leaves a real gap: a symlink whose
+//     target stays *inside* the scan root is followed, and "inside the
+//     cleaner's domain" is a strictly larger set than "approved by the user".
+//     config.StripProtected and the review screen's deselection both filter
+//     the entry *list*, not the roots, so an in-root redirect can land on a
+//     protected path or on a file the user explicitly unchecked -- and /tmp
+//     and /var/tmp are world-writable and shared, so the attacker need not
+//     even be the victim. The identity check closes that, and closes the
+//     window between the Lstat and the Remove along with it.
 //
-// What deliberately remains: a symlink whose target stays *inside* the same
-// scan root is followed. That cannot cross the privilege boundary, because
-// everything under a scan root is by definition what this cleaner was already
-// authorized to delete; it can at worst redirect one in-domain deletion to
-// another in-domain file. Closing even that would need a device/inode identity
-// captured at scan time and carried to Clean, which buys no additional
-// containment.
+// The identity is only as good as its source. It is populated by the cleaner's
+// own Scan and never crosses a trust boundary (see FileEntry.Dev/Ino), so an
+// entry that arrives without one -- from a --from-file scan file, say -- is
+// still confined to the roots but cannot be identity-checked.
 //
 // A rootedRemover is not safe for concurrent use; each Clean call builds its
 // own.
@@ -112,12 +135,14 @@ func newRootedRemover(roots ...string) *rootedRemover {
 	}
 }
 
-// Remove deletes the regular file at path, which must be strictly inside one
-// of the remover's roots. A root itself is never removable.
-func (r *rootedRemover) Remove(path string) error {
-	abs := filepath.Clean(path)
+// Remove deletes the regular file the entry describes. Its path must be
+// strictly inside one of the remover's roots, and -- when the entry carries an
+// identity -- it must still be the object the scan measured. A root itself is
+// never removable.
+func (r *rootedRemover) Remove(entry FileEntry) error {
+	abs := filepath.Clean(entry.Path)
 	if !filepath.IsAbs(abs) {
-		return fmt.Errorf("%w: %s", ErrOutsideApprovedRoots, path)
+		return fmt.Errorf("%w: %s", ErrOutsideApprovedRoots, entry.Path)
 	}
 
 	rootPath, rel, ok := r.locate(abs)
@@ -138,6 +163,12 @@ func (r *rootedRemover) Remove(path string) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%w: %s is %s", ErrNotRegularFile, abs, describeMode(info.Mode()))
+	}
+	if entry.Ino != 0 {
+		dev, ino, ok := fileIdentity(info)
+		if !ok || dev != entry.Dev || ino != entry.Ino {
+			return fmt.Errorf("%w: %s", ErrIdentityChanged, abs)
+		}
 	}
 
 	return absolutize(parent.Remove(leaf), abs)
@@ -174,11 +205,16 @@ func (r *rootedRemover) parentFor(rootPath, absDir, relDir string) (*os.Root, er
 
 	root, err := r.rootFor(rootPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %s: %v", ErrRootUnavailable, rootPath, err)
 	}
 
 	// relDir is "." when the file sits directly in the scan root; os.Root
 	// accepts that and hands back an independent Root the cache can own.
+	//
+	// A failure here, unlike a failure to open the root, is left as the raw
+	// *fs.PathError: a parent directory that vanished between scan and clean
+	// is the ordinary "already gone" case, and an escape attempt is not a
+	// not-exist error to begin with.
 	parent, err := root.OpenRoot(relDir)
 	if err != nil {
 		return nil, err
@@ -194,6 +230,9 @@ func (r *rootedRemover) parentFor(rootPath, absDir, relDir string) (*os.Root, er
 // fails to open -- most often because it does not exist on this machine --
 // fails the same way for every later entry beneath it, so the error is cached
 // rather than retried per file.
+//
+// The cached error is shared by every caller, so nothing downstream may mutate
+// it. That is why absolutize returns a copy.
 func (r *rootedRemover) rootFor(rootPath string) (*os.Root, error) {
 	if root, ok := r.openRoots[rootPath]; ok {
 		return root, nil
@@ -221,18 +260,35 @@ func (r *rootedRemover) closeParent() {
 	}
 }
 
-// absolutize rewrites the relative name in a *fs.PathError produced by an
-// os.Root method back to the absolute path the caller asked about. Without it
-// every reported failure -- including the per-item details the CLI and TUI now
-// print -- would name a leaf like "a.log" with no indication of where it lived.
-// The error is freshly constructed by the os.Root call above, so mutating it
-// cannot be observed by anyone else.
+// absolutize restates a *fs.PathError produced by an os.Root method in terms
+// of the absolute path the caller asked about. Without it every reported
+// failure -- including the per-item details the CLI and TUI print -- would
+// name a leaf like "a.log" with no indication of where it lived.
+//
+// It returns a copy and never mutates in place. Errors here can be shared:
+// rootFor caches one per root and hands the same pointer to every entry
+// beneath it, so rewriting the original made all of those report whichever
+// path happened to fail last.
 func absolutize(err error, abs string) error {
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
-		pathErr.Path = abs
+	pathErr, ok := err.(*fs.PathError)
+	if !ok {
+		return err
 	}
-	return err
+	return &fs.PathError{Op: pathErr.Op, Path: abs, Err: pathErr.Err}
+}
+
+// fileIdentity extracts the (device, inode) pair behind a FileInfo. ok is
+// false on a platform or filesystem that does not expose one, in which case
+// the caller must fall back to the confinement guarantees alone rather than
+// silently treating "no identity" as "identity matched".
+func fileIdentity(info fs.FileInfo) (dev, ino uint64, ok bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat == nil {
+		return 0, 0, false
+	}
+	// Dev is signed on darwin; Ino is already uint64 on every supported
+	// platform.
+	return uint64(stat.Dev), stat.Ino, true
 }
 
 func describeMode(mode fs.FileMode) string {

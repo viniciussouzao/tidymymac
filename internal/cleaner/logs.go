@@ -89,11 +89,21 @@ func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 				return nil
 			}
 
+			// Only regular files -- see the equivalent note in temp.go.
+			// /var/log and ~/Library/Logs routinely hold symlinks and sockets.
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			dev, ino, _ := fileIdentity(info)
+
 			entry := FileEntry{
 				Path:     path,
 				Size:     info.Size(),
 				ModTime:  info.ModTime(),
 				Category: CategoryLogs,
+				Dev:      dev,
+				Ino:      ino,
 			}
 			result.Entries = append(result.Entries, entry)
 			result.TotalSize += info.Size()
@@ -148,7 +158,7 @@ func (c *LogsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		}
 
 		if !dryRun {
-			if err := remover.Remove(entry.Path); err != nil {
+			if err := remover.Remove(entry); err != nil {
 				if !os.IsNotExist(err) {
 					result.Errors = append(result.Errors, err)
 					continue

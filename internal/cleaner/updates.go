@@ -100,6 +100,13 @@ func (c *UpdatesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) 
 				return nil
 			}
 
+			// Only regular files -- see the equivalent note in temp.go.
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			dev, ino, _ := fileIdentity(info)
+
 			// p, not path: path is the walk ROOT of the enclosing loop.
 			// Recording the root here made every entry claim to be the
 			// directory itself, which is both wrong reporting and, under
@@ -111,6 +118,8 @@ func (c *UpdatesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) 
 				ModTime:  info.ModTime(),
 				IsDir:    d.IsDir(),
 				Category: CategoryUpdates,
+				Dev:      dev,
+				Ino:      ino,
 			})
 
 			result.TotalSize += info.Size()
@@ -144,7 +153,7 @@ func (c *UpdatesCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun 
 			continue
 		}
 		if !dryRun {
-			if err := remover.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := remover.Remove(entry); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}

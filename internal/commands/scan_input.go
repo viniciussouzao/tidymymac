@@ -161,6 +161,10 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 			continue
 		}
 
+		// Dev/Ino are deliberately not carried over. A scan file is
+		// untrusted input, and an identity taken from it would let a crafted
+		// file authorize a swap rather than let Clean detect one. Entries from
+		// here keep the scan-root confinement and skip the identity check.
 		revalidated = append(revalidated, cleaner.FileEntry{
 			Path:         entry.Path,
 			Size:         info.Size(),

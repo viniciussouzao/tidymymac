@@ -39,11 +39,9 @@ func refuseRootDeletion(euid int) error {
 		return nil
 	}
 	return fmt.Errorf(
-		"%w.\n\n"+
-			"Run tidymymac normally, without sudo. It asks for your password only\n"+
-			"for the categories that genuinely need root, and elevates just the\n"+
-			"deletion of what you already approved -- everything else keeps\n"+
-			"running as you.",
+		"%w: run tidymymac normally, without sudo -- it asks for your password only "+
+			"for the categories that genuinely need root, and elevates just the deletion "+
+			"of what you already approved, leaving everything else running as you",
 		ErrRunningAsRoot,
 	)
 }

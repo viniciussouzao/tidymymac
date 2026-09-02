@@ -1,9 +1,13 @@
 package cleaner
 
 import (
+	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -42,7 +46,7 @@ func TestRootedRemoverRemovesOrdinaryFiles(t *testing.T) {
 	defer r.Close()
 
 	for _, path := range []string{direct, nested} {
-		if err := r.Remove(path); err != nil {
+		if err := r.Remove(FileEntry{Path: path}); err != nil {
 			t.Fatalf("Remove(%s) = %v, want nil", path, err)
 		}
 		mustNotExist(t, path)
@@ -89,7 +93,7 @@ func TestRootedRemoverRefusesEscapeViaSwappedParent(t *testing.T) {
 			r := newRootedRemover(root)
 			defer r.Close()
 
-			if err := r.Remove(candidate); err == nil {
+			if err := r.Remove(FileEntry{Path: candidate}); err == nil {
 				t.Fatal("Remove followed a swapped parent out of the root")
 			}
 			mustExist(t, target)
@@ -117,7 +121,7 @@ func TestRootedRemoverRefusesFinalComponentSymlink(t *testing.T) {
 	r := newRootedRemover(root)
 	defer r.Close()
 
-	err := r.Remove(link)
+	err := r.Remove(FileEntry{Path: link})
 	if !errors.Is(err, ErrNotRegularFile) {
 		t.Fatalf("Remove(symlink) = %v, want ErrNotRegularFile", err)
 	}
@@ -137,7 +141,7 @@ func TestRootedRemoverRefusesTypeTransitions(t *testing.T) {
 	r := newRootedRemover(root)
 	defer r.Close()
 
-	if err := r.Remove(nowDir); !errors.Is(err, ErrNotRegularFile) {
+	if err := r.Remove(FileEntry{Path: nowDir}); !errors.Is(err, ErrNotRegularFile) {
 		t.Fatalf("Remove(directory) = %v, want ErrNotRegularFile", err)
 	}
 	mustExist(t, nowDir)
@@ -145,7 +149,7 @@ func TestRootedRemoverRefusesTypeTransitions(t *testing.T) {
 	// The reverse -- a directory the walk descended into, now a file -- fails
 	// at the openat for the parent chain instead.
 	mustWrite(t, filepath.Join(root, "wasdir"), "now a file")
-	if err := r.Remove(filepath.Join(root, "wasdir", "child.log")); err == nil {
+	if err := r.Remove(FileEntry{Path: filepath.Join(root, "wasdir", "child.log")}); err == nil {
 		t.Fatal("Remove through a non-directory component succeeded")
 	}
 }
@@ -171,7 +175,7 @@ func TestRootedRemoverConfinesToApprovedRoots(t *testing.T) {
 
 	for name, path := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := r.Remove(path); !errors.Is(err, ErrOutsideApprovedRoots) {
+			if err := r.Remove(FileEntry{Path: path}); !errors.Is(err, ErrOutsideApprovedRoots) {
 				t.Fatalf("Remove(%s) = %v, want ErrOutsideApprovedRoots", path, err)
 			}
 		})
@@ -192,7 +196,7 @@ func TestRootedRemoverIgnoresUnusableRoots(t *testing.T) {
 	if len(r.roots) != 0 {
 		t.Fatalf("roots = %v, want none kept", r.roots)
 	}
-	if err := r.Remove(file); !errors.Is(err, ErrOutsideApprovedRoots) {
+	if err := r.Remove(FileEntry{Path: file}); !errors.Is(err, ErrOutsideApprovedRoots) {
 		t.Fatalf("Remove = %v, want ErrOutsideApprovedRoots", err)
 	}
 	mustExist(t, file)
@@ -211,7 +215,7 @@ func TestRootedRemoverReportsAbsolutePaths(t *testing.T) {
 	r := newRootedRemover(root)
 	defer r.Close()
 
-	err := r.Remove(missing)
+	err := r.Remove(FileEntry{Path: missing})
 	if !os.IsNotExist(err) {
 		t.Fatalf("Remove(missing) = %v, want a not-exist error", err)
 	}
@@ -225,24 +229,99 @@ func TestRootedRemoverReportsAbsolutePaths(t *testing.T) {
 	}
 }
 
-// TestRootedRemoverFollowsSymlinksInsideTheRoot pins the deliberate residual
-// documented on rootedRemover: a redirect that stays inside the scan root is
-// allowed, because everything under that root is already what the cleaner was
-// authorized to delete.
-func TestRootedRemoverFollowsSymlinksInsideTheRoot(t *testing.T) {
+// TestRootedRemoverRefusesInRootRedirect covers the half that confinement
+// alone does not: a swapped parent whose symlink target stays *inside* the
+// scan root. os.Root follows it, and "inside the cleaner's domain" is a
+// strictly larger set than "approved by the user" -- config.StripProtected and
+// the review screen filter the entry list, never the roots. So without an
+// identity check this silently deletes a protected or deselected file and
+// reports it as the approved one.
+func TestRootedRemoverRefusesInRootRedirect(t *testing.T) {
 	root := t.TempDir()
-	real := mustWrite(t, filepath.Join(root, "real", "file.log"), "x")
-	if err := os.Symlink("real", filepath.Join(root, "alias")); err != nil {
+
+	approved := mustWrite(t, filepath.Join(root, "att", "junk.log"), "junk")
+	// Never in the entry list: think a protected path, or one the user
+	// unchecked in the review screen.
+	unapproved := mustWrite(t, filepath.Join(root, "keep", "junk.log"), "keep me")
+
+	entry := entryFor(t, approved)
+
+	// The swap, entirely within the root.
+	if err := os.RemoveAll(filepath.Join(root, "att")); err != nil {
+		t.Fatalf("rm att: %v", err)
+	}
+	if err := os.Symlink("keep", filepath.Join(root, "att")); err != nil {
 		t.Fatalf("symlink: %v", err)
 	}
 
 	r := newRootedRemover(root)
 	defer r.Close()
 
-	if err := r.Remove(filepath.Join(root, "alias", "file.log")); err != nil {
-		t.Fatalf("Remove through an in-root symlink = %v, want nil", err)
+	if err := r.Remove(entry); !errors.Is(err, ErrIdentityChanged) {
+		t.Fatalf("Remove after an in-root redirect = %v, want ErrIdentityChanged", err)
 	}
-	mustNotExist(t, real)
+	mustExist(t, unapproved)
+}
+
+// TestRootedRemoverWithoutIdentityIsStillConfined documents the fallback: an
+// entry that never got an identity -- a --from-file scan file, where the
+// value would be attacker-supplied and is therefore deliberately not carried
+// -- keeps the containment guarantee but not the in-root one.
+func TestRootedRemoverWithoutIdentityIsStillConfined(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "domain")
+	outside := mustWrite(t, filepath.Join(base, "outside", "hosts"), "critical")
+
+	candidate := mustWrite(t, filepath.Join(root, "sub", "hosts"), "junk")
+	if err := os.RemoveAll(filepath.Join(root, "sub")); err != nil {
+		t.Fatalf("rm sub: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(base, "outside"), filepath.Join(root, "sub")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	r := newRootedRemover(root)
+	defer r.Close()
+
+	// No Dev/Ino: the identity check is skipped, the confinement is not.
+	if err := r.Remove(FileEntry{Path: candidate}); err == nil {
+		t.Fatal("an identity-less entry escaped the root")
+	}
+	mustExist(t, outside)
+}
+
+// TestRootedRemoverAcceptsMatchingIdentity is the control: the identity check
+// must not refuse the ordinary case it is wrapped around.
+func TestRootedRemoverAcceptsMatchingIdentity(t *testing.T) {
+	root := t.TempDir()
+	file := mustWrite(t, filepath.Join(root, "nested", "a.log"), "x")
+
+	r := newRootedRemover(root)
+	defer r.Close()
+
+	entry := entryFor(t, file)
+	if entry.Ino == 0 {
+		t.Fatal("entryFor produced no identity; the rest of the suite is vacuous")
+	}
+	if err := r.Remove(entry); err != nil {
+		t.Fatalf("Remove(matching identity) = %v, want nil", err)
+	}
+	mustNotExist(t, file)
+}
+
+// entryFor builds the FileEntry a Scan would have produced for path,
+// identity included.
+func entryFor(t *testing.T, path string) FileEntry {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
+	dev, ino, ok := fileIdentity(info)
+	if !ok {
+		t.Fatalf("no filesystem identity available for %s", path)
+	}
+	return FileEntry{Path: path, Size: info.Size(), ModTime: info.ModTime(), Dev: dev, Ino: ino}
 }
 
 func TestRootedRemoverPrefersTheTightestRoot(t *testing.T) {
@@ -268,8 +347,14 @@ func TestRootedRemoverPrefersTheTightestRoot(t *testing.T) {
 // identically against each of them.
 type sudoCleanerCase struct {
 	name string
-	// build returns the cleaner and the directory inside its domain where the
-	// candidate file lives.
+	// build returns the cleaner and its single scan root.
+	//
+	// Each cleaner is given exactly one root, inside a throwaway home, rather
+	// than the set its constructor would produce: the real ones are /tmp,
+	// /var/tmp, /Library/Logs and /var/log, and a test must neither walk nor
+	// delete inside those. The real root resolution is covered separately by
+	// TestTempScanRootsRejectsHostileTMPDIR and
+	// TestHomeRelativeCleanersHaveNoDomainWithoutHome.
 	build func(t *testing.T, home string) (Cleaner, string)
 }
 
@@ -279,8 +364,6 @@ func sudoCleanerCases() []sudoCleanerCase {
 			name: "Temp",
 			build: func(t *testing.T, home string) (Cleaner, string) {
 				t.Helper()
-				// The real /tmp and /var/tmp roots are irrelevant here and are
-				// left out so the test never touches them.
 				domain := filepath.Join(home, "Library", "Caches", "TemporaryItems")
 				return &TempCleaner{homeDir: home, roots: []string{domain}}, domain
 			},
@@ -289,16 +372,16 @@ func sudoCleanerCases() []sudoCleanerCase {
 			name: "Logs",
 			build: func(t *testing.T, home string) (Cleaner, string) {
 				t.Helper()
-				return &LogsCleaner{homeDir: home, roots: logsScanRoots(home)},
-					filepath.Join(home, "Library", "Logs")
+				domain := filepath.Join(home, "Library", "Logs")
+				return &LogsCleaner{homeDir: home, roots: []string{domain}}, domain
 			},
 		},
 		{
 			name: "Updates",
 			build: func(t *testing.T, home string) (Cleaner, string) {
 				t.Helper()
-				return &UpdatesCleaner{homeDir: home, roots: updatesScanRoots(home)},
-					filepath.Join(home, "Library", "Updates")
+				domain := filepath.Join(home, "Library", "Updates")
+				return &UpdatesCleaner{homeDir: home, roots: []string{domain}}, domain
 			},
 		},
 	}
@@ -469,5 +552,201 @@ func TestHomeRelativeCleanersHaveNoDomainWithoutHome(t *testing.T) {
 		if !filepath.IsAbs(r) {
 			t.Errorf("tempScanRoots(\"\") produced the relative root %q", r)
 		}
+	}
+}
+
+// TestAbsolutizeCopiesRatherThanMutating covers a bug where absolutize
+// rewrote its argument in place. os.Root errors can be shared -- rootFor
+// caches one per root and hands the same pointer to every entry beneath it --
+// so mutating made all of them report whichever path failed last, in the very
+// list a user reads to learn what was not deleted.
+func TestAbsolutizeCopiesRatherThanMutating(t *testing.T) {
+	shared := &fs.PathError{Op: "openat", Path: "rel", Err: fs.ErrNotExist}
+
+	first := absolutize(shared, "/domain/a/rel")
+	second := absolutize(shared, "/domain/b/rel")
+
+	if shared.Path != "rel" {
+		t.Errorf("absolutize mutated its input: Path = %q, want %q", shared.Path, "rel")
+	}
+
+	firstPath := first.(*fs.PathError).Path
+	secondPath := second.(*fs.PathError).Path
+	if firstPath != "/domain/a/rel" || secondPath != "/domain/b/rel" {
+		t.Fatalf("paths = %q / %q, want the two distinct absolutes", firstPath, secondPath)
+	}
+	if !errors.Is(first, fs.ErrNotExist) {
+		t.Error("the copy lost the underlying error")
+	}
+}
+
+// TestRootedRemoverReportsEachEntrysOwnPath is the same guarantee end to end:
+// two entries failing under one live root must each name themselves.
+func TestRootedRemoverReportsEachEntrysOwnPath(t *testing.T) {
+	root := t.TempDir()
+
+	r := newRootedRemover(root)
+	defer r.Close()
+
+	first := filepath.Join(root, "dirA", "one.log")
+	second := filepath.Join(root, "dirB", "two.log")
+
+	errFirst := r.Remove(FileEntry{Path: first})
+	errSecond := r.Remove(FileEntry{Path: second})
+
+	if errFirst == nil || errSecond == nil {
+		t.Fatalf("both removals should fail: %v / %v", errFirst, errSecond)
+	}
+	if !strings.Contains(errFirst.Error(), filepath.Join(root, "dirA")) {
+		t.Errorf("first error = %q, want it to name dirA", errFirst)
+	}
+	if !strings.Contains(errSecond.Error(), filepath.Join(root, "dirB")) {
+		t.Errorf("second error = %q, want it to name dirB", errSecond)
+	}
+}
+
+// TestRootedRemoverReportsAVanishedRootAsAnError pins that a scan root which
+// disappeared between scan and clean is never mistaken for "this one file was
+// already gone". The cleaners treat a not-exist result as a successful
+// deletion and add the entry's size to the reclaimed total, so a root-level
+// ENOENT reaching that branch would report space that was never freed.
+func TestRootedRemoverReportsAVanishedRootAsAnError(t *testing.T) {
+	missingRoot := filepath.Join(t.TempDir(), "gone")
+
+	r := newRootedRemover(missingRoot)
+	defer r.Close()
+
+	err := r.Remove(FileEntry{Path: filepath.Join(missingRoot, "a.log")})
+	if !errors.Is(err, ErrRootUnavailable) {
+		t.Fatalf("Remove under a missing root = %v, want ErrRootUnavailable", err)
+	}
+	if os.IsNotExist(err) {
+		t.Fatal("a vanished root must not look like a vanished file: the cleaners would count it as deleted")
+	}
+}
+
+// TestSudoCleanersDoNotClaimSpaceFromAVanishedRoot is the same guarantee seen
+// through a real Clean, which is where the miscounting would actually happen.
+func TestSudoCleanersDoNotClaimSpaceFromAVanishedRoot(t *testing.T) {
+	for _, tc := range sudoCleanerCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			c, domain := tc.build(t, filepath.Join(base, "home"))
+
+			// The domain is never created: the scan root does not exist.
+			result, err := c.Clean(t.Context(), []FileEntry{
+				{Path: filepath.Join(domain, "a.log"), Size: 4096, Category: c.Category()},
+			}, false, nil)
+			if err != nil {
+				t.Fatalf("Clean() error: %v", err)
+			}
+
+			if result.FilesDeleted != 0 || result.BytesFreed != 0 {
+				t.Errorf("reported %d files / %d bytes reclaimed from a root that does not exist",
+					result.FilesDeleted, result.BytesFreed)
+			}
+			if len(result.Errors) != 1 || !errors.Is(result.Errors[0], ErrRootUnavailable) {
+				t.Fatalf("Errors = %v, want one ErrRootUnavailable", result.Errors)
+			}
+		})
+	}
+}
+
+// TestSudoCleanersScanOnlyRegularFiles covers a regression the confinement
+// work introduced: WalkDir does not follow symlinks, so it reports one as an
+// ordinary non-directory entry, and Scan used to offer it as a deletion
+// candidate. Clean now refuses non-regular leaves -- it cannot tell an
+// enumerated symlink from one swapped in to redirect a deletion -- so those
+// entries turned into a partial error on every single run, with a non-zero
+// exit status, for a clean that did nothing wrong. /tmp, /var/log and
+// ~/Library/Logs all hold symlinks and sockets in normal operation.
+func TestSudoCleanersScanOnlyRegularFiles(t *testing.T) {
+	for _, tc := range sudoCleanerCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			c, domain := tc.build(t, filepath.Join(base, "home"))
+
+			regular := mustWrite(t, filepath.Join(domain, "real.log"), "content")
+			if err := os.Symlink(regular, filepath.Join(domain, "alias.log")); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+			if err := syscall.Mkfifo(filepath.Join(domain, "pipe"), 0o600); err != nil {
+				t.Fatalf("mkfifo: %v", err)
+			}
+
+			result, err := c.Scan(t.Context(), nil)
+			if err != nil {
+				t.Fatalf("Scan() error: %v", err)
+			}
+
+			if len(result.Entries) != 1 || result.Entries[0].Path != regular {
+				t.Fatalf("Scan returned %+v, want only %s", result.Entries, regular)
+			}
+
+			// And the entry it did return must clean without complaint.
+			cleaned, err := c.Clean(t.Context(), result.Entries, false, nil)
+			if err != nil {
+				t.Fatalf("Clean() error: %v", err)
+			}
+			if cleaned.FilesDeleted != 1 || len(cleaned.Errors) != 0 {
+				t.Fatalf("Clean = %d deleted, errors %v, want 1 and none", cleaned.FilesDeleted, cleaned.Errors)
+			}
+			mustNotExist(t, regular)
+		})
+	}
+}
+
+// TestSudoCleanersScanPopulatesIdentity pins that the identity check is not
+// silently inert: a Scan that stopped filling Dev/Ino would skip it on every
+// entry and nothing else in the suite would notice.
+func TestSudoCleanersScanPopulatesIdentity(t *testing.T) {
+	for _, tc := range sudoCleanerCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			c, domain := tc.build(t, filepath.Join(base, "home"))
+			path := mustWrite(t, filepath.Join(domain, "a.log"), "x")
+
+			result, err := c.Scan(t.Context(), nil)
+			if err != nil {
+				t.Fatalf("Scan() error: %v", err)
+			}
+			if len(result.Entries) != 1 {
+				t.Fatalf("got %d entries, want 1", len(result.Entries))
+			}
+
+			want := entryFor(t, path)
+			got := result.Entries[0]
+			if got.Ino == 0 {
+				t.Fatal("Scan produced no inode; the identity check would be skipped for every entry")
+			}
+			if got.Dev != want.Dev || got.Ino != want.Ino {
+				t.Fatalf("identity = (%d,%d), want (%d,%d)", got.Dev, got.Ino, want.Dev, want.Ino)
+			}
+		})
+	}
+}
+
+// TestFileEntryIdentityNeverCrossesATrustBoundary pins the json:"-" tags. The
+// identity is only meaningful because whichever process checks it also
+// observed it; a value arriving over the elevation IPC or out of a
+// --from-file scan file would be attacker-supplied, and honoring it would turn
+// the check into a way to authorize a swap rather than detect one.
+func TestFileEntryIdentityNeverCrossesATrustBoundary(t *testing.T) {
+	encoded, err := json.Marshal(FileEntry{Path: "/tmp/a", Dev: 99, Ino: 12345})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, field := range []string{"Dev", "Ino", "12345", "99"} {
+		if strings.Contains(string(encoded), field) {
+			t.Fatalf("serialized FileEntry leaks the identity (%q): %s", field, encoded)
+		}
+	}
+
+	var decoded FileEntry
+	if err := json.Unmarshal([]byte(`{"Path":"/tmp/a","Dev":99,"Ino":12345}`), &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Dev != 0 || decoded.Ino != 0 {
+		t.Fatalf("decoded identity = (%d,%d), want it ignored", decoded.Dev, decoded.Ino)
 	}
 }

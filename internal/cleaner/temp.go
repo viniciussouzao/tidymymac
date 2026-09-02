@@ -156,11 +156,24 @@ func (c *TempCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 				return nil
 			}
 
+			// Only regular files. A symlink, socket or FIFO reports a size
+			// that is not reclaimable space, and offering one as a deletion
+			// candidate makes Clean refuse it on every run -- it cannot tell
+			// an enumerated symlink from one swapped in to redirect a
+			// deletion, and must assume the latter.
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			dev, ino, _ := fileIdentity(info)
+
 			result.Entries = append(result.Entries, FileEntry{
 				Path:     path,
 				Size:     info.Size(),
 				ModTime:  info.ModTime(),
 				Category: CategoryTemp,
+				Dev:      dev,
+				Ino:      ino,
 			})
 
 			result.TotalSize += info.Size()
@@ -205,7 +218,7 @@ func (c *TempCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		}
 
 		if !dryRun {
-			if err := remover.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := remover.Remove(entry); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}

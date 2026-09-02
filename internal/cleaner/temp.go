@@ -21,6 +21,16 @@ type TempCleaner struct {
 	// the domain is -- a Clean allowed to delete under a root Scan never
 	// visited would be a hole in the elevated helper's second fence.
 	roots []string
+
+	// sudoRoots is the strict subset of roots that cannot be cleaned without
+	// root. /tmp and /var/tmp are shared and world-writable: they hold other
+	// users' files, so deleting there needs privileges the invoking user does
+	// not have. The remaining roots ($TMPDIR, Library/Caches/TemporaryItems)
+	// are the invoking user's own and only sit in a RequiresSudo cleaner
+	// because they share this domain -- elevating them would widen what root
+	// touches for nothing. Resolved through resolveScanRoots like roots, so
+	// NeedsSudo compares against the same spelling Scan produces.
+	sudoRoots []string
 }
 
 // NewTempCleaner creates a TempCleaner. The home directory comes from
@@ -33,9 +43,18 @@ func NewTempCleaner() *TempCleaner {
 		home = ""
 	}
 	return &TempCleaner{
-		homeDir: home,
-		roots:   tempScanRoots(home, os.TempDir(), os.Geteuid()),
+		homeDir:   home,
+		roots:     tempScanRoots(home, os.TempDir(), os.Geteuid()),
+		sudoRoots: tempSudoRoots(),
 	}
+}
+
+// tempSudoRoots is the shared, world-writable part of the Temp domain -- the
+// only part a non-root process cannot clean for itself. It is kept in one
+// place so the scan roots and the privilege split can never disagree about
+// which of them is which.
+func tempSudoRoots() []string {
+	return resolveScanRoots([]string{"/tmp", "/var/tmp"})
 }
 
 // tempScanRoots resolves the Temp domain.
@@ -45,10 +64,7 @@ func NewTempCleaner() *TempCleaner {
 // therefore a root-deletable domain. Accept it only when it really is a macOS
 // temp location, and never at all when elevated -- see userTempRoot.
 func tempScanRoots(homeDir, tmpDir string, euid int) []string {
-	roots := []string{
-		"/tmp",
-		"/var/tmp",
-	}
+	roots := tempSudoRoots()
 
 	// An empty home would make this a relative path, which as a walk root
 	// means "wherever the process happens to be running from".
@@ -72,6 +88,27 @@ func (c *TempCleaner) Description() string { return "System and user temporary f
 func (c *TempCleaner) RequiresSudo() bool { return true }
 
 func (c *TempCleaner) DeletesWholeDomain() bool { return false }
+
+// NeedsSudo reports whether entry falls under a root this cleaner cannot
+// delete from without root -- currently /tmp and /var/tmp, which are shared,
+// world-writable locations that can contain other users' files. Everything
+// else in this cleaner's domain (the user's own $TMPDIR,
+// Library/Caches/TemporaryItems) is owned by the invoking user and does not
+// need this.
+//
+// entry.Path is already spelled the way Scan produced it, i.e. relative to a
+// resolved root, so it is only cleaned here and never re-resolved: a symlink
+// lookup at this point would let a swapped component decide which side of the
+// privilege split an entry lands on.
+func (c *TempCleaner) NeedsSudo(entry FileEntry) bool {
+	cleaned := filepath.Clean(entry.Path)
+	for _, root := range c.sudoRoots {
+		if cleaned == root || strings.HasPrefix(cleaned, root+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // legitimateTempRoots are the only places macOS ever puts a per-user temp
 // directory. /tmp and /private/tmp are already scanned unconditionally; they

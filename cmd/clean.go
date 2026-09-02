@@ -571,10 +571,22 @@ func sudoNeedMessage(categories []elevate.PlanCategory) string {
 	return fmt.Sprintf("The following selected categories require sudo to clean: %s.", strings.Join(names, ", "))
 }
 
+// invokeElevated is elevate.Invoke behind a package-level seam purely so
+// tests can substitute a fake outcome (success, ErrElevationFailed, ...)
+// without spawning a real sudo prompt -- elevate.Invoke has no such seam of
+// its own reachable from outside its package (sudoCommand/sudoAuthCommand
+// are unexported). Production code must never reassign it.
+var invokeElevated = elevate.Invoke
+
 // elevateForClean scans, tags, and strips protected paths for sudoNames --
-// the same pipeline runClean applies to every other category -- then hands
-// whatever remains to a single elevate.Invoke call covering all of them, so
-// one sudo password authenticates every sudo category in this run. It is
+// the same pipeline runClean applies to every other category -- then splits
+// each category's approved entries by privilege (see
+// commands.SplitEntriesByPrivilege): entries that don't actually need root
+// (e.g. Temp's own $TMPDIR, as opposed to the shared /tmp) are cleaned
+// directly, synchronously, right here, before any password prompt, via
+// commands.CleanDirectly. Only entries that genuinely need root go into the
+// elevate.Plan, so a category made up entirely of such entries never reaches
+// the plan at all and never contributes to the sudo password prompt. It is
 // only ever called for --execute (dry-run needs no elevation) with a
 // non-empty sudoNames. preparedScan/usePreparedScan is whatever
 // runCleanInteractive already loaded from --from-file (or the zero value
@@ -594,6 +606,11 @@ func elevateForClean(ctx context.Context, registry *cleaner.Registry, sudoNames 
 	}
 
 	var results []commands.CleanCategoryResult
+	// Direct-clean legs for categories that also have a sudo leg, stashed
+	// here until the elevated leg's result for the same category is known,
+	// so the two can be folded into one row via MergeCategoryResults instead
+	// of the category appearing twice in results.
+	directByCategory := make(map[cleaner.Category]commands.CleanCategoryResult)
 	// DryRun is left false explicitly, not merely by relying on the zero
 	// value: this function is only ever reached for --execute (see the
 	// !dryRun guard around its one call site), but a plan defaulting to
@@ -610,7 +627,34 @@ func elevateForClean(ctx context.Context, registry *cleaner.Registry, sudoNames 
 			// nothing to authenticate for, so no password prompt.
 			results = append(results, commands.CleanCategoryResult{Category: ac.Category, Name: ac.Name})
 		default:
-			plan.Categories = append(plan.Categories, elevate.PlanCategory{Category: ac.Category, Entries: ac.Entries})
+			c, ok := registry.Get(ac.Category)
+			if !ok {
+				// Can't happen in practice -- ac.Category came from a
+				// cleaner resolveCleaners already found in this same
+				// registry -- but if it ever did, falling back to "all of
+				// it needs sudo" is the conservative choice, identical to
+				// what SplitEntriesByPrivilege itself does for a cleaner
+				// that isn't a PrivilegeSplitter.
+				plan.Categories = append(plan.Categories, elevate.PlanCategory{Category: ac.Category, Entries: ac.Entries})
+				continue
+			}
+
+			sudoEntries, directEntries := commands.SplitEntriesByPrivilege(c, ac.Entries)
+			if len(directEntries) > 0 {
+				directByCategory[ac.Category] = commands.CleanDirectly(ctx, c, directEntries, false)
+			}
+			if len(sudoEntries) > 0 {
+				plan.Categories = append(plan.Categories, elevate.PlanCategory{Category: ac.Category, Entries: sudoEntries})
+				continue
+			}
+			// No entry in this category needs root: the direct leg above (if
+			// any ran) is already this category's whole result, so it must
+			// land in results now -- this category will never reach
+			// elevate.Invoke, so nothing will merge it in later.
+			if direct, ok := directByCategory[ac.Category]; ok {
+				results = append(results, direct)
+				delete(directByCategory, ac.Category)
+			}
 		}
 	}
 
@@ -619,8 +663,14 @@ func elevateForClean(ctx context.Context, registry *cleaner.Registry, sudoNames 
 	}
 
 	fmt.Fprintln(os.Stderr, sudoNeedMessage(plan.Categories))
-	result, invokeErr := elevate.Invoke(ctx, plan)
-	results = append(results, elevate.CategoryResults(plan, result, invokeErr)...)
+	result, invokeErr := invokeElevated(ctx, plan)
+	for _, er := range elevate.CategoryResults(plan, result, invokeErr) {
+		if direct, ok := directByCategory[er.Category]; ok {
+			results = append(results, commands.MergeCategoryResults(direct, er))
+			continue
+		}
+		results = append(results, er)
+	}
 	return results, nil
 }
 
@@ -635,17 +685,17 @@ func mergeCleanResults(base commands.CleanResult, extra []commands.CleanCategory
 	merged := base
 	merged.Categories = append(append([]commands.CleanCategoryResult{}, extra...), base.Categories...)
 	for _, r := range extra {
-		// Mirrors runClean's own totals computation (internal/commands/clean.go):
-		// an errored category's counts, even if partially non-zero, are never
-		// folded into the displayed total -- only HasErrors is set for it. A
-		// partial failure also sets HasErrors, but what it reclaimed is real
-		// and stays in the totals.
-		if r.PartialErrors > 0 {
+		// Unlike runClean's own totals computation (internal/commands/clean.go),
+		// an errored row here can still carry real, non-zero counts: a
+		// privilege-split category's direct leg may have deleted files before
+		// its elevated leg failed or came back unknown (see
+		// commands.MergeCategoryResults). HasErrors is set whenever there was
+		// any error, fatal or partial, but the counts a row actually reports
+		// are always folded in -- they were never conditioned on Err being
+		// nil, only on being real, and MergeCategoryResults already
+		// guarantees they are.
+		if r.Err != nil || r.PartialErrors > 0 {
 			merged.HasErrors = true
-		}
-		if r.Err != nil {
-			merged.HasErrors = true
-			continue
 		}
 		merged.TotalFiles += r.DeletedFiles
 		merged.TotalSize += r.DeletedSize
@@ -990,8 +1040,14 @@ func cleanCelebration(result commands.CleanResult) string {
 func buildRunRecord(result commands.CleanResult, durationMs int64) history.RunRecord {
 	var categories []history.CategoryRecord
 	for _, cat := range result.Categories {
-		if cat.Err != nil || (cat.DeletedFiles == 0 && cat.DeletedSize == 0) {
-			continue // skip categories that failed or cleaned nothing
+		// A category is recorded whenever it reclaimed anything, error or
+		// not: a privilege-split category's direct leg can delete real files
+		// before its elevated leg fails (see commands.MergeCategoryResults),
+		// and that deletion belongs in the audit trail regardless of what the
+		// other leg did. Only a genuinely empty row -- nothing deleted, with
+		// or without an error -- is skipped.
+		if cat.DeletedFiles == 0 && cat.DeletedSize == 0 {
+			continue
 		}
 		categories = append(categories, history.CategoryRecord{
 			Name:        cat.Name,

@@ -62,6 +62,36 @@ type elevateCompleteMsg struct {
 	plan   elevate.Plan
 	result elevate.Result
 	err    error
+
+	// direct holds the outcome of any entries startElevation's direct-clean
+	// legs cleaned unprivileged, before plan was dispatched -- keyed by
+	// category so handleElevateComplete can fold each one into that
+	// category's elevated outcome. See commands.PrivilegeSplitter and
+	// pendingElevationState.
+	direct map[cleaner.Category]commands.CleanCategoryResult
+}
+
+// directCleanCompleteMsg carries the outcome of one category's direct leg
+// (the unprivileged subset of a sudo category's approved entries, split off
+// by commands.SplitEntriesByPrivilege in startElevation and dispatched via
+// directCleanCmd). See handleDirectCleanComplete.
+type directCleanCompleteMsg struct {
+	category cleaner.Category
+	result   commands.CleanCategoryResult
+}
+
+// pendingElevationState accumulates an in-flight elevation attempt whose
+// direct legs (see commands.SplitEntriesByPrivilege) are still cleaning
+// asynchronously. startElevation populates it and returns immediately, one
+// tea.Cmd per pending direct leg; handleDirectCleanComplete folds each
+// result in as it arrives and, once pendingDirect is empty, dispatches
+// whatever plan accumulated (or falls through to the ordinary clean loop),
+// exactly as startElevation would have done synchronously before direct legs
+// existed. nil on App whenever no elevation is in flight.
+type pendingElevationState struct {
+	plan          elevate.Plan
+	direct        map[cleaner.Category]commands.CleanCategoryResult
+	pendingDirect map[cleaner.Category]struct{}
 }
 
 // App is the root bubbletea model that manages screens transitions
@@ -98,11 +128,21 @@ type App struct {
 	cleanStartTime time.Time
 	cfg            *config.Config
 
-	// elevatedRecorded holds the categories whose deletion has already been
-	// written to history by handleElevateComplete, so finishCleaning does
-	// not record them a second time. See recordElevatedHistory for why the
-	// elevated part is persisted early rather than with the rest of the run.
+	// elevatedRecorded holds every category whose deletion has already been
+	// written to history outside finishCleaning's own end-of-run write, so
+	// finishCleaning does not record it a second time. Two things populate
+	// it: recordElevatedHistory, for a category whose elevated leg
+	// (elevate.Invoke) completed, and recordDirectHistory, for a category
+	// whose direct leg (commands.SplitEntriesByPrivilege) completed --
+	// including a direct-only category that never enters an elevate.Plan at
+	// all and so would otherwise never be marked by anything else. See
+	// either function's own comment for why each write happens immediately
+	// rather than waiting for the whole run to finish.
 	elevatedRecorded map[cleaner.Category]struct{}
+
+	// pendingElevation is non-nil while an elevation attempt's direct legs
+	// are still cleaning asynchronously. See pendingElevationState.
+	pendingElevation *pendingElevationState
 
 	// scriptMessage will support the generate-script-only flow.
 }
@@ -210,6 +250,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case elevateCompleteMsg:
 		return a.handleElevateComplete(msg)
 
+	case directCleanCompleteMsg:
+		return a.handleDirectCleanComplete(msg)
+
 	case cleanProgressMsg:
 		a.cleaningScr.UpdateCleanProgress(msg.progress)
 		if a.cleanMsgCh != nil {
@@ -296,40 +339,84 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 			intersections[ci.Category] = ci
 		}
 
+		// elevatedOnly holds each category's OWN elevated-leg outcome, kept
+		// separate from the (possibly direct-merged) counts written to
+		// cleaningScr below. A direct leg already got its own history row
+		// the moment it finished (see recordDirectHistory), so
+		// recordElevatedHistory must record only what this elevate.Invoke
+		// call itself contributed -- recording the merged UI-facing total
+		// here too would double the direct portion into two rows instead of
+		// complementing it with exactly one.
+		var elevatedOnly []*cleaner.CleanResult
+
 		for _, pc := range msg.plan.Categories {
+			direct, hasDirect := msg.direct[pc.Category]
+
 			if ccr, ok := byCategory[pc.Category]; ok {
-				cr := &cleaner.CleanResult{
+				elevatedOnly = append(elevatedOnly, &cleaner.CleanResult{
 					Category:     ccr.Category,
 					FilesDeleted: ccr.DeletedFiles,
 					BytesFreed:   ccr.DeletedSize,
 					DryRun:       msg.plan.DryRun,
 					Errors:       partialErrorsFromResult(ccr),
+				})
+
+				merged := ccr
+				if hasDirect {
+					merged = commands.MergeCategoryResults(direct, ccr)
+				}
+				cr := &cleaner.CleanResult{
+					Category:     merged.Category,
+					FilesDeleted: merged.DeletedFiles,
+					BytesFreed:   merged.DeletedSize,
+					DryRun:       msg.plan.DryRun,
+					Errors:       partialErrorsFromResult(merged),
 				}
 				var cerr error
-				if ccr.ErrMsg != "" {
-					cerr = errors.New(ccr.ErrMsg)
+				if merged.ErrMsg != "" {
+					cerr = errors.New(merged.ErrMsg)
 				}
 				a.cleaningScr.UpdateCleanResult(pc.Category, cr, cerr)
 				continue
 			}
 			if in, ok := intersections[pc.Category]; ok {
 				if in.ErrMsg != "" {
-					a.cleaningScr.UpdateCleanResult(pc.Category, nil, errors.New(in.ErrMsg))
+					// A direct leg's confirmed deletions are real regardless
+					// of what the elevated leg reports -- never drop them
+					// just because this category's elevated half errored.
+					cr, cerr := directOnlyResult(direct, in.ErrMsg, msg.plan.DryRun)
+					if hasDirect {
+						a.cleaningScr.UpdateCleanResult(pc.Category, cr, cerr)
+					} else {
+						a.cleaningScr.UpdateCleanResult(pc.Category, nil, errors.New(in.ErrMsg))
+					}
 					continue
 				}
 				// Approved but nothing matched the helper's fresh root scan:
 				// already gone, or never belonged to this category. Not an
-				// error -- a skip.
-				a.cleaningScr.SkipCategory(pc.Category, "none of the approved items were found by the elevated helper's fresh scan (already gone, or no longer in this category)")
+				// error -- a skip. But a direct leg's real deletions must
+				// still be reported, never discarded as "nothing is known".
+				if hasDirect {
+					cr, cerr := directOnlyResult(direct, "", msg.plan.DryRun)
+					a.cleaningScr.UpdateCleanResult(pc.Category, cr, cerr)
+				} else {
+					a.cleaningScr.SkipCategory(pc.Category, "none of the approved items were found by the elevated helper's fresh scan (already gone, or no longer in this category)")
+				}
 				continue
 			}
 			// The helper reported success overall but said nothing at all
 			// about this specific category -- unlike the two cases above,
-			// there is no observation to report a confident skip from.
-			a.cleaningScr.UpdateCleanResult(pc.Category, nil, errors.New("the elevated helper returned no result for this category; outcome unknown"))
+			// there is no observation to report a confident skip from. Same
+			// direct-leg carve-out as above.
+			if hasDirect {
+				cr, cerr := directOnlyResult(direct, "the elevated helper returned no result for this category; outcome unknown", msg.plan.DryRun)
+				a.cleaningScr.UpdateCleanResult(pc.Category, cr, cerr)
+			} else {
+				a.cleaningScr.UpdateCleanResult(pc.Category, nil, errors.New("the elevated helper returned no result for this category; outcome unknown"))
+			}
 		}
 
-		a.recordElevatedHistory(msg.plan)
+		a.recordElevatedHistory(msg.plan, elevatedOnly)
 
 	case errors.Is(msg.err, elevate.ErrElevationFailed):
 		// msg.err always carries elevate.Invoke's own explanation (auth
@@ -339,6 +426,15 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 		// true for every case ErrElevationFailed covers.
 		reason := fmt.Sprintf("elevation did not run (%v); nothing was deleted", msg.err)
 		for _, pc := range msg.plan.Categories {
+			// The direct leg (if any) ran in this process before elevation
+			// was even attempted -- its deletions happened regardless of
+			// whether the elevated half ran at all, so this category cannot
+			// be reported as a plain skip ("nothing is known").
+			if direct, ok := msg.direct[pc.Category]; ok {
+				cr, cerr := directOnlyResult(direct, reason, msg.plan.DryRun)
+				a.cleaningScr.UpdateCleanResult(pc.Category, cr, cerr)
+				continue
+			}
 			a.cleaningScr.SkipCategory(pc.Category, reason)
 		}
 
@@ -346,8 +442,14 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 		// Includes ErrElevationOutcomeUnknown and any other unexpected
 		// failure: the helper may have been past its guards and mid-deletion,
 		// so this must never read as "skipped" or "nothing happened".
+		errMsg := fmt.Sprintf("elevated helper outcome unknown (%v); re-scan to check what was deleted", msg.err)
 		for _, pc := range msg.plan.Categories {
-			a.cleaningScr.UpdateCleanResult(pc.Category, nil, fmt.Errorf("elevated helper outcome unknown (%v); re-scan to check what was deleted", msg.err))
+			if direct, ok := msg.direct[pc.Category]; ok {
+				cr, cerr := directOnlyResult(direct, errMsg, msg.plan.DryRun)
+				a.cleaningScr.UpdateCleanResult(pc.Category, cr, cerr)
+				continue
+			}
+			a.cleaningScr.UpdateCleanResult(pc.Category, nil, errors.New(errMsg))
 		}
 	}
 
@@ -369,29 +471,63 @@ func (a App) handleElevateComplete(msg elevateCompleteMsg) (tea.Model, tea.Cmd) 
 // part the same way, for the same reason; the cost is that a mixed run shows
 // up as two history records.
 //
-// Only categories with a recorded deletion are written (the same rule
-// buildTUIRunRecord applies); every plan category is marked regardless so
-// finishCleaning does not revisit it.
-func (a *App) recordElevatedHistory(plan elevate.Plan) {
+// elevatedOnly must hold each plan category's OWN elevated-leg counts, never
+// the merged total a split category may show on the cleaning screen: a
+// direct leg already wrote its own history row the instant it finished (see
+// recordDirectHistory), independent of whatever this elevate.Invoke call
+// does, so recording the merged counts here as well would double the direct
+// portion into two rows instead of complementing it with exactly one. Every
+// plan category is marked in elevatedRecorded regardless of whether it made
+// it into elevatedOnly, so finishCleaning never revisits it either way.
+func (a *App) recordElevatedHistory(plan elevate.Plan, elevatedOnly []*cleaner.CleanResult) {
 	if !a.executeMode || plan.DryRun {
 		return
 	}
 	if a.elevatedRecorded == nil {
 		a.elevatedRecorded = make(map[cleaner.Category]struct{}, len(plan.Categories))
 	}
-	planned := make(map[cleaner.Category]struct{}, len(plan.Categories))
 	for _, pc := range plan.Categories {
-		planned[pc.Category] = struct{}{}
 		a.elevatedRecorded[pc.Category] = struct{}{}
 	}
 
-	var results []*cleaner.CleanResult
-	for _, r := range a.cleaningScr.Results() {
-		if _, ok := planned[r.Category]; ok {
-			results = append(results, r)
-		}
+	record := buildTUIRunRecord(elevatedOnly, a.cleanStartTime, time.Since(a.cleanStartTime).Milliseconds())
+	if len(record.Categories) == 0 {
+		return
 	}
-	record := buildTUIRunRecord(results, a.cleanStartTime, time.Since(a.cleanStartTime).Milliseconds())
+	_ = history.Append(record)
+}
+
+// recordDirectHistory persists a direct-clean leg's own, already-final
+// outcome the moment handleDirectCleanComplete observes it -- before that
+// category's elevated leg (if any) has even started, and long before
+// finishCleaning would otherwise reach it. Mirrors recordElevatedHistory's
+// reasoning exactly: a real deletion performed in this process is just as
+// vulnerable to being lost to a mid-run quit as one the elevated helper
+// performed, and handleDirectCleanComplete is the only place that knows the
+// leg finished at all.
+//
+// category is marked in elevatedRecorded unconditionally, whether or not it
+// also requires elevation: for a direct-only category (no sudo entries at
+// all) this is the ONLY history write it will ever get, so finishCleaning
+// must never touch it either. For a split category, the elevated leg gets
+// its own separate history row later from recordElevatedHistory -- two rows
+// for one category in the same run, the same accepted trade-off already
+// documented above for mixed elevated/non-sudo runs.
+func (a *App) recordDirectHistory(category cleaner.Category, result commands.CleanCategoryResult, dryRun bool) {
+	if a.elevatedRecorded == nil {
+		a.elevatedRecorded = make(map[cleaner.Category]struct{})
+	}
+	a.elevatedRecorded[category] = struct{}{}
+
+	if !a.executeMode || dryRun {
+		return
+	}
+	cr := &cleaner.CleanResult{
+		Category:     result.Category,
+		FilesDeleted: result.DeletedFiles,
+		BytesFreed:   result.DeletedSize,
+	}
+	record := buildTUIRunRecord([]*cleaner.CleanResult{cr}, a.cleanStartTime, time.Since(a.cleanStartTime).Milliseconds())
 	if len(record.Categories) == 0 {
 		return
 	}
@@ -402,13 +538,14 @@ func (a *App) recordElevatedHistory(plan elevate.Plan) {
 // run: it appends the run to history (execute mode only) and returns a nil
 // command. Every place that can make cleaningScr.Done flip true -- including
 // a run that finishes entirely through skips inside startNextClean's loop,
-// with no cleanCompleteMsg or elevateCompleteMsg ever arriving -- must route
-// through here, or that run goes unrecorded even though it may have deleted
-// real files as root.
+// with no cleanCompleteMsg, elevateCompleteMsg, nor directCleanCompleteMsg
+// ever arriving -- must route through here, or that run goes unrecorded even
+// though it may have deleted real files as root.
 //
-// Categories already persisted by recordElevatedHistory are left out so a
-// mixed run is not double-counted; if nothing but those ran, there is no
-// second record to write at all.
+// Categories already persisted by recordElevatedHistory or
+// recordDirectHistory (both mark a.elevatedRecorded, see its own comment)
+// are left out so a mixed run is not double-counted; if nothing but those
+// ran, there is no second record to write at all.
 func (a App) finishCleaning() (tea.Model, tea.Cmd) {
 	if !a.executeMode {
 		return a, nil
@@ -434,6 +571,17 @@ func (a App) finishCleaning() (tea.Model, tea.Cmd) {
 // (every entry protected) are resolved immediately without a password
 // prompt; if none of them have anything to do, the normal clean loop takes
 // over unchanged.
+//
+// Splitting a category's entries (commands.SplitEntriesByPrivilege) can
+// produce a direct-clean leg -- entries the invoking user already owns and
+// that need no root at all. That leg is dispatched as a directCleanCmd,
+// never run inline here: this function must return promptly so the event
+// loop keeps handling key presses (including q) and ctx cancellation while
+// the deletion runs, exactly as every other deletion in this file already
+// does via cleanCategoryStreamCmd. If any direct legs are in flight, the
+// elevate.Plan built below is stashed on a.pendingElevation rather than
+// dispatched immediately; handleDirectCleanComplete dispatches it once every
+// direct leg has reported back.
 func (a App) startElevation() (tea.Model, tea.Cmd) {
 	sudoCats := make(map[cleaner.Category]struct{}, len(a.reviewScr.SudoCategories))
 	for _, cat := range a.reviewScr.SudoCategories {
@@ -442,6 +590,13 @@ func (a App) startElevation() (tea.Model, tea.Cmd) {
 
 	var plan elevate.Plan
 	plan.DryRun = !a.executeMode
+
+	// direct/pendingDirect accumulate as directCleanCmd results arrive (see
+	// pendingElevationState); directCmds is what actually gets dispatched
+	// below if any category needed one.
+	direct := map[cleaner.Category]commands.CleanCategoryResult{}
+	pendingDirect := map[cleaner.Category]struct{}{}
+	var directCmds []tea.Cmd
 
 	for i := range a.cleaningScr.Categories {
 		cat := &a.cleaningScr.Categories[i]
@@ -469,19 +624,128 @@ func (a App) startElevation() (tea.Model, tea.Cmd) {
 			continue
 		}
 
+		// F-F: only the subset that genuinely needs root (e.g. Temp's shared
+		// /tmp and /var/tmp) is elevated; entries the invoking user already
+		// owns are cleaned directly -- asynchronously, see above.
+		sudoEntries, directEntries := commands.SplitEntriesByPrivilege(c, entries)
+
 		cat.Status = "cleaning"
 		cat.StartedAt = time.Now()
+
+		if len(directEntries) > 0 {
+			pendingDirect[cat.Category] = struct{}{}
+			directCmds = append(directCmds, directCleanCmd(a.ctx, c, directEntries, plan.DryRun))
+		}
+
+		if len(sudoEntries) == 0 {
+			// Nothing in this category needs root. handleDirectCleanComplete
+			// resolves it fully once the direct leg above reports back --
+			// it never enters plan, and is never added to
+			// a.elevatedRecorded until that happens (see
+			// recordDirectHistory), exactly like an ordinary non-sudo
+			// category would be if nothing here had gone through
+			// elevation at all.
+			continue
+		}
+
 		plan.Categories = append(plan.Categories, elevate.PlanCategory{
 			Category: cat.Category,
-			Entries:  entries,
+			Entries:  sudoEntries,
 		})
+	}
+
+	if len(pendingDirect) > 0 {
+		a.pendingElevation = &pendingElevationState{
+			plan:          plan,
+			direct:        direct,
+			pendingDirect: pendingDirect,
+		}
+		return a, tea.Batch(directCmds...)
 	}
 
 	if len(plan.Categories) == 0 {
 		return a.startNextClean()
 	}
 
-	return a, elevateCmd(a.ctx, plan)
+	return a, elevateCmd(a.ctx, plan, direct)
+}
+
+// directCleanCmd runs a category's direct-clean leg (the unprivileged subset
+// of a sudo category's approved entries, see commands.SplitEntriesByPrivilege)
+// as an ordinary tea.Cmd, exactly like cleanCategoryStreamCmd does for a
+// non-sudo category's Clean call. Running it synchronously inside Update, as
+// startElevation once did, would block the whole event loop for the
+// deletion's entire duration -- no key press (including q) could reach
+// a.cancel(), and ctx cancellation, the mechanism that actually stops
+// c.Clean mid-walk, would be unreachable until the call returned on its own.
+// commands.CleanDirectly does not accept a progress callback, so this leg
+// reports no incremental progress the way a normal category's clean does;
+// the category's status is set to "cleaning" by startElevation before this
+// dispatches, so the screen at least does not read as untouched while it
+// runs.
+func directCleanCmd(ctx context.Context, c cleaner.Cleaner, entries []cleaner.FileEntry, dryRun bool) tea.Cmd {
+	return func() tea.Msg {
+		return directCleanCompleteMsg{
+			category: c.Category(),
+			result:   commands.CleanDirectly(ctx, c, entries, dryRun),
+		}
+	}
+}
+
+// handleDirectCleanComplete applies the outcome of one category's direct leg
+// as it arrives (see startElevation/directCleanCmd). A direct leg's deletion
+// is real and final the instant this fires, so its history row is written
+// right here, immediately -- see recordDirectHistory -- rather than waiting
+// for finishCleaning or for this category's elevated leg (if any) to also
+// resolve.
+//
+// A category with no sudo entries at all is fully resolved here: no elevated
+// leg is coming, so its CleanResult goes to the cleaning screen now. A split
+// category (sudo entries still pending) only gets its history row written
+// here; handleElevateComplete finishes wiring the cleaning screen up once
+// the elevated leg reports back, merging this leg's counts in (see
+// commands.MergeCategoryResults).
+//
+// Once every direct leg this elevation attempt was waiting on has reported
+// back, whatever plan accumulated in startElevation is dispatched, exactly
+// as it would have been synchronously before direct legs existed.
+func (a App) handleDirectCleanComplete(msg directCleanCompleteMsg) (tea.Model, tea.Cmd) {
+	pe := a.pendingElevation
+	if pe == nil {
+		// Defensive only: directCleanCompleteMsg is only ever produced by a
+		// tea.Cmd startElevation dispatches in the same step it sets
+		// a.pendingElevation, so this should be unreachable.
+		return a, nil
+	}
+
+	pe.direct[msg.category] = msg.result
+	delete(pe.pendingDirect, msg.category)
+
+	a.recordDirectHistory(msg.category, msg.result, pe.plan.DryRun)
+
+	needsElevation := false
+	for _, pc := range pe.plan.Categories {
+		if pc.Category == msg.category {
+			needsElevation = true
+			break
+		}
+	}
+	if !needsElevation {
+		cr, cerr := directOnlyResult(msg.result, "", pe.plan.DryRun)
+		a.cleaningScr.UpdateCleanResult(msg.category, cr, cerr)
+	}
+
+	if len(pe.pendingDirect) > 0 {
+		return a, nil
+	}
+
+	plan, direct := pe.plan, pe.direct
+	a.pendingElevation = nil
+
+	if len(plan.Categories) == 0 {
+		return a.startNextClean()
+	}
+	return a, elevateCmd(a.ctx, plan, direct)
 }
 
 // elevateRun adapts elevate.Invoke to bubbletea's tea.Exec: tea.Exec releases
@@ -505,7 +769,7 @@ func (e *elevateRun) Run() error {
 	return e.err
 }
 
-func elevateCmd(ctx context.Context, plan elevate.Plan) tea.Cmd {
+func elevateCmd(ctx context.Context, plan elevate.Plan, direct map[cleaner.Category]commands.CleanCategoryResult) tea.Cmd {
 	e := &elevateRun{ctx: ctx, plan: plan}
 	return tea.Exec(e, func(err error) tea.Msg {
 		// Deliberately e.err, not the err bubbletea passes here: when Run
@@ -513,7 +777,7 @@ func elevateCmd(ctx context.Context, plan elevate.Plan) tea.Cmd {
 		// RestoreTerminal's error instead, which is unrelated to whether
 		// elevate.Invoke actually succeeded and would otherwise cause a
 		// fully successful sudo clean to be misreported as outcome-unknown.
-		return elevateCompleteMsg{plan: plan, result: e.result, err: e.err}
+		return elevateCompleteMsg{plan: plan, result: e.result, err: e.err, direct: direct}
 	})
 }
 
@@ -842,6 +1106,36 @@ func partialErrorsFromResult(ccr commands.CleanCategoryResult) []error {
 		errs = append(errs, fmt.Errorf("%d more item(s) could not be cleaned", more))
 	}
 	return errs
+}
+
+// directOnlyResult converts a direct-clean leg (see commands.CleanDirectly)
+// into the cleaner.CleanResult shape UpdateCleanResult expects, optionally
+// folding in an error/reason from the elevated leg for the same category
+// (an empty elevatedErrMsg means the elevated leg has nothing to add -- the
+// category simply never needed elevation at all, or the elevated leg found
+// nothing to report). Reuses MergeCategoryResults rather than a parallel
+// rule so a direct leg's confirmed counts are never lost, whatever the
+// elevated leg's outcome was.
+func directOnlyResult(direct commands.CleanCategoryResult, elevatedErrMsg string, dryRun bool) (*cleaner.CleanResult, error) {
+	merged := direct
+	if elevatedErrMsg != "" {
+		merged = commands.MergeCategoryResults(direct, commands.CleanCategoryResult{
+			Err:    errors.New(elevatedErrMsg),
+			ErrMsg: elevatedErrMsg,
+		})
+	}
+	cr := &cleaner.CleanResult{
+		Category:     merged.Category,
+		FilesDeleted: merged.DeletedFiles,
+		BytesFreed:   merged.DeletedSize,
+		DryRun:       dryRun,
+		Errors:       partialErrorsFromResult(merged),
+	}
+	var cerr error
+	if merged.ErrMsg != "" {
+		cerr = errors.New(merged.ErrMsg)
+	}
+	return cr, cerr
 }
 
 // buildTUIRunRecord turns the cleaning screen's results into a history

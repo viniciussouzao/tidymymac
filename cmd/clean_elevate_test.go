@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -454,6 +455,366 @@ func TestMergeCleanResults_PartialErrorsSetHasErrorsButKeepTotals(t *testing.T) 
 	if got := failedCategoryNames(merged); len(got) != 1 || got[0] != "Temp Files" {
 		t.Fatalf("failedCategoryNames = %v, want [Temp Files]", got)
 	}
+}
+
+// splitPrivilegeCleaner is a RequiresSudo cleaner that needs root only for
+// entries under /sudo/, standing in for Temp's real /tmp vs $TMPDIR split, so
+// elevateForClean's privilege-split behavior can be exercised without a real
+// TempCleaner or real filesystem paths.
+type splitPrivilegeCleaner struct {
+	category cleaner.Category
+	entries  []cleaner.FileEntry
+
+	cleanCalls  int
+	cleanedWith []cleaner.FileEntry
+}
+
+func (c *splitPrivilegeCleaner) Category() cleaner.Category { return c.category }
+func (c *splitPrivilegeCleaner) Name() string               { return string(c.category) }
+func (c *splitPrivilegeCleaner) Description() string        { return "split privilege spy" }
+func (c *splitPrivilegeCleaner) RequiresSudo() bool         { return true }
+func (c *splitPrivilegeCleaner) DeletesWholeDomain() bool   { return false }
+
+func (c *splitPrivilegeCleaner) NeedsSudo(entry cleaner.FileEntry) bool {
+	return strings.HasPrefix(entry.Path, "/sudo/")
+}
+
+func (c *splitPrivilegeCleaner) Scan(context.Context, func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
+	return &cleaner.ScanResult{Category: c.category, Entries: c.entries, TotalFiles: len(c.entries)}, nil
+}
+
+func (c *splitPrivilegeCleaner) Clean(_ context.Context, entries []cleaner.FileEntry, _ bool, _ func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	c.cleanCalls++
+	c.cleanedWith = append(c.cleanedWith, entries...)
+	var freed int64
+	for _, e := range entries {
+		freed += e.Size
+	}
+	return &cleaner.CleanResult{Category: c.category, FilesDeleted: len(entries), BytesFreed: freed}, nil
+}
+
+// withLoadedConfig sets the package-level loadedConfig elevateForClean reads,
+// and restores whatever was there before -- mirroring the save/set/cleanup
+// pattern used by list_protected_test.go and unprotect_test.go.
+func withLoadedConfig(t *testing.T) {
+	t.Helper()
+	cfg, err := config.New(nil, nil)
+	if err != nil {
+		t.Fatalf("config.New: %v", err)
+	}
+	prev := loadedConfig
+	loadedConfig = cfg
+	t.Cleanup(func() { loadedConfig = prev })
+}
+
+// stubInvokeElevated swaps invokeElevated for fn and restores it afterwards
+// -- the same seam-substitution shape internal/elevate's own tests use for
+// sudoCommand/sudoAuthCommand, but reachable from cmd since invokeElevated is
+// declared in this package specifically so elevateForClean is testable
+// without spawning a real sudo prompt.
+func stubInvokeElevated(t *testing.T, fn func(ctx context.Context, plan elevate.Plan) (elevate.Result, error)) {
+	t.Helper()
+	prev := invokeElevated
+	invokeElevated = fn
+	t.Cleanup(func() { invokeElevated = prev })
+}
+
+func assertNoDuplicateCategories(t *testing.T, results []commands.CleanCategoryResult) {
+	t.Helper()
+	seen := make(map[cleaner.Category]struct{}, len(results))
+	for _, r := range results {
+		if _, ok := seen[r.Category]; ok {
+			t.Fatalf("category %s appears more than once in results: %+v", r.Category, results)
+		}
+		seen[r.Category] = struct{}{}
+	}
+}
+
+func TestElevateForClean_SplitCategoryMergesDirectAndSudoLegs(t *testing.T) {
+	withLoadedConfig(t)
+
+	const cat cleaner.Category = "split_cat"
+	c := &splitPrivilegeCleaner{
+		category: cat,
+		entries: []cleaner.FileEntry{
+			{Path: "/sudo/a", Size: 10, Category: cat},
+			{Path: "/sudo/b", Size: 20, Category: cat},
+			{Path: "/direct/c", Size: 5, Category: cat},
+			{Path: "/direct/d", Size: 7, Category: cat},
+		},
+	}
+	registry := cleaner.NewRegistry()
+	registry.Register(c)
+
+	var gotPlan elevate.Plan
+	invokeCalled := false
+	stubInvokeElevated(t, func(_ context.Context, plan elevate.Plan) (elevate.Result, error) {
+		invokeCalled = true
+		gotPlan = plan
+		return elevate.Result{
+			Clean: commands.CleanResult{
+				Categories: []commands.CleanCategoryResult{
+					{Category: cat, Name: cat.DisplayName(), DeletedFiles: 2, DeletedSize: 30},
+				},
+			},
+		}, nil
+	})
+
+	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	if err != nil {
+		t.Fatalf("elevateForClean: %v", err)
+	}
+	if !invokeCalled {
+		t.Fatal("expected elevate.Invoke (stubbed) to be called: this category has sudo-required entries")
+	}
+	if len(gotPlan.Categories) != 1 || len(gotPlan.Categories[0].Entries) != 2 {
+		t.Fatalf("plan sent to invokeElevated = %+v, want exactly the 2 /sudo/ entries", gotPlan.Categories)
+	}
+	for _, e := range gotPlan.Categories[0].Entries {
+		if !strings.HasPrefix(e.Path, "/sudo/") {
+			t.Errorf("plan entry %s should not have been sent for elevation", e.Path)
+		}
+	}
+
+	assertNoDuplicateCategories(t, results)
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want a single merged row for %s", results, cat)
+	}
+	got := results[0]
+	if got.DeletedFiles != 4 {
+		t.Errorf("DeletedFiles = %d, want 4 (2 direct + 2 elevated)", got.DeletedFiles)
+	}
+	if got.DeletedSize != 42 {
+		t.Errorf("DeletedSize = %d, want 42 (5+7 direct, 10+20 elevated)", got.DeletedSize)
+	}
+	if got.Err != nil {
+		t.Errorf("Err = %v, want nil", got.Err)
+	}
+	if len(got.Files) != 0 {
+		t.Errorf("Files = %+v, want empty: neither leg populated Files (not --detailed)", got.Files)
+	}
+	if c.cleanCalls != 1 || len(c.cleanedWith) != 2 {
+		t.Fatalf("direct Clean called %d time(s) with %d entries, want 1 call with the 2 /direct/ entries", c.cleanCalls, len(c.cleanedWith))
+	}
+}
+
+func TestElevateForClean_DirectOnlyCategoryNeverReachesThePlan(t *testing.T) {
+	withLoadedConfig(t)
+
+	const cat cleaner.Category = "direct_only_cat"
+	c := &splitPrivilegeCleaner{
+		category: cat,
+		entries: []cleaner.FileEntry{
+			{Path: "/direct/a", Size: 5, Category: cat},
+			{Path: "/direct/b", Size: 7, Category: cat},
+		},
+	}
+	registry := cleaner.NewRegistry()
+	registry.Register(c)
+
+	stubInvokeElevated(t, func(context.Context, elevate.Plan) (elevate.Result, error) {
+		t.Fatal("invokeElevated must never be called: this category has no sudo-required entries")
+		return elevate.Result{}, nil
+	})
+
+	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	if err != nil {
+		t.Fatalf("elevateForClean: %v", err)
+	}
+
+	assertNoDuplicateCategories(t, results)
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want a single direct-only row for %s", results, cat)
+	}
+	got := results[0]
+	if got.DeletedFiles != 2 || got.DeletedSize != 12 {
+		t.Errorf("got %d files / %d bytes, want 2 files / 12 bytes from the direct leg alone", got.DeletedFiles, got.DeletedSize)
+	}
+	if got.Err != nil {
+		t.Errorf("Err = %v, want nil", got.Err)
+	}
+
+	// sudoNeedMessage is driven entirely by plan.Categories; a category that
+	// never entered the plan must never be named as a reason for the sudo
+	// prompt it never caused.
+	msg := sudoNeedMessage(nil)
+	if strings.Contains(msg, cat.DisplayName()) {
+		t.Errorf("sudoNeedMessage mentions %s, which never needed sudo", cat)
+	}
+}
+
+func TestElevateForClean_EveryCategoryDirectOnlySkipsInvokeEntirely(t *testing.T) {
+	withLoadedConfig(t)
+
+	const catA, catB cleaner.Category = "direct_a", "direct_b"
+	a := &splitPrivilegeCleaner{category: catA, entries: []cleaner.FileEntry{{Path: "/direct/a", Size: 3, Category: catA}}}
+	b := &splitPrivilegeCleaner{category: catB, entries: []cleaner.FileEntry{{Path: "/direct/b", Size: 4, Category: catB}}}
+	registry := cleaner.NewRegistry()
+	registry.Register(a)
+	registry.Register(b)
+
+	stubInvokeElevated(t, func(context.Context, elevate.Plan) (elevate.Result, error) {
+		t.Fatal("invokeElevated must never be called when every sudoName resolves via the direct leg")
+		return elevate.Result{}, nil
+	})
+
+	results, err := elevateForClean(context.Background(), registry, []string{string(catA), string(catB)}, commands.ScanResult{}, false)
+	if err != nil {
+		t.Fatalf("elevateForClean: %v", err)
+	}
+
+	assertNoDuplicateCategories(t, results)
+	if len(results) != 2 {
+		t.Fatalf("results = %+v, want one row per direct-only category", results)
+	}
+}
+
+func TestElevateForClean_OnlySudoEntriesUnchanged(t *testing.T) {
+	withLoadedConfig(t)
+
+	const cat cleaner.Category = "sudo_only_cat"
+	c := &splitPrivilegeCleaner{
+		category: cat,
+		entries: []cleaner.FileEntry{
+			{Path: "/sudo/a", Size: 10, Category: cat},
+			{Path: "/sudo/b", Size: 20, Category: cat},
+		},
+	}
+	registry := cleaner.NewRegistry()
+	registry.Register(c)
+
+	invokeCalled := false
+	stubInvokeElevated(t, func(_ context.Context, plan elevate.Plan) (elevate.Result, error) {
+		invokeCalled = true
+		if len(plan.Categories) != 1 || len(plan.Categories[0].Entries) != 2 {
+			t.Fatalf("plan = %+v, want the single category with both entries", plan.Categories)
+		}
+		return elevate.Result{
+			Clean: commands.CleanResult{
+				Categories: []commands.CleanCategoryResult{
+					{Category: cat, Name: cat.DisplayName(), DeletedFiles: 2, DeletedSize: 30},
+				},
+			},
+		}, nil
+	})
+
+	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	if err != nil {
+		t.Fatalf("elevateForClean: %v", err)
+	}
+	if !invokeCalled {
+		t.Fatal("expected invokeElevated to be called")
+	}
+
+	assertNoDuplicateCategories(t, results)
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want a single row for %s", results, cat)
+	}
+	if got := results[0]; got.DeletedFiles != 2 || got.DeletedSize != 30 {
+		t.Errorf("got %d files / %d bytes, want 2 files / 30 bytes (the elevated leg, unchanged)", got.DeletedFiles, got.DeletedSize)
+	}
+	if c.cleanCalls != 0 {
+		t.Errorf("direct Clean called %d time(s), want 0: every entry needed sudo", c.cleanCalls)
+	}
+}
+
+func TestElevateForClean_ElevatedFailureKeepsDirectLegCountsAndCarriesTheError(t *testing.T) {
+	withLoadedConfig(t)
+
+	const cat cleaner.Category = "mixed_failure_cat"
+	c := &splitPrivilegeCleaner{
+		category: cat,
+		entries: []cleaner.FileEntry{
+			{Path: "/sudo/a", Size: 10, Category: cat},
+			{Path: "/direct/b", Size: 5, Category: cat},
+		},
+	}
+	registry := cleaner.NewRegistry()
+	registry.Register(c)
+
+	stubInvokeElevated(t, func(context.Context, elevate.Plan) (elevate.Result, error) {
+		return elevate.Result{}, elevate.ErrElevationFailed
+	})
+
+	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	if err != nil {
+		t.Fatalf("elevateForClean: %v", err)
+	}
+
+	assertNoDuplicateCategories(t, results)
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want a single merged row for %s", results, cat)
+	}
+	got := results[0]
+	if got.DeletedFiles != 1 || got.DeletedSize != 5 {
+		t.Errorf("got %d files / %d bytes, want the direct leg's real counts (1 file / 5 bytes) preserved despite the elevated failure", got.DeletedFiles, got.DeletedSize)
+	}
+	if got.Err == nil {
+		t.Fatal("Err = nil, want the elevated leg's failure to still be surfaced despite the direct leg's success")
+	}
+	if !strings.Contains(got.ErrMsg, "nothing was deleted") {
+		t.Errorf("ErrMsg = %q, want it to carry ErrElevationFailed's explanation", got.ErrMsg)
+	}
+}
+
+// TestElevatedFailureAfterRealDirectDeletion_TotalsAndHistoryStillReportIt is
+// the exact scenario a security review flagged: a split category's direct
+// leg deletes real files, and its elevated leg then fails (mistyped sudo
+// password) or comes back with an unknown outcome. commands.MergeCategoryResults
+// correctly sums the direct leg's counts into the merged row's
+// DeletedFiles/DeletedSize alongside the elevated leg's Err -- but
+// mergeCleanResults and buildRunRecord each used to have their own "Err !=
+// nil means nothing happened" shortcut that discarded those counts anyway.
+// A row with Err != nil and DeletedFiles > 0 must still show up in both the
+// displayed totals and the history record.
+func TestElevatedFailureAfterRealDirectDeletion_TotalsAndHistoryStillReportIt(t *testing.T) {
+	merged := commands.MergeCategoryResults(
+		commands.CleanCategoryResult{
+			Category:     cleaner.CategoryTemp,
+			Name:         cleaner.CategoryTemp.DisplayName(),
+			DeletedFiles: 3,
+			DeletedSize:  300,
+		},
+		commands.CleanCategoryResult{
+			Category: cleaner.CategoryTemp,
+			Name:     cleaner.CategoryTemp.DisplayName(),
+			ErrMsg:   "elevation did not run (elevated helper did not run; nothing was deleted); nothing was deleted",
+			Err:      errors.New("elevation did not run (elevated helper did not run; nothing was deleted); nothing was deleted"),
+		},
+	)
+	if merged.Err == nil {
+		t.Fatal("sanity check: MergeCategoryResults should still carry the elevated leg's error")
+	}
+	if merged.DeletedFiles != 3 || merged.DeletedSize != 300 {
+		t.Fatalf("sanity check: merged row = %d files/%d bytes, want the direct leg's 3/300 to survive the merge", merged.DeletedFiles, merged.DeletedSize)
+	}
+
+	t.Run("mergeCleanResults totals include the errored row's real counts", func(t *testing.T) {
+		result := mergeCleanResults(commands.CleanResult{}, []commands.CleanCategoryResult{merged})
+		if !result.HasErrors {
+			t.Error("HasErrors = false, want true: the elevated leg failed")
+		}
+		if result.TotalFiles != 3 || result.TotalSize != 300 {
+			t.Errorf("totals = %d files / %d bytes, want 3 files / 300 bytes: a completed direct deletion must not be hidden behind the elevated leg's failure", result.TotalFiles, result.TotalSize)
+		}
+	})
+
+	t.Run("buildRunRecord still records the errored row's real deletion", func(t *testing.T) {
+		record := buildRunRecord(commands.CleanResult{
+			CleanedAt:  time.Now().UTC(),
+			Categories: []commands.CleanCategoryResult{merged},
+		}, 0)
+		if len(record.Categories) != 1 {
+			t.Fatalf("record.Categories = %+v, want one entry for the category that actually deleted files", record.Categories)
+		}
+		got := record.Categories[0]
+		if got.Files != 3 || got.Bytes != 300 {
+			t.Errorf("recorded = %d files / %d bytes, want 3 files / 300 bytes", got.Files, got.Bytes)
+		}
+		if record.TotalFiles != 3 || record.TotalBytes != 300 {
+			t.Errorf("record totals = %d files / %d bytes, want 3 files / 300 bytes", record.TotalFiles, record.TotalBytes)
+		}
+	})
 }
 
 func TestWritePartialErrors_RendersPathReasonAndTruncation(t *testing.T) {

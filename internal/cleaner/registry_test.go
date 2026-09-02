@@ -131,3 +131,44 @@ func TestNoCleanerIsBothSudoAndWholeDomain(t *testing.T) {
 		}
 	}
 }
+
+// TestPrivilegeSplittersAreSudoAndNotWholeDomain is the generic half of the
+// PrivilegeSplitter contract -- the part that can be checked without knowing
+// any cleaner's internals.
+//
+// The subset invariant (a splitter's sudo roots must be a subset of its own
+// scan roots) cannot be asserted generically: the interface deliberately
+// exposes only a classification, not the roots behind it, so each
+// implementation carries its own test (see
+// TestTempCleanerSudoRootsAreSubsetOfRoots).
+func TestPrivilegeSplittersAreSudoAndNotWholeDomain(t *testing.T) {
+	for _, c := range DefaultRegistry().All() {
+		splitter, ok := c.(PrivilegeSplitter)
+		if !ok {
+			continue
+		}
+
+		// A split only ever decides which entries reach the elevated helper.
+		// On a cleaner that never elevates, NeedsSudo would be dead code that
+		// looks like a live safety decision.
+		if !c.RequiresSudo() {
+			t.Errorf("cleaner %q implements PrivilegeSplitter but does not RequiresSudo", c.Category())
+		}
+		// Splitting produces a partial entry list, which a whole-domain
+		// cleaner must never be handed; commands.SplitEntriesByPrivilege
+		// refuses to split such a cleaner, so implementing both is at best
+		// misleading. See TestNoCleanerIsBothSudoAndWholeDomain.
+		if c.DeletesWholeDomain() {
+			t.Errorf("cleaner %q implements PrivilegeSplitter and DeletesWholeDomain; a whole-domain cleaner cannot take a partial entry list", c.Category())
+		}
+
+		// Nothing outside a real domain is ever elevated: an empty path is
+		// not a location, and "/" is never a scan root (newRootedRemover
+		// drops it outright).
+		for _, path := range []string{"", "/", "relative/path"} {
+			if splitter.NeedsSudo(FileEntry{Path: path, Category: c.Category()}) {
+				t.Errorf("cleaner %q: NeedsSudo(%q) = true, want false", c.Category(), path)
+			}
+		}
+	}
+}

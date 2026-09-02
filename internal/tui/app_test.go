@@ -63,6 +63,42 @@ func (m *wholeDomainMockCleaner) Clean(_ context.Context, entries []cleaner.File
 	return &cleaner.CleanResult{Category: m.category, DryRun: dryRun, FilesDeleted: len(entries)}, nil
 }
 
+// splitPrivilegeCleaner is a RequiresSudo cleaner that needs root only for
+// entries whose path is prefixed "/sudo/", standing in for Temp's real /tmp
+// vs $TMPDIR split (see internal/cleaner.PrivilegeSplitter). Mirrors
+// cmd/clean_elevate_test.go's cleaner of the same name and shape -- test
+// types aren't importable across packages.
+type splitPrivilegeCleaner struct {
+	category cleaner.Category
+
+	cleanCalls  int
+	cleanedWith []cleaner.FileEntry
+}
+
+func (c *splitPrivilegeCleaner) Category() cleaner.Category { return c.category }
+func (c *splitPrivilegeCleaner) Name() string               { return string(c.category) }
+func (c *splitPrivilegeCleaner) Description() string        { return "split privilege spy" }
+func (c *splitPrivilegeCleaner) RequiresSudo() bool         { return true }
+func (c *splitPrivilegeCleaner) DeletesWholeDomain() bool   { return false }
+
+func (c *splitPrivilegeCleaner) NeedsSudo(entry cleaner.FileEntry) bool {
+	return strings.HasPrefix(entry.Path, "/sudo/")
+}
+
+func (c *splitPrivilegeCleaner) Scan(context.Context, func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
+	return &cleaner.ScanResult{Category: c.category}, nil
+}
+
+func (c *splitPrivilegeCleaner) Clean(_ context.Context, entries []cleaner.FileEntry, _ bool, _ func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	c.cleanCalls++
+	c.cleanedWith = append(c.cleanedWith, entries...)
+	var freed int64
+	for _, e := range entries {
+		freed += e.Size
+	}
+	return &cleaner.CleanResult{Category: c.category, FilesDeleted: len(entries), BytesFreed: freed}, nil
+}
+
 func TestUpdateReviewRequiresSudoAndExecuteConfirmationsInSequence(t *testing.T) {
 	registry := cleaner.NewRegistry()
 	registry.Register(cleaner.NewTempCleaner())
@@ -335,6 +371,353 @@ func newSudoReviewApp(t *testing.T, entries []cleaner.FileEntry) App {
 	}
 }
 
+// newSplitReviewApp builds an execute-mode app around a single
+// splitPrivilegeCleaner category, mirroring newSudoReviewApp's shape.
+func newSplitReviewApp(t *testing.T, cat cleaner.Category, entries []cleaner.FileEntry) (App, *splitPrivilegeCleaner) {
+	t.Helper()
+
+	c := &splitPrivilegeCleaner{category: cat}
+	registry := cleaner.NewRegistry()
+	registry.Register(c)
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cat: {Category: cat, TotalFiles: len(entries), Entries: entries},
+	}
+
+	scanning := screens.NewScanning([]string{string(cat)}, registry)
+	scanning.UpdateScanResult(cat, results[cat], nil)
+
+	app := App{
+		currentScreen: screenCleaning,
+		executeMode:   true,
+		registry:      registry,
+		scanningScr:   scanning,
+		cleaningScr:   screens.NewCleaningModel(results, false),
+		reviewScr:     screens.NewReview(results, true, registry, false),
+		isElevated:    false,
+		ctx:           context.Background(),
+	}
+	return app, c
+}
+
+// runDirectCleanCmd invokes the single tea.Cmd startElevation dispatched for
+// a category's direct leg and asserts it produced a directCleanCompleteMsg.
+// tea.Batch collapses a single-command batch to that command directly (see
+// bubbletea's compactCmds), so this works whether startElevation dispatched
+// one direct leg alone or as part of a larger batch already reduced to one.
+func runDirectCleanCmd(t *testing.T, cmd tea.Cmd) directCleanCompleteMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a non-nil command for the pending direct leg")
+	}
+	msg, ok := cmd().(directCleanCompleteMsg)
+	if !ok {
+		t.Fatalf("expected directCleanCompleteMsg, got %T", msg)
+	}
+	return msg
+}
+
+// runDirectCleanBatch unwraps the tea.Batch startElevation dispatches when
+// more than one category has a direct leg, runs every command in it, and
+// returns the directCleanCompleteMsg each produced, keyed by category (the
+// order categories are batched in follows cleaningScr.Categories, which is
+// built from a map, so callers must never rely on positional order). want is
+// the number of direct legs expected in the batch.
+func runDirectCleanBatch(t *testing.T, cmd tea.Cmd, want int) map[cleaner.Category]directCleanCompleteMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a non-nil batch command for the pending direct legs")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected a tea.BatchMsg covering every direct leg, got %T", cmd())
+	}
+	if len(batch) != want {
+		t.Fatalf("batch has %d command(s), want %d (one per category with a direct leg)", len(batch), want)
+	}
+	msgs := make(map[cleaner.Category]directCleanCompleteMsg, len(batch))
+	for i, sub := range batch {
+		msg, ok := sub().(directCleanCompleteMsg)
+		if !ok {
+			t.Fatalf("batch command %d produced %T, want directCleanCompleteMsg", i, sub())
+		}
+		msgs[msg.category] = msg
+	}
+	if len(msgs) != want {
+		t.Fatalf("batch produced %d distinct categories, want %d", len(msgs), want)
+	}
+	return msgs
+}
+
+// TestStartElevation_DirectOnlyCategoryDispatchesAsyncAndResolvesOnCompletion
+// covers the case where a sudo-required category's approved entries need no
+// elevation at all (e.g. Temp's own $TMPDIR entries). Issue B: the direct
+// leg must be dispatched as an async tea.Cmd, never run inline inside
+// startElevation itself -- so cmd must be non-nil and c.Clean must not have
+// run yet by the time startElevation returns. Issue A: once that command's
+// result is fed back through handleDirectCleanComplete, the deletion's
+// history row must already exist even though this category never enters an
+// elevate.Plan and finishCleaning has not run.
+func TestStartElevation_DirectOnlyCategoryDispatchesAsyncAndResolvesOnCompletion(t *testing.T) {
+	resetHistory(t)
+	const cat cleaner.Category = "split_direct_only"
+	entries := []cleaner.FileEntry{
+		{Path: "/direct/a", Size: 5, Category: cat},
+		{Path: "/direct/b", Size: 7, Category: cat},
+	}
+	app, c := newSplitReviewApp(t, cat, entries)
+
+	model, cmd := app.startElevation()
+	app = model.(App)
+
+	if cmd == nil {
+		t.Fatal("expected a direct-clean command to be dispatched (Issue B: must be async, not run inline)")
+	}
+	if c.cleanCalls != 0 {
+		t.Fatal("the direct leg must not have run yet: startElevation only dispatches the command, it never calls Clean itself")
+	}
+	if app.cleaningScr.Categories[0].Status != "cleaning" {
+		t.Fatalf("Status = %q, want cleaning (in flight, not yet resolved)", app.cleaningScr.Categories[0].Status)
+	}
+	if app.pendingElevation == nil {
+		t.Fatal("expected pendingElevation to be set while the direct leg is in flight")
+	}
+
+	dmsg := runDirectCleanCmd(t, cmd)
+	if c.cleanCalls != 1 || len(c.cleanedWith) != 2 {
+		t.Fatalf("direct Clean called %d time(s) with %d entries, want 1 call with both entries", c.cleanCalls, len(c.cleanedWith))
+	}
+
+	model, cmd = app.handleDirectCleanComplete(dmsg)
+	app = model.(App)
+
+	if cmd != nil {
+		t.Fatal("expected no further command: nothing needed elevation, so this should fall through to the ordinary clean loop and finish")
+	}
+	if app.pendingElevation != nil {
+		t.Fatal("pendingElevation must be cleared once its only pending direct leg has resolved")
+	}
+	got := app.cleaningScr.Categories[0]
+	if got.Status != "done" {
+		t.Fatalf("Status = %q, want done", got.Status)
+	}
+	if got.FilesDeleted != 2 || got.BytesDeleted != 12 {
+		t.Fatalf("FilesDeleted/BytesDeleted = %d/%d, want 2/12", got.FilesDeleted, got.BytesDeleted)
+	}
+	if !app.cleaningScr.Done {
+		t.Fatal("the single category resolved directly, so the whole run should be done")
+	}
+
+	// Issue A: the history row must exist now, immediately -- not deferred
+	// to finishCleaning, which a mid-run quit could skip entirely.
+	runs := loadHistoryRuns(t)
+	if len(runs) != 1 || len(runs[0].Categories) != 1 || runs[0].Categories[0].Name != string(cat) || runs[0].TotalFiles != 2 || runs[0].TotalBytes != 12 {
+		t.Fatalf("history = %+v, want exactly one run with the direct-only deletion", runs)
+	}
+	if _, recorded := app.elevatedRecorded[cat]; !recorded {
+		t.Fatal("a direct-only category's leg is still recordDirectHistory's responsibility -- it must be marked elevatedRecorded so finishCleaning never revisits it")
+	}
+}
+
+// TestStartElevation_DirectOnlyCategoryHistorySurvivesQuitBeforeRunFinishes
+// is Issue A's exact regression scenario: a direct-only category resolves
+// while a second, unrelated category is still pending, so finishCleaning has
+// definitely not run yet -- and the deletion must already be durable.
+func TestStartElevation_DirectOnlyCategoryHistorySurvivesQuitBeforeRunFinishes(t *testing.T) {
+	resetHistory(t)
+	const cat cleaner.Category = "split_direct_only_mixed"
+	directCleaner := &splitPrivilegeCleaner{category: cat}
+	plain := &plainMockCleaner{wholeDomainMockCleaner{category: "cat_plain_2"}}
+	registry := cleaner.NewRegistry()
+	registry.Register(directCleaner)
+	registry.Register(plain)
+
+	directEntries := []cleaner.FileEntry{{Path: "/direct/a", Size: 5, Category: cat}}
+	plainEntries := []cleaner.FileEntry{{Path: "/Users/vini/Library/Caches/y", Size: 3, Category: "cat_plain_2"}}
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cat:           {Category: cat, TotalFiles: 1, Entries: directEntries},
+		"cat_plain_2": {Category: "cat_plain_2", TotalFiles: 1, Entries: plainEntries},
+	}
+
+	app := App{
+		currentScreen: screenCleaning,
+		executeMode:   true,
+		registry:      registry,
+		cleaningScr:   screens.NewCleaningModel(results, false),
+		reviewScr:     screens.NewReview(results, true, registry, false),
+		ctx:           context.Background(),
+	}
+
+	model, cmd := app.startElevation()
+	app = model.(App)
+	dmsg := runDirectCleanCmd(t, cmd)
+
+	model, _ = app.handleDirectCleanComplete(dmsg)
+	app = model.(App)
+
+	if app.cleaningScr.Done {
+		t.Fatal("the plain category has not run yet, so the whole run must not be done")
+	}
+	if runs := loadHistoryRuns(t); len(runs) != 1 || runs[0].TotalFiles != 1 || runs[0].TotalBytes != 5 {
+		t.Fatalf("history after the direct leg alone = %+v, want the direct deletion already recorded", runs)
+	}
+
+	// Simulate the quit key: cancel and exit without ever reaching
+	// finishCleaning for the still-pending plain category.
+	ctx, cancel := context.WithCancel(context.Background())
+	app.ctx, app.cancel = ctx, cancel
+	model, quit := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	app = model.(App)
+	if quit == nil {
+		t.Fatal("expected a quit command")
+	}
+	if runs := loadHistoryRuns(t); len(runs) != 1 {
+		t.Fatalf("history after quit has %d run(s), want exactly the one already-recorded direct deletion", len(runs))
+	}
+}
+
+// TestStartElevation_TwoDirectLegsDispatchTogetherAndPlanWaitsForBoth covers
+// the multi-category shape of F-F's async split: two sudo categories that
+// each have BOTH a root-only entry and an entry the user owns. startElevation
+// must dispatch both direct legs at once (a tea.Batch, not one inline and one
+// deferred), and handleDirectCleanComplete must hold the elevate.Plan back
+// until the LAST leg reports -- dispatching after the first would elevate with
+// one category's direct result missing from the map handleElevateComplete
+// later merges from.
+func TestStartElevation_TwoDirectLegsDispatchTogetherAndPlanWaitsForBoth(t *testing.T) {
+	resetHistory(t)
+	const catA cleaner.Category = "split_two_a"
+	const catB cleaner.Category = "split_two_b"
+
+	cleanerA := &splitPrivilegeCleaner{category: catA}
+	cleanerB := &splitPrivilegeCleaner{category: catB}
+	registry := cleaner.NewRegistry()
+	registry.Register(cleanerA)
+	registry.Register(cleanerB)
+
+	entriesA := []cleaner.FileEntry{
+		{Path: "/sudo/a", Size: 10, Category: catA},
+		{Path: "/direct/a", Size: 5, Category: catA},
+	}
+	entriesB := []cleaner.FileEntry{
+		{Path: "/sudo/b", Size: 20, Category: catB},
+		{Path: "/direct/b", Size: 7, Category: catB},
+	}
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		catA: {Category: catA, TotalFiles: len(entriesA), Entries: entriesA},
+		catB: {Category: catB, TotalFiles: len(entriesB), Entries: entriesB},
+	}
+
+	app := App{
+		currentScreen: screenCleaning,
+		executeMode:   true,
+		registry:      registry,
+		cleaningScr:   screens.NewCleaningModel(results, false),
+		reviewScr:     screens.NewReview(results, true, registry, false),
+		ctx:           context.Background(),
+	}
+
+	model, cmd := app.startElevation()
+	app = model.(App)
+
+	if cleanerA.cleanCalls != 0 || cleanerB.cleanCalls != 0 {
+		t.Fatal("neither direct leg may run inline: startElevation only dispatches commands")
+	}
+	pe := app.pendingElevation
+	if pe == nil {
+		t.Fatal("expected pendingElevation to be set while both direct legs are in flight")
+	}
+	if len(pe.pendingDirect) != 2 {
+		t.Fatalf("pendingDirect has %d entry/entries, want 2 (one per category with a direct leg)", len(pe.pendingDirect))
+	}
+
+	msgs := runDirectCleanBatch(t, cmd, 2)
+	if cleanerA.cleanCalls != 1 || len(cleanerA.cleanedWith) != 1 || cleanerA.cleanedWith[0].Path != "/direct/a" {
+		t.Fatalf("cleanerA direct leg: %d call(s) with %+v, want one call with only /direct/a", cleanerA.cleanCalls, cleanerA.cleanedWith)
+	}
+	if cleanerB.cleanCalls != 1 || len(cleanerB.cleanedWith) != 1 || cleanerB.cleanedWith[0].Path != "/direct/b" {
+		t.Fatalf("cleanerB direct leg: %d call(s) with %+v, want one call with only /direct/b", cleanerB.cleanCalls, cleanerB.cleanedWith)
+	}
+
+	// First leg back: the plan must NOT be dispatched yet.
+	model, cmd = app.handleDirectCleanComplete(msgs[catA])
+	app = model.(App)
+	if cmd != nil {
+		t.Fatal("the elevate plan must not be dispatched while the second category's direct leg is still in flight")
+	}
+	if app.pendingElevation == nil {
+		t.Fatal("pendingElevation must stay set until every direct leg has reported")
+	}
+	if len(app.pendingElevation.pendingDirect) != 1 {
+		t.Fatalf("pendingDirect has %d entry/entries after one leg, want 1", len(app.pendingElevation.pendingDirect))
+	}
+	if _, still := app.pendingElevation.pendingDirect[catB]; !still {
+		t.Fatal("the still-unreported category must be the one left in pendingDirect")
+	}
+
+	// Last leg back: now the plan goes out, covering both categories.
+	model, cmd = app.handleDirectCleanComplete(msgs[catB])
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected the elevate command once the last pending direct leg resolves")
+	}
+	if app.pendingElevation != nil {
+		t.Fatal("pendingElevation must be cleared once every direct leg has resolved")
+	}
+
+	// pe is the same state object handleDirectCleanComplete folded results
+	// into (and handed to elevateCmd) before clearing the field, so it is
+	// exactly what the elevated leg was dispatched with.
+	if len(pe.pendingDirect) != 0 {
+		t.Fatalf("pendingDirect = %+v, want empty once both legs reported", pe.pendingDirect)
+	}
+	planned := map[cleaner.Category][]string{}
+	for _, pc := range pe.plan.Categories {
+		for _, e := range pc.Entries {
+			planned[pc.Category] = append(planned[pc.Category], e.Path)
+		}
+	}
+	if len(planned) != 2 {
+		t.Fatalf("plan covers %d categor(y/ies) (%+v), want both categories' sudo entries", len(planned), planned)
+	}
+	if got := planned[catA]; len(got) != 1 || got[0] != "/sudo/a" {
+		t.Fatalf("plan entries for %s = %v, want only /sudo/a (the direct entry must not be elevated)", catA, got)
+	}
+	if got := planned[catB]; len(got) != 1 || got[0] != "/sudo/b" {
+		t.Fatalf("plan entries for %s = %v, want only /sudo/b (the direct entry must not be elevated)", catB, got)
+	}
+
+	// Both direct results must survive: the second must not overwrite the first.
+	if len(pe.direct) != 2 {
+		t.Fatalf("direct results = %+v, want one per category", pe.direct)
+	}
+	if got := pe.direct[catA]; got.DeletedFiles != 1 || got.DeletedSize != 5 {
+		t.Fatalf("direct result for %s = %d file(s)/%d byte(s), want 1/5", catA, got.DeletedFiles, got.DeletedSize)
+	}
+	if got := pe.direct[catB]; got.DeletedFiles != 1 || got.DeletedSize != 7 {
+		t.Fatalf("direct result for %s = %d file(s)/%d byte(s), want 1/7", catB, got.DeletedFiles, got.DeletedSize)
+	}
+
+	// Both are split categories, so neither is resolved on screen yet -- the
+	// elevated leg still has to report -- but both direct deletions are
+	// already durable in history (Issue A), one row each.
+	for _, c := range app.cleaningScr.Categories {
+		if c.Status != "cleaning" {
+			t.Fatalf("Status for %s = %q, want cleaning (elevated leg still outstanding)", c.Category, c.Status)
+		}
+	}
+	runs := loadHistoryRuns(t)
+	var totalFiles int
+	var totalBytes int64
+	for _, run := range runs {
+		totalFiles += run.TotalFiles
+		totalBytes += run.TotalBytes
+	}
+	if len(runs) != 2 || totalFiles != 2 || totalBytes != 12 {
+		t.Fatalf("history = %+v, want one already-durable row per direct leg totalling 2 files / 12 bytes", runs)
+	}
+}
+
 func TestStartElevation_SkipsCategoryWhenEveryEntryIsProtected(t *testing.T) {
 	entries := []cleaner.FileEntry{{Path: "/private/var/tmp/secret", Size: 10, Category: cleaner.CategoryTemp, Protected: true}}
 	app := newSudoReviewApp(t, entries)
@@ -447,6 +830,221 @@ func TestHandleElevateComplete_OutcomeUnknownNeverClaimsNothingWasDeleted(t *tes
 	}
 	if cat.Error == nil {
 		t.Fatal("expected a non-nil Error carrying the outcome-unknown message")
+	}
+}
+
+// startSplitElevation drives a split category's real, async direct-clean leg
+// through startElevation and handleDirectCleanComplete -- exactly what
+// happens before any elevateCompleteMsg exists -- so tests exercising the
+// elevated leg's branches start from the same state production code would:
+// the direct leg's history row already written (Issue A), pendingElevation
+// cleared, and an elevateCmd dispatched for the sudo entries. Returns the
+// resulting app plus the sudo entries so callers can hand-build a matching
+// elevateCompleteMsg for the elevated leg (there is no invokeElevated seam
+// in this package to stub, matching every other handleElevateComplete test).
+func startSplitElevation(t *testing.T, cat cleaner.Category) (App, []cleaner.FileEntry) {
+	t.Helper()
+	sudoEntries := []cleaner.FileEntry{{Path: "/sudo/a", Size: 10, Category: cat}}
+	directEntries := []cleaner.FileEntry{{Path: "/direct/b", Size: 5, Category: cat}}
+	app, _ := newSplitReviewApp(t, cat, append(append([]cleaner.FileEntry{}, sudoEntries...), directEntries...))
+
+	model, cmd := app.startElevation()
+	app = model.(App)
+	dmsg := runDirectCleanCmd(t, cmd)
+
+	model, cmd = app.handleDirectCleanComplete(dmsg)
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected the elevate command once the only pending direct leg resolves")
+	}
+	if app.pendingElevation != nil {
+		t.Fatal("pendingElevation should be cleared once every direct leg has resolved")
+	}
+	return app, sudoEntries
+}
+
+// TestHandleElevateComplete_SplitCategoryMergesDirectAndElevatedLegs is F-F's
+// core case: a category whose approved entries split across both legs must
+// show summed counts on the cleaning screen, appearing exactly once (never
+// double-counted between the direct leg and the elevated leg). In history,
+// per Issue A's fix, the two legs are recorded as two separate rows (the
+// direct leg's the instant it finished, the elevated leg's here) rather than
+// one row written once at the very end -- so together they must total the
+// full, real amount without duplicating either leg.
+func TestHandleElevateComplete_SplitCategoryMergesDirectAndElevatedLegs(t *testing.T) {
+	resetHistory(t)
+	const cat cleaner.Category = "split_merge"
+	app, sudoEntries := startSplitElevation(t, cat)
+
+	if runs := loadHistoryRuns(t); len(runs) != 1 || runs[0].TotalFiles != 1 || runs[0].TotalBytes != 5 {
+		t.Fatalf("history after the direct leg alone = %+v, want a single 1-file/5-byte row", runs)
+	}
+
+	msg := elevateCompleteMsg{
+		plan: elevate.Plan{
+			Version:    elevate.PlanSchemaVersion,
+			Categories: []elevate.PlanCategory{{Category: cat, Entries: sudoEntries}},
+		},
+		result: elevate.Result{
+			Version: elevate.ResultSchemaVersion,
+			Clean: commands.CleanResult{
+				Categories: []commands.CleanCategoryResult{
+					{Category: cat, DeletedFiles: 1, DeletedSize: 10},
+				},
+			},
+		},
+		direct: map[cleaner.Category]commands.CleanCategoryResult{
+			cat: {Category: cat, DeletedFiles: 1, DeletedSize: 5},
+		},
+	}
+
+	model, _ := app.handleElevateComplete(msg)
+	app = model.(App)
+
+	results := app.cleaningScr.Results()
+	if len(results) != 1 {
+		t.Fatalf("results = %d, want 1 (the category must never appear twice on screen)", len(results))
+	}
+	r := results[0]
+	if r.FilesDeleted != 2 || r.BytesFreed != 15 {
+		t.Fatalf("FilesDeleted/BytesFreed = %d/%d, want 2/15 (the cleaning screen shows the combined total)", r.FilesDeleted, r.BytesFreed)
+	}
+
+	runs := loadHistoryRuns(t)
+	if len(runs) != 2 {
+		t.Fatalf("history = %+v, want 2 rows: the direct leg's (already written) plus the elevated leg's own", runs)
+	}
+	var totalFiles int
+	var totalBytes int64
+	for _, run := range runs {
+		totalFiles += run.TotalFiles
+		totalBytes += run.TotalBytes
+	}
+	if totalFiles != 2 || totalBytes != 15 {
+		t.Fatalf("history totals across both rows = %d files / %d bytes, want 2/15 (no double counting, nothing lost)", totalFiles, totalBytes)
+	}
+}
+
+// TestHandleElevateComplete_ElevationFailedKeepsDirectLegCounts verifies the
+// direct leg's real, already-completed deletion is never discarded, and
+// never recorded a second time, just because the elevated leg for the same
+// category failed outright.
+func TestHandleElevateComplete_ElevationFailedKeepsDirectLegCounts(t *testing.T) {
+	resetHistory(t)
+	const cat cleaner.Category = "split_elevate_failed"
+	app, sudoEntries := startSplitElevation(t, cat)
+
+	msg := elevateCompleteMsg{
+		plan: elevate.Plan{
+			Version:    elevate.PlanSchemaVersion,
+			Categories: []elevate.PlanCategory{{Category: cat, Entries: sudoEntries}},
+		},
+		err: errors.Join(elevate.ErrElevationFailed, errors.New("sudo: 3 incorrect password attempts")),
+		direct: map[cleaner.Category]commands.CleanCategoryResult{
+			cat: {Category: cat, DeletedFiles: 1, DeletedSize: 5},
+		},
+	}
+
+	model, _ := app.handleElevateComplete(msg)
+	app = model.(App)
+
+	got := app.cleaningScr.Categories[0]
+	if got.Status == "skipped" {
+		t.Fatal("a category with a real direct-leg deletion must never be reported as a plain skip")
+	}
+	if got.FilesDeleted != 1 || got.BytesDeleted != 5 {
+		t.Fatalf("FilesDeleted/BytesDeleted = %d/%d, want 1/5 from the direct leg", got.FilesDeleted, got.BytesDeleted)
+	}
+	if got.Error == nil {
+		t.Fatal("expected the elevation failure to still surface as an error")
+	}
+
+	// The direct leg's row was already written by startSplitElevation; the
+	// failed elevated leg must not add a second one (nothing was deleted by
+	// it) nor drop the first.
+	if runs := loadHistoryRuns(t); len(runs) != 1 || runs[0].TotalFiles != 1 || runs[0].TotalBytes != 5 {
+		t.Fatalf("history = %+v, want exactly the direct leg's one record, not zero and not doubled", runs)
+	}
+}
+
+// TestHandleElevateComplete_OutcomeUnknownKeepsDirectLegCounts is the same
+// guarantee for the "default" (unknown outcome) branch.
+func TestHandleElevateComplete_OutcomeUnknownKeepsDirectLegCounts(t *testing.T) {
+	resetHistory(t)
+	const cat cleaner.Category = "split_outcome_unknown"
+	app, sudoEntries := startSplitElevation(t, cat)
+
+	msg := elevateCompleteMsg{
+		plan: elevate.Plan{
+			Version:    elevate.PlanSchemaVersion,
+			Categories: []elevate.PlanCategory{{Category: cat, Entries: sudoEntries}},
+		},
+		err: errors.Join(elevate.ErrElevationOutcomeUnknown, errors.New("signal: terminated")),
+		direct: map[cleaner.Category]commands.CleanCategoryResult{
+			cat: {Category: cat, DeletedFiles: 1, DeletedSize: 5},
+		},
+	}
+
+	model, _ := app.handleElevateComplete(msg)
+	app = model.(App)
+
+	got := app.cleaningScr.Categories[0]
+	if got.Status != "error" {
+		t.Fatalf("Status = %q, want error (uncertain outcome, not a plain skip)", got.Status)
+	}
+	if got.FilesDeleted != 1 || got.BytesDeleted != 5 {
+		t.Fatalf("FilesDeleted/BytesDeleted = %d/%d, want 1/5 from the direct leg", got.FilesDeleted, got.BytesDeleted)
+	}
+	if got.Error == nil {
+		t.Fatal("expected a non-nil Error carrying the outcome-unknown message")
+	}
+
+	if runs := loadHistoryRuns(t); len(runs) != 1 || runs[0].TotalFiles != 1 || runs[0].TotalBytes != 5 {
+		t.Fatalf("history = %+v, want exactly the direct leg's one record, not zero and not doubled", runs)
+	}
+}
+
+// TestHandleElevateComplete_EmptyIntersectionWithDirectLegIsNotAPlainSkip
+// covers the success path's "approved but nothing matched the fresh scan"
+// branch: ordinarily a plain skip, but a direct leg's real deletion must
+// still be reported rather than discarded as "nothing is known", and its
+// history row (already written when the direct leg finished) must not be
+// duplicated just because this branch has nothing of its own to add.
+func TestHandleElevateComplete_EmptyIntersectionWithDirectLegIsNotAPlainSkip(t *testing.T) {
+	resetHistory(t)
+	const cat cleaner.Category = "split_empty_intersection"
+	app, sudoEntries := startSplitElevation(t, cat)
+
+	msg := elevateCompleteMsg{
+		plan: elevate.Plan{
+			Version:    elevate.PlanSchemaVersion,
+			Categories: []elevate.PlanCategory{{Category: cat, Entries: sudoEntries}},
+		},
+		result: elevate.Result{
+			Version: elevate.ResultSchemaVersion,
+			Intersections: []elevate.CategoryIntersection{
+				{Category: cat, Approved: 1, Matched: 0, Missing: 1},
+			},
+		},
+		direct: map[cleaner.Category]commands.CleanCategoryResult{
+			cat: {Category: cat, DeletedFiles: 1, DeletedSize: 5},
+		},
+	}
+
+	model, _ := app.handleElevateComplete(msg)
+	app = model.(App)
+
+	got := app.cleaningScr.Categories[0]
+	if got.Status == "skipped" {
+		t.Fatal("a category with a real direct-leg deletion must never be reported as a plain skip")
+	}
+	if got.FilesDeleted != 1 || got.BytesDeleted != 5 {
+		t.Fatalf("FilesDeleted/BytesDeleted = %d/%d, want 1/5 from the direct leg", got.FilesDeleted, got.BytesDeleted)
+	}
+
+	runs := loadHistoryRuns(t)
+	if len(runs) != 1 || runs[0].TotalFiles != 1 || runs[0].TotalBytes != 5 {
+		t.Fatalf("history = %+v, want exactly the direct leg's one record (written when it finished), not doubled", runs)
 	}
 }
 

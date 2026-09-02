@@ -200,6 +200,16 @@ The returned `err` means *revalidation could not be performed at all* (daemon do
 
 A cleaner whose `Path` is a real filesystem path implements nothing and keeps the `os.Stat` path.
 
+`PrivilegeSplitter` (also in `registry.go`) is an **optional** interface a `RequiresSudo` cleaner may additionally implement:
+
+```go
+type PrivilegeSplitter interface {
+    NeedsSudo(entry FileEntry) bool
+}
+```
+
+It lets a cleaner whose domain spans locations at different privilege levels — Temp's `/tmp`/`/var/tmp` versus the user's own `$TMPDIR` — have only the entries that genuinely need root sent to the elevated helper, with the rest cleaned directly by the unprivileged process. See [Privilege split](#privilege-split-not-everything-a-sudo-category-scans-needs-root) for the full mechanism and the two invariants an implementation must uphold. A cleaner that does not implement it keeps `RequiresSudo()`'s all-or-nothing behavior.
+
 ### The Registry
 
 The `Registry` struct is a simple in-memory store that maps a `Category` to a `Cleaner` implementation:
@@ -594,6 +604,7 @@ This is enforced at multiple levels:
 8. **`disabled_categories` is a default, never a veto**: naming a category explicitly runs it, whether or not it needs root. The elevated helper does not consult it either — enforcing it only for privileged categories gave the CLI two contradictory policies separated by nothing but a privilege requirement, and it is not a security control (what bounds an elevated plan is the category being known and `RequiresSudo`, plus fence 2). A hard, plan-vetoing block, if ever wanted, belongs in its own config concept.
 9. **The program refuses to delete while it is itself root**: `sudo tidymymac clean --execute` (or `sudo tidymymac execute`) bypasses the elevation model entirely — there is no plan/fresh-scan intersection, and `RequiresSudo() == false` never meant "cannot run as root", only "the helper will not accept this category in a plan". Every execute-mode entry point calls `guardRootDeletion` (`cmd/root_privileges.go`) and refuses. Dry runs are unaffected. The hidden helper is exempt by construction: the guard lives in each `RunE`, never in the shared `PersistentPreRunE`.
 10. **Deletion is confined to the scanning domain**: the cleaners that can run elevated (`temp`, `logs`, `macos-updates`) do not call `os.Remove` on a path string. Every removal goes through an `os.Root` anchored at one of that cleaner's own scan roots, so a path component swapped for a symlink between approval and deletion cannot redirect the unlink out of the domain — see [Confined removal](#confined-removal).
+11. **A sudo category only elevates the part of itself that needs it**: `RequiresSudo()` bounds what a category is *allowed* to elevate, not what it *must*. A cleaner that implements `PrivilegeSplitter` (currently Temp) has its approved entries partitioned so only the ones that genuinely need root reach the plan; the rest are cleaned directly, unprivileged, before any password prompt — see [Privilege split](#privilege-split-not-everything-a-sudo-category-scans-needs-root).
 
 ```mermaid
 flowchart TD
@@ -667,6 +678,32 @@ flowchart LR
     X -->|approved but absent| M[reported as missing/skipped]
     RC --> R[Result JSON on stdout]
 ```
+
+### Privilege split: not everything a sudo category scans needs root
+
+`RequiresSudo() == true` used to mean the category's *entire* approved entry list went to the elevated helper, even the parts that did not need it. Temp's domain includes `/tmp` and `/var/tmp` (shared, world-writable, can hold other users' files — the reason this category needs root at all) alongside the invoking user's own `$TMPDIR` and `~/Library/Caches/TemporaryItems`, which the user already owns and could delete without any privilege. Asking root to touch those anyway widens what a privileged process does for no safety benefit.
+
+`cleaner.PrivilegeSplitter` is an optional interface a `RequiresSudo` cleaner may implement:
+
+```go
+type PrivilegeSplitter interface {
+    NeedsSudo(entry FileEntry) bool
+}
+```
+
+`commands.SplitEntriesByPrivilege` partitions a category's approved entries using it — everything on the sudo side goes into the `Plan` exactly as before; everything on the direct side is cleaned immediately by the unprivileged process itself, via `commands.CleanDirectly`, before any password prompt. If a category's entries are entirely direct, it never reaches `elevate.Invoke` at all — no prompt, nothing sent to root. A cleaner that does not implement the interface keeps the old all-or-nothing behavior, which stays the conservative default.
+
+Two invariants make this safe rather than merely convenient, and both are enforced by `TempCleaner`, not by the split machinery itself:
+
+- `NeedsSudo` must compare `entry.Path` **literally**, against roots resolved the same way `Scan` resolved them, and must never re-resolve symlinks — classification and `rootedRemover.locate`'s confinement check must agree on the same spelling, or an entry could be classified into the leg that doesn't confine it to where it actually needs to be confined.
+- The sudo roots must be an exact subset of the cleaner's own scan `roots`. If they ever diverged, `NeedsSudo` could answer for a location the cleaner isn't even scanning.
+
+Because of this, splitting changes **who** deletes an entry, never **what** gets deleted: the direct leg runs through the identical `Cleaner.Clean` → `rootedRemover.Remove` path as the elevated leg, so confinement, the regular-file check and the dev/inode identity check all still apply. `commands.MergeCategoryResults` then folds a category's two legs (when both exist) into the single `CleanCategoryResult` the rest of the pipeline already expects — deleted counts are summed unconditionally (a confirmed direct deletion is real regardless of what happened to the elevated leg, the same "reclaimed counts stay in totals" rule the honest-outcome contract already uses), and the elevated leg's error/outcome always wins over the direct leg's silence, qualified with a note when the direct leg genuinely deleted something, so a failed or unknown elevation is never misreported as "nothing was deleted" when part of the category plainly was.
+
+Two accepted trade-offs from this, both intentional rather than overlooked:
+
+- A privilege-split category that runs both legs in the same invocation produces **two** history rows instead of one (mirroring the existing "a mixed sudo/non-sudo run shows up as two records" trade-off). `history.Stats`' `TotalRuns`/`AvgBytes` count rows, not user-initiated runs, so a heavily split run inflates the run count and understates the per-run average — byte and file totals themselves stay exact. Fixing this needs a run-correlation id in `history.RunRecord`, not a change to *when* rows are written.
+- The TUI writes a direct leg's history row the instant it completes, closing the window where quitting mid-run could lose an already-real deletion — but only once that completion message is processed. Quitting *while* the direct clean is still walking cancels it cooperatively (`ctx.Done()`, same as any other category) and any partial progress made before cancellation goes unrecorded. This is strictly better than the pre-split window, which spanned the entire sudo password prompt, and is identical to the risk every ordinary non-sudo category already carries — not a new gap.
 
 ### Threat model: what this boundary does and does not defend against
 

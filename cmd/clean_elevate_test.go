@@ -721,7 +721,7 @@ func TestElevateForClean_OnlySudoEntriesUnchanged(t *testing.T) {
 	}
 }
 
-func TestElevateForClean_ElevatedFailureDoesNotStartDirectLeg(t *testing.T) {
+func TestElevateForClean_ElevatedFailureKeepsDirectLegCountsAndCarriesTheError(t *testing.T) {
 	withLoadedConfig(t)
 
 	const cat cleaner.Category = "mixed_failure_cat"
@@ -740,14 +740,26 @@ func TestElevateForClean_ElevatedFailureDoesNotStartDirectLeg(t *testing.T) {
 	})
 
 	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
-	if !errors.Is(err, elevate.ErrElevationFailed) {
-		t.Fatalf("elevateForClean error = %v, want ErrElevationFailed", err)
+	if err != nil {
+		t.Fatalf("elevateForClean: %v", err)
 	}
-	if len(results) != 0 {
-		t.Fatalf("results = %+v, want none from an aborted orchestration", results)
+
+	assertNoDuplicateCategories(t, results)
+	if len(results) != 1 {
+		t.Fatalf("results = %+v, want a single merged row for %s", results, cat)
 	}
-	if c.cleanCalls != 0 || len(c.cleanedWith) != 0 {
-		t.Fatalf("direct leg ran after elevation failure: calls=%d entries=%v", c.cleanCalls, c.cleanedWith)
+	got := results[0]
+	if got.DeletedFiles != 1 || got.DeletedSize != 5 {
+		t.Errorf("got %d files / %d bytes, want the direct leg's real counts (1 file / 5 bytes) preserved despite the elevated failure", got.DeletedFiles, got.DeletedSize)
+	}
+	if got.Err == nil {
+		t.Fatal("Err = nil, want the elevated leg's failure to still be surfaced despite the direct leg's success")
+	}
+	if !strings.Contains(got.ErrMsg, "nothing was deleted") {
+		t.Errorf("ErrMsg = %q, want it to carry ErrElevationFailed's explanation", got.ErrMsg)
+	}
+	if c.cleanCalls != 1 {
+		t.Errorf("direct leg cleanCalls = %d, want 1: entries that never needed root must still be cleaned even though the elevated leg failed", c.cleanCalls)
 	}
 }
 

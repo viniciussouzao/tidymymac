@@ -625,16 +625,17 @@ func TestCleanJSON_PromptSudoOnTerminalMergesElevatedAndLiveLegs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Elevated failure aborts before any direct/live deletion.
+// 4. Elevated failure still reports the real direct/live deletions.
 // ---------------------------------------------------------------------------
 
-func TestCleanJSON_ElevatedFailurePreservesAllOrNothing(t *testing.T) {
+func TestCleanJSON_ElevatedFailureStillReportsDirectAndLiveCounts(t *testing.T) {
 	cases := []struct {
-		name      string
-		invokeErr error
+		name       string
+		invokeErr  error
+		wantErrMsg string
 	}{
-		{name: "elevation failed", invokeErr: elevate.ErrElevationFailed},
-		{name: "outcome unknown", invokeErr: elevate.ErrElevationOutcomeUnknown},
+		{name: "elevation failed", invokeErr: elevate.ErrElevationFailed, wantErrMsg: "nothing was deleted"},
+		{name: "outcome unknown", invokeErr: elevate.ErrElevationOutcomeUnknown, wantErrMsg: ""},
 	}
 
 	for _, tc := range cases {
@@ -674,27 +675,53 @@ func TestCleanJSON_ElevatedFailurePreservesAllOrNothing(t *testing.T) {
 			)
 			out := stdout()
 
-			// Failure to establish a completed privileged leg aborts before
-			// any direct or ordinary cleaner starts. Outcome-unknown may mean
-			// the helper itself partially ran, but this process must not widen
-			// that uncertainty by starting more deletions afterwards.
+			// A failed elevated leg is a category-level error, so the run
+			// reports a non-zero exit -- but only after the JSON describing
+			// what DID get deleted has already been written.
 			if err == nil {
 				t.Fatal("expected a non-nil error: the elevated leg failed")
 			}
-			if !errors.Is(err, tc.invokeErr) {
-				t.Errorf("error = %v, want it to preserve %v", err, tc.invokeErr)
+			if !strings.Contains(err.Error(), sudoCat.DisplayName()) {
+				t.Errorf("exit error %q does not name the failing category", err)
 			}
-			if out != "" {
-				t.Errorf("stdout must stay empty when orchestration aborts before the ordinary run, got:\n%s", out)
+
+			decoded := decodeCleanJSON(t, out)
+			if !decoded.Result.HasErrors {
+				t.Error("has_errors = false, want true")
 			}
-			if sudo.cleanCalls != 0 {
-				t.Errorf("the sudo category's direct leg ran %d time(s), want 0", sudo.cleanCalls)
+			sudoFiles, sudoSize, sudoErrMsg := decoded.category(t, string(sudoCat))
+			if sudoFiles != 1 || sudoSize != 5 {
+				t.Errorf("sudo category = %d files / %d bytes, want the direct leg's real 1 / 5 preserved despite the elevated failure", sudoFiles, sudoSize)
 			}
-			if live.touched() {
-				t.Errorf("the ordinary category was touched after elevation failure: scanned=%v cleanCalls=%d", live.scanned, live.cleanCalls)
+			if sudoErrMsg == "" {
+				t.Error("the sudo category must still carry the elevated leg's error")
 			}
-			if runs := historyRuns(t); len(runs) != 0 {
-				t.Errorf("history has %d run(s), want 0 because this process observed no completed deletion: %+v", len(runs), runs)
+			if tc.wantErrMsg != "" && !strings.Contains(sudoErrMsg, tc.wantErrMsg) {
+				t.Errorf("category error %q does not carry %q", sudoErrMsg, tc.wantErrMsg)
+			}
+			liveFiles, liveSize, liveErrMsg := decoded.category(t, string(live.category))
+			if liveFiles != 2 || liveSize != 25 {
+				t.Errorf("live category = %d files / %d bytes, want 2 / 25: an unrelated elevated failure must not discard it", liveFiles, liveSize)
+			}
+			if liveErrMsg != "" {
+				t.Errorf("live category carries error %q, want none", liveErrMsg)
+			}
+			if decoded.Result.TotalFiles != 3 || decoded.Result.TotalSize != 30 {
+				t.Errorf("totals = %d files / %d bytes, want 3 / 30 (1+5 direct, 2+25 live)", decoded.Result.TotalFiles, decoded.Result.TotalSize)
+			}
+
+			runs := historyRuns(t)
+			if len(runs) != 2 {
+				t.Fatalf("history has %d run(s), want 2: the direct leg's real deletion and the live run both belong in the audit trail: %+v", len(runs), runs)
+			}
+			var totalFiles int
+			var totalBytes int64
+			for _, run := range runs {
+				totalFiles += run.TotalFiles
+				totalBytes += run.TotalBytes
+			}
+			if totalFiles != 3 || totalBytes != 30 {
+				t.Errorf("history totals = %d files / %d bytes, want 3 / 30", totalFiles, totalBytes)
 			}
 		})
 	}

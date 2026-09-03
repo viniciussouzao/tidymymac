@@ -701,8 +701,10 @@ type preparedElevationCategory struct {
 // preparedElevation contains every decision needed for elevation but performs
 // no deletion. Keeping preparation pure is what lets --output json inspect the
 // real plan before deciding whether --prompt-sudo/TTY is required, while still
-// guaranteeing that a refused or failed elevation leaves all direct and
-// ordinary categories untouched.
+// guaranteeing that a refused elevation (allowSudo declines) leaves every
+// category -- sudo or not -- untouched. Once elevation is actually attempted,
+// each category's own direct entries proceed regardless of that attempt's
+// outcome -- see executePreparedElevation.
 type preparedElevation struct {
 	plan       elevate.Plan
 	categories []preparedElevationCategory
@@ -740,19 +742,25 @@ func prepareElevation(ctx context.Context, registry *cleaner.Registry, sudoNames
 	return work, nil
 }
 
-// executePreparedElevation first completes the privileged leg. Direct entries
-// are deliberately cleaned only after Invoke returns successfully: a failed
-// authentication or unknown helper outcome therefore preserves the automation
-// contract that no other deletion begins when privilege is unavailable.
+// executePreparedElevation runs the privileged leg first (if the prepared
+// plan has any entries), then cleans each category's direct entries and
+// merges them with the elevation outcome via commands.MergeCategoryResults.
+// A direct entry never needed root and was already approved by the caller,
+// so it is cleaned regardless of whether its category's elevated leg
+// succeeded: invocation failure (ErrElevationFailed/
+// ErrElevationOutcomeUnknown) is mapped to a per-category error by
+// elevate.CategoryResults exactly like every other outcome, never propagated
+// as a function-level error. That is what keeps the honest-outcome contract
+// (F2) intact and lets an unrelated category -- or an unrelated category's
+// own pre-existing error from ResolveApprovedEntries -- survive one
+// category's failed authentication, instead of the whole orchestration being
+// discarded.
 func executePreparedElevation(ctx context.Context, work preparedElevation) ([]commands.CleanCategoryResult, error) {
 	elevatedByCategory := make(map[cleaner.Category]commands.CleanCategoryResult, len(work.plan.Categories))
 	if len(work.plan.Categories) > 0 {
 		fmt.Fprintln(os.Stderr, sudoNeedMessage(work.plan.Categories))
 		result, invokeErr := invokeElevated(ctx, work.plan)
-		if invokeErr != nil {
-			return nil, invokeErr
-		}
-		for _, er := range elevate.CategoryResults(work.plan, result, nil) {
+		for _, er := range elevate.CategoryResults(work.plan, result, invokeErr) {
 			elevatedByCategory[er.Category] = er
 		}
 	}

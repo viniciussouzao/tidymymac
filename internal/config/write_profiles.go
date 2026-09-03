@@ -112,7 +112,7 @@ func addProfileCategoryAt(p, name, category string) error {
 		return fmt.Errorf("category must not be empty")
 	}
 
-	doc, _, profile, err := openProfileForEdit(p, name)
+	doc, profile, err := openProfileForEdit(p, name)
 	if err != nil {
 		return err
 	}
@@ -151,7 +151,7 @@ func removeProfileCategoryAt(p, name, category string) (bool, error) {
 		return false, fmt.Errorf("category must not be empty")
 	}
 
-	doc, _, profile, err := openProfileForEdit(p, name)
+	doc, profile, err := openProfileForEdit(p, name)
 	if err != nil {
 		return false, err
 	}
@@ -207,7 +207,7 @@ func addProfilePathAt(p, name, entry string) error {
 	}
 	normEntry := strings.ToLower(clean)
 
-	doc, _, profile, err := openProfileForEdit(p, name)
+	doc, profile, err := openProfileForEdit(p, name)
 	if err != nil {
 		return err
 	}
@@ -248,7 +248,7 @@ func removeProfilePathAt(p, name, entry string) (bool, error) {
 	}
 	normEntry := strings.ToLower(clean)
 
-	doc, _, profile, err := openProfileForEdit(p, name)
+	doc, profile, err := openProfileForEdit(p, name)
 	if err != nil {
 		return false, err
 	}
@@ -300,34 +300,34 @@ func validateProfileName(name string) error {
 // document (for writing) alongside the profile's mapping node. A missing
 // config file, a missing "profiles" key or a missing profile all produce the
 // same actionable error.
-func openProfileForEdit(p, name string) (doc *yaml.Node, root *yaml.Node, profile *yaml.Node, err error) {
+func openProfileForEdit(p, name string) (doc *yaml.Node, profile *yaml.Node, err error) {
 	if err := validateProfileName(name); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	doc, err = readDocForEdit(p)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	root = docRoot(doc)
+	root := docRoot(doc)
 
 	profiles, err := profilesMapping(root, p, false)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if profiles == nil {
-		return nil, nil, nil, errProfileNotFound(name)
+		return nil, nil, errProfileNotFound(name)
 	}
 
 	node, ok := findMappingValue(profiles, name)
 	if !ok {
-		return nil, nil, nil, errProfileNotFound(name)
+		return nil, nil, errProfileNotFound(name)
 	}
 	if !coerceToKind(node, yaml.MappingNode, "!!map") {
-		return nil, nil, nil, fmt.Errorf("config file %s: profile %q is not a mapping, refusing to edit", p, name)
+		return nil, nil, fmt.Errorf("config file %s: profile %q is not a mapping, refusing to edit", p, name)
 	}
 
-	return doc, root, node, nil
+	return doc, node, nil
 }
 
 func errProfileNotFound(name string) error {

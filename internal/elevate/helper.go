@@ -98,7 +98,7 @@ func runHelper(ctx context.Context, planPath string, env helperEnv) (Result, err
 	}
 
 	registry := env.newRegistry()
-	if err := validatePlan(plan, registry, cfg); err != nil {
+	if err := validatePlan(plan, registry); err != nil {
 		return Result{}, err
 	}
 
@@ -242,7 +242,7 @@ func runHelper(ctx context.Context, planPath string, env helperEnv) (Result, err
 // The elevated side must be strictly NARROWER than the interactive side, never
 // wider: anything the unprivileged path would refuse to do, the root path must
 // also refuse.
-func validatePlan(plan Plan, registry *cleaner.Registry, cfg *config.Config) error {
+func validatePlan(plan Plan, registry *cleaner.Registry) error {
 	if plan.Version != PlanSchemaVersion {
 		return fmt.Errorf("plan schema version %d is not supported (this build speaks version %d)", plan.Version, PlanSchemaVersion)
 	}

@@ -107,7 +107,7 @@ func init() {
 	cleanCmd.Flags().String("from-file", "", "load a JSON scan file (from 'scan --output json --detailed') and revalidate its entries before cleaning")
 	cleanCmd.Flags().Bool("force-stale-scan", false, "allow --from-file scan results older than 24 hours when used with --execute")
 	cleanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr")
-	cleanCmd.Flags().Bool("prompt-sudo", false, "allow prompting for a sudo password when a selected category requires it (only meaningful with --execute --output json; requires stdin and stderr to be a terminal)")
+	cleanCmd.Flags().Bool("prompt-sudo", false, "allow prompting for a sudo password when selected entries require it (only meaningful with --execute --output json; requires a controlling terminal and terminal stderr)")
 }
 
 const (
@@ -138,16 +138,18 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 	// interactive CLI's transparent prompt: a script piping to
 	// --output json must never hang on a sudo password prompt it cannot
 	// answer. Without --prompt-sudo the whole run is refused before any
-	// deletion happens anywhere; with it, a non-terminal stdin/stderr still
-	// refuses rather than risk a hang. Returning here happens before
+	// deletion happens anywhere; with it, a missing controlling terminal or
+	// redirected stderr still refuses rather than risk a hidden prompt. Stdin
+	// is deliberately not checked: --from-file - legitimately consumes it,
+	// while sudo reads the password from /dev/tty. Returning here happens before
 	// anything is written to stdout, matching the --from-file load-error
 	// path's existing guarantee.
 	allowSudo := func(sudoNames []string) error {
 		if !promptSudo {
 			return fmt.Errorf("%s: --prompt-sudo was not given, so nothing was cleaned", sudoRequirementMessage(registry, sudoNames))
 		}
-		if !stdinIsTerminal() || !stderrIsTerminal() {
-			return fmt.Errorf("%s: refusing to prompt for a sudo password because stdin/stderr is not a terminal", sudoRequirementMessage(registry, sudoNames))
+		if !controllingTerminalAvailable() || !stderrIsTerminal() {
+			return fmt.Errorf("%s: refusing to prompt for a sudo password because no controlling terminal with terminal stderr is available", sudoRequirementMessage(registry, sudoNames))
 		}
 		return nil
 	}
@@ -410,21 +412,22 @@ type sudoElevationOutcome struct {
 	nonSudoCategories []string
 	preResolved       []commands.CleanCategoryResult
 	// skipLiveRun is true when every selected category went to
-	// elevateForClean, leaving nothing for the caller's own non-sudo run to
-	// do.
+	// prepared elevation/direct handling, leaving nothing for the caller's own
+	// non-sudo run to do.
 	skipLiveRun bool
 }
 
 // resolveSudoElevation loads --from-file at most once, expands an empty
-// selection, splits sudo/non-sudo categories, and -- when allowSudo permits
-// it -- elevates the sudo portion via elevateForClean, recording its history
-// immediately (before returning to the caller) so an interrupted or failed
-// remainder can never cost it its audit trail.
+// selection, splits sudo/non-sudo categories, prepares the exact privilege
+// partition, and -- when allowSudo permits it -- executes that work, recording
+// its history immediately (before returning to the caller) so an interrupted
+// or failed remainder can never cost it its audit trail.
 //
-// allowSudo is called only when there is at least one sudo category and
-// dryRun is false; returning a non-nil error aborts before elevateForClean
-// runs, and therefore before any deletion happens anywhere in this run. This
-// is the hook the two callers use for their different policies: the
+// allowSudo is called only when preparation found at least one approved entry
+// that genuinely needs sudo and dryRun is false. Preparation may scan and
+// revalidate, but it never deletes. Returning a non-nil error therefore
+// aborts before any deletion happens anywhere in this run. This is the hook
+// the two callers use for their different policies: the
 // interactive CLI always allows (transparent prompt, per Phase 3), while
 // --output json gates it behind --prompt-sudo and a TTY check.
 func resolveSudoElevation(
@@ -480,12 +483,23 @@ func resolveSudoElevation(
 			return sudoElevationOutcome{}, err
 		}
 		if len(sudoNames) > 0 {
-			if err := allowSudo(sudoNames); err != nil {
+			work, err := prepareElevation(ctx, registry, sudoNames, prepared.Result, usePreparedScan)
+			if err != nil {
 				return sudoElevationOutcome{}, err
 			}
 
+			actualSudoNames := make([]string, 0, len(work.plan.Categories))
+			for _, pc := range work.plan.Categories {
+				actualSudoNames = append(actualSudoNames, string(pc.Category))
+			}
+			if len(actualSudoNames) > 0 {
+				if err := allowSudo(actualSudoNames); err != nil {
+					return sudoElevationOutcome{}, err
+				}
+			}
+
 			elevateStart := time.Now()
-			results, err := elevateForClean(ctx, registry, sudoNames, prepared.Result, usePreparedScan)
+			results, err := executePreparedElevation(ctx, work)
 			if err != nil {
 				return sudoElevationOutcome{}, err
 			}
@@ -505,10 +519,13 @@ func resolveSudoElevation(
 			// history.Append later -- an interrupted or failed remainder
 			// must never take this already-completed elevated deletion's
 			// audit trail with it.
-			_ = history.Append(buildRunRecord(
+			record := buildRunRecord(
 				commands.CleanResult{CleanedAt: time.Now().UTC(), Categories: preResolved},
 				time.Since(elevateStart).Milliseconds(),
-			))
+			)
+			if len(record.Categories) > 0 {
+				_ = history.Append(record)
+			}
 		}
 	}
 
@@ -655,109 +672,126 @@ func sudoRequirementMessage(registry *cleaner.Registry, sudoNames []string) stri
 // are unexported). Production code must never reassign it.
 var invokeElevated = elevate.Invoke
 
-// stdinIsTerminal and stderrIsTerminal are package-level seams so tests can
-// fake "is a terminal" without a real tty -- same pattern as invokeElevated.
-// runCleanNonInteractive checks both (never stdout, so
-// `--output json > result.json` keeps working) before ever attempting a sudo
-// prompt: a non-interactive process must never hang waiting for a password it
-// cannot supply.
-var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+// controllingTerminalAvailable and stderrIsTerminal are package-level seams so
+// tests can fake terminal availability without a real tty -- same pattern as
+// invokeElevated. Stdin is not part of this test: --from-file - may consume a
+// pipe while sudo still prompts safely through /dev/tty. Stdout is not checked
+// either, so `--output json > result.json` keeps working. Stderr remains part of
+// the contract because it carries the explanation immediately before sudo's
+// branded prompt.
+var controllingTerminalAvailable = func() bool {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = tty.Close() }()
+	return term.IsTerminal(int(tty.Fd()))
+}
 var stderrIsTerminal = func() bool { return term.IsTerminal(int(os.Stderr.Fd())) }
 
-// elevateForClean scans, tags, and strips protected paths for sudoNames --
-// the same pipeline runClean applies to every other category -- then splits
-// each category's approved entries by privilege (see
-// commands.SplitEntriesByPrivilege): entries that don't actually need root
-// (e.g. Temp's own $TMPDIR, as opposed to the shared /tmp) are cleaned
-// directly, synchronously, right here, before any password prompt, via
-// commands.CleanDirectly. Only entries that genuinely need root go into the
-// elevate.Plan, so a category made up entirely of such entries never reaches
-// the plan at all and never contributes to the sudo password prompt. It is
-// only ever called for --execute (dry-run needs no elevation) with a
-// non-empty sudoNames. preparedScan/usePreparedScan is whatever
-// runCleanInteractive already loaded from --from-file (or the zero value
-// when no --from-file was given) -- this function never reads fromFile
-// itself, so it never re-reads a file (or re-consumes a "--from-file -"
-// stdin pipe) the live, non-sudo run is also about to read.
-//
-// Called before any bubbletea Program exists, so elevate.Invoke's sudo
-// prompt runs on a perfectly ordinary terminal: no tea.Exec "release the
-// terminal" dance is needed here, unlike the full TUI's execute flow, which
-// is already deep in an alt-screen session by the time it reaches this same
-// decision.
-func elevateForClean(ctx context.Context, registry *cleaner.Registry, sudoNames []string, preparedScan commands.ScanResult, usePreparedScan bool) ([]commands.CleanCategoryResult, error) {
+type preparedElevationCategory struct {
+	cleaner       cleaner.Cleaner
+	category      cleaner.Category
+	name          string
+	directEntries []cleaner.FileEntry
+	sudoEntries   []cleaner.FileEntry
+	resolved      *commands.CleanCategoryResult
+}
+
+// preparedElevation contains every decision needed for elevation but performs
+// no deletion. Keeping preparation pure is what lets --output json inspect the
+// real plan before deciding whether --prompt-sudo/TTY is required, while still
+// guaranteeing that a refused or failed elevation leaves all direct and
+// ordinary categories untouched.
+type preparedElevation struct {
+	plan       elevate.Plan
+	categories []preparedElevationCategory
+}
+
+func prepareElevation(ctx context.Context, registry *cleaner.Registry, sudoNames []string, preparedScan commands.ScanResult, usePreparedScan bool) (preparedElevation, error) {
 	approved, err := commands.ResolveApprovedEntries(ctx, registry, sudoNames, loadedConfig, preparedScan, usePreparedScan)
 	if err != nil {
-		return nil, err
+		return preparedElevation{}, err
 	}
 
-	var results []commands.CleanCategoryResult
-	// Direct-clean legs for categories that also have a sudo leg, stashed
-	// here until the elevated leg's result for the same category is known,
-	// so the two can be folded into one row via MergeCategoryResults instead
-	// of the category appearing twice in results.
-	directByCategory := make(map[cleaner.Category]commands.CleanCategoryResult)
-	// DryRun is left false explicitly, not merely by relying on the zero
-	// value: this function is only ever reached for --execute (see the
-	// !dryRun guard around its one call site), but a plan defaulting to
-	// "delete for real" should never depend on that being remembered
-	// correctly by a caller two frames away.
-	plan := elevate.Plan{DryRun: false}
+	work := preparedElevation{plan: elevate.Plan{DryRun: false}}
 	for _, ac := range approved {
+		categoryWork := preparedElevationCategory{category: ac.Category, name: ac.Name}
 		switch {
 		case ac.Err != nil:
-			results = append(results, commands.CleanCategoryResult{Category: ac.Category, Name: ac.Name, ErrMsg: ac.Err.Error(), Err: ac.Err})
+			result := commands.CleanCategoryResult{Category: ac.Category, Name: ac.Name, ErrMsg: ac.Err.Error(), Err: ac.Err}
+			categoryWork.resolved = &result
 		case len(ac.Entries) == 0:
-			// Nothing to delete: either the category is genuinely empty, or
-			// every entry it found is a protected path. Either way there is
-			// nothing to authenticate for, so no password prompt.
-			results = append(results, commands.CleanCategoryResult{Category: ac.Category, Name: ac.Name})
+			result := commands.CleanCategoryResult{Category: ac.Category, Name: ac.Name}
+			categoryWork.resolved = &result
 		default:
 			c, ok := registry.Get(ac.Category)
 			if !ok {
-				// Can't happen in practice -- ac.Category came from a
-				// cleaner resolveCleaners already found in this same
-				// registry -- but if it ever did, falling back to "all of
-				// it needs sudo" is the conservative choice, identical to
-				// what SplitEntriesByPrivilege itself does for a cleaner
-				// that isn't a PrivilegeSplitter.
-				plan.Categories = append(plan.Categories, elevate.PlanCategory{Category: ac.Category, Entries: ac.Entries})
-				continue
+				return preparedElevation{}, fmt.Errorf("category %q disappeared from the registry during elevation preparation", ac.Category)
 			}
+			categoryWork.cleaner = c
+			categoryWork.sudoEntries, categoryWork.directEntries = commands.SplitEntriesByPrivilege(c, ac.Entries)
+			if len(categoryWork.sudoEntries) > 0 {
+				work.plan.Categories = append(work.plan.Categories, elevate.PlanCategory{Category: ac.Category, Entries: categoryWork.sudoEntries})
+			}
+		}
+		work.categories = append(work.categories, categoryWork)
+	}
+	return work, nil
+}
 
-			sudoEntries, directEntries := commands.SplitEntriesByPrivilege(c, ac.Entries)
-			if len(directEntries) > 0 {
-				directByCategory[ac.Category] = commands.CleanDirectly(ctx, c, directEntries, false)
-			}
-			if len(sudoEntries) > 0 {
-				plan.Categories = append(plan.Categories, elevate.PlanCategory{Category: ac.Category, Entries: sudoEntries})
-				continue
-			}
-			// No entry in this category needs root: the direct leg above (if
-			// any ran) is already this category's whole result, so it must
-			// land in results now -- this category will never reach
-			// elevate.Invoke, so nothing will merge it in later.
-			if direct, ok := directByCategory[ac.Category]; ok {
-				results = append(results, direct)
-				delete(directByCategory, ac.Category)
-			}
+// executePreparedElevation first completes the privileged leg. Direct entries
+// are deliberately cleaned only after Invoke returns successfully: a failed
+// authentication or unknown helper outcome therefore preserves the automation
+// contract that no other deletion begins when privilege is unavailable.
+func executePreparedElevation(ctx context.Context, work preparedElevation) ([]commands.CleanCategoryResult, error) {
+	elevatedByCategory := make(map[cleaner.Category]commands.CleanCategoryResult, len(work.plan.Categories))
+	if len(work.plan.Categories) > 0 {
+		fmt.Fprintln(os.Stderr, sudoNeedMessage(work.plan.Categories))
+		result, invokeErr := invokeElevated(ctx, work.plan)
+		if invokeErr != nil {
+			return nil, invokeErr
+		}
+		for _, er := range elevate.CategoryResults(work.plan, result, nil) {
+			elevatedByCategory[er.Category] = er
 		}
 	}
 
-	if len(plan.Categories) == 0 {
-		return results, nil
-	}
-
-	fmt.Fprintln(os.Stderr, sudoNeedMessage(plan.Categories))
-	result, invokeErr := invokeElevated(ctx, plan)
-	for _, er := range elevate.CategoryResults(plan, result, invokeErr) {
-		if direct, ok := directByCategory[er.Category]; ok {
-			results = append(results, commands.MergeCategoryResults(direct, er))
+	results := make([]commands.CleanCategoryResult, 0, len(work.categories))
+	for _, categoryWork := range work.categories {
+		if categoryWork.resolved != nil {
+			results = append(results, *categoryWork.resolved)
 			continue
 		}
-		results = append(results, er)
+
+		var direct commands.CleanCategoryResult
+		if len(categoryWork.directEntries) > 0 {
+			direct = commands.CleanDirectly(ctx, categoryWork.cleaner, categoryWork.directEntries, false)
+		}
+		elevated, hasElevated := elevatedByCategory[categoryWork.category]
+		switch {
+		case len(categoryWork.directEntries) > 0 && hasElevated:
+			results = append(results, commands.MergeCategoryResults(direct, elevated))
+		case len(categoryWork.directEntries) > 0:
+			results = append(results, direct)
+		case hasElevated:
+			results = append(results, elevated)
+		default:
+			results = append(results, commands.CleanCategoryResult{Category: categoryWork.category, Name: categoryWork.name})
+		}
 	}
 	return results, nil
+}
+
+// elevateForClean is the interactive CLI convenience wrapper. The automation
+// path calls prepareElevation itself so it can apply its no-prompt policy to
+// the actual elevated plan before executePreparedElevation performs any work.
+func elevateForClean(ctx context.Context, registry *cleaner.Registry, sudoNames []string, preparedScan commands.ScanResult, usePreparedScan bool) ([]commands.CleanCategoryResult, error) {
+	work, err := prepareElevation(ctx, registry, sudoNames, preparedScan, usePreparedScan)
+	if err != nil {
+		return nil, err
+	}
+	return executePreparedElevation(ctx, work)
 }
 
 // mergeCleanResults folds elevate-derived category results into an ordinary
@@ -772,10 +806,11 @@ func mergeCleanResults(base commands.CleanResult, extra []commands.CleanCategory
 	merged.Categories = append(append([]commands.CleanCategoryResult{}, extra...), base.Categories...)
 	for _, r := range extra {
 		// Unlike runClean's own totals computation (internal/commands/clean.go),
-		// an errored row here can still carry real, non-zero counts: a
-		// privilege-split category's direct leg may have deleted files before
-		// its elevated leg failed or came back unknown (see
-		// commands.MergeCategoryResults). HasErrors is set whenever there was
+		// an errored row here can still carry real, non-zero counts: a helper
+		// that completed its protocol may report a per-category partial failure,
+		// after which the category's direct leg also runs (see
+		// commands.MergeCategoryResults). Invocation failure/unknown aborts before
+		// the direct leg and never reaches this merge. HasErrors is set whenever there was
 		// any error, fatal or partial, but the counts a row actually reports
 		// are always folded in -- they were never conditioned on Err being
 		// nil, only on being real, and MergeCategoryResults already

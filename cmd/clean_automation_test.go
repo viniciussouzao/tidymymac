@@ -79,20 +79,20 @@ func captureStdout(t *testing.T) func() string {
 // so a test can assert not just the answer they gave but that they were never
 // asked at all (the dry-run contract).
 type ttyStub struct {
-	stdinCalls  int
-	stderrCalls int
+	controllingCalls int
+	stderrCalls      int
 }
 
-func (s *ttyStub) calls() int { return s.stdinCalls + s.stderrCalls }
+func (s *ttyStub) calls() int { return s.controllingCalls + s.stderrCalls }
 
-func stubTerminals(t *testing.T, stdinTTY, stderrTTY bool) *ttyStub {
+func stubTerminals(t *testing.T, controllingTTY, stderrTTY bool) *ttyStub {
 	t.Helper()
 	s := &ttyStub{}
-	prevIn, prevErr := stdinIsTerminal, stderrIsTerminal
-	stdinIsTerminal = func() bool { s.stdinCalls++; return stdinTTY }
+	prevTTY, prevErr := controllingTerminalAvailable, stderrIsTerminal
+	controllingTerminalAvailable = func() bool { s.controllingCalls++; return controllingTTY }
 	stderrIsTerminal = func() bool { s.stderrCalls++; return stderrTTY }
 	t.Cleanup(func() {
-		stdinIsTerminal = prevIn
+		controllingTerminalAvailable = prevTTY
 		stderrIsTerminal = prevErr
 	})
 	return s
@@ -230,7 +230,9 @@ func (o cleanJSONOutput) category(t *testing.T, name string) (deletedFiles int, 
 
 // withStdin points os.Stdin at a temp file holding contents, so "--from-file -"
 // can be exercised without a real pipe. A second read of the same fd returns
-// EOF, which is exactly what makes "read exactly once" observable.
+// EOF, which is exactly what makes "read exactly once" observable. The sudo
+// gate deliberately checks /dev/tty rather than this fd, so consuming the scan
+// from stdin remains compatible with an interactive password prompt.
 func withStdin(t *testing.T, contents string) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "scan.json")
@@ -308,9 +310,10 @@ func TestCleanJSON_SudoCategoryWithoutPromptSudoRefusesBeforeAnythingRuns(t *tes
 		t.Errorf("error %q does not name the category that required sudo", err)
 	}
 
-	// The whole point of failing preflight: not one category -- sudo or not --
-	// gets scanned or cleaned, so a script can retry without wondering what
-	// already happened.
+	// The sudo category may be scanned read-only so preparation can determine
+	// whether any entry genuinely needs root. No cleaner may be asked to delete,
+	// and the ordinary category must remain entirely untouched, so a script can
+	// retry without wondering what already happened.
 	if sudo.cleanCalls != 0 {
 		t.Errorf("the sudo category's direct leg ran %d time(s), want 0", sudo.cleanCalls)
 	}
@@ -325,19 +328,93 @@ func TestCleanJSON_SudoCategoryWithoutPromptSudoRefusesBeforeAnythingRuns(t *tes
 	}
 }
 
+func TestCleanJSON_DirectOnlySudoCategoryNeedsNoPromptOrTerminal(t *testing.T) {
+	isolateCleanRun(t)
+	withExecuteFlag(t, true)
+
+	const cat cleaner.Category = "auto_direct_only_sudo_cat"
+	c := &splitPrivilegeCleaner{
+		category: cat,
+		entries:  []cleaner.FileEntry{{Path: "/direct/a", Size: 7, Category: cat}},
+	}
+	registry := cleaner.NewRegistry()
+	registry.Register(c)
+
+	elevated := forbidElevation(t, "the prepared plan contains no entry that genuinely needs sudo")
+	tty := stubTerminals(t, false, false)
+	stdout := captureStdout(t)
+	err := runCleanNonInteractive(context.Background(), registry, []string{string(cat)}, false, "", false, "json", true, false)
+	out := stdout()
+
+	if err != nil {
+		t.Fatalf("runCleanNonInteractive: %v", err)
+	}
+	if *elevated {
+		t.Fatal("direct-only work reached elevation")
+	}
+	if tty.calls() != 0 {
+		t.Fatalf("terminal gate was consulted %d time(s), want 0 for an empty elevated plan", tty.calls())
+	}
+	if c.cleanCalls != 1 || len(c.cleanedWith) != 1 {
+		t.Fatalf("direct clean = %d calls / %d entries, want 1/1", c.cleanCalls, len(c.cleanedWith))
+	}
+	decoded := decodeCleanJSON(t, out)
+	files, size, errMsg := decoded.category(t, string(cat))
+	if files != 1 || size != 7 || errMsg != "" {
+		t.Fatalf("category = %d files / %d bytes / error %q, want 1/7/no error", files, size, errMsg)
+	}
+	if runs := historyRuns(t); len(runs) != 1 || runs[0].TotalFiles != 1 {
+		t.Fatalf("history = %+v, want the direct deletion recorded once", runs)
+	}
+}
+
+func TestCleanJSON_EmptySudoCategoryCreatesNeitherPromptNorHistory(t *testing.T) {
+	isolateCleanRun(t)
+	withExecuteFlag(t, true)
+
+	const cat cleaner.Category = "auto_empty_sudo_cat"
+	c := &splitPrivilegeCleaner{category: cat}
+	registry := cleaner.NewRegistry()
+	registry.Register(c)
+
+	elevated := forbidElevation(t, "an empty category has no elevated plan")
+	tty := stubTerminals(t, false, false)
+	stdout := captureStdout(t)
+	err := runCleanNonInteractive(context.Background(), registry, []string{string(cat)}, false, "", false, "json", true, false)
+	out := stdout()
+
+	if err != nil {
+		t.Fatalf("runCleanNonInteractive: %v", err)
+	}
+	if *elevated || c.cleanCalls != 0 {
+		t.Fatalf("empty work executed: elevated=%v cleanCalls=%d", *elevated, c.cleanCalls)
+	}
+	if tty.calls() != 0 {
+		t.Fatalf("terminal gate was consulted %d time(s), want 0", tty.calls())
+	}
+	decoded := decodeCleanJSON(t, out)
+	files, size, errMsg := decoded.category(t, string(cat))
+	if files != 0 || size != 0 || errMsg != "" {
+		t.Fatalf("empty category = %d/%d/%q", files, size, errMsg)
+	}
+	if runs := historyRuns(t); len(runs) != 0 {
+		t.Fatalf("history = %+v, want no empty run", runs)
+	}
+}
+
 // ---------------------------------------------------------------------------
-// 2. --prompt-sudo present but stdin/stderr is not a terminal.
+// 2. --prompt-sudo present but no usable prompt terminal is available.
 // ---------------------------------------------------------------------------
 
 func TestCleanJSON_PromptSudoWithoutTerminalRefusesBeforeAnythingRuns(t *testing.T) {
 	cases := []struct {
-		name      string
-		stdinTTY  bool
-		stderrTTY bool
+		name           string
+		controllingTTY bool
+		stderrTTY      bool
 	}{
-		{name: "neither is a terminal", stdinTTY: false, stderrTTY: false},
-		{name: "stdin is redirected", stdinTTY: false, stderrTTY: true},
-		{name: "stderr is redirected", stdinTTY: true, stderrTTY: false},
+		{name: "no controlling terminal", controllingTTY: false, stderrTTY: true},
+		{name: "stderr is redirected", controllingTTY: true, stderrTTY: false},
+		{name: "neither is a terminal", controllingTTY: false, stderrTTY: false},
 	}
 
 	for _, tc := range cases {
@@ -358,8 +435,8 @@ func TestCleanJSON_PromptSudoWithoutTerminalRefusesBeforeAnythingRuns(t *testing
 			registry.Register(sudo)
 			registry.Register(live)
 
-			forbidElevation(t, "a non-terminal stdin/stderr must never reach a password prompt")
-			stubTerminals(t, tc.stdinTTY, tc.stderrTTY)
+			forbidElevation(t, "a missing controlling terminal or redirected stderr must never reach a password prompt")
+			stubTerminals(t, tc.controllingTTY, tc.stderrTTY)
 
 			stdout := captureStdout(t)
 			err := runCleanNonInteractive(
@@ -373,8 +450,8 @@ func TestCleanJSON_PromptSudoWithoutTerminalRefusesBeforeAnythingRuns(t *testing
 			if err == nil {
 				t.Fatal("expected an error: --prompt-sudo cannot prompt without a terminal")
 			}
-			if !strings.Contains(err.Error(), "not a terminal") {
-				t.Errorf("error %q does not explain that stdin/stderr is not a terminal", err)
+			if !strings.Contains(err.Error(), "controlling terminal") {
+				t.Errorf("error %q does not explain that a usable prompt terminal is unavailable", err)
 			}
 			if sudo.cleanCalls != 0 || live.touched() {
 				t.Errorf("nothing may run: sudo direct cleans=%d, live touched=%v", sudo.cleanCalls, live.touched())
@@ -467,6 +544,9 @@ func TestCleanJSON_PromptSudoOnTerminalMergesElevatedAndLiveLegs(t *testing.T) {
 	stubInvokeElevated(t, func(_ context.Context, plan elevate.Plan) (elevate.Result, error) {
 		invoked++
 		gotPlan = plan
+		if sudo.cleanCalls != 0 || live.touched() {
+			t.Errorf("direct/live work started before elevation completed: direct=%d live=%v", sudo.cleanCalls, live.touched())
+		}
 		return elevate.Result{
 			Clean: commands.CleanResult{
 				Categories: []commands.CleanCategoryResult{
@@ -492,8 +572,8 @@ func TestCleanJSON_PromptSudoOnTerminalMergesElevatedAndLiveLegs(t *testing.T) {
 	if invoked != 1 {
 		t.Fatalf("invokeElevated called %d time(s), want exactly 1", invoked)
 	}
-	if tty.stdinCalls == 0 || tty.stderrCalls == 0 {
-		t.Errorf("both terminal seams must be consulted before prompting, got stdin=%d stderr=%d", tty.stdinCalls, tty.stderrCalls)
+	if tty.controllingCalls == 0 || tty.stderrCalls == 0 {
+		t.Errorf("both terminal seams must be consulted before prompting, got controlling=%d stderr=%d", tty.controllingCalls, tty.stderrCalls)
 	}
 	if len(gotPlan.Categories) != 1 || len(gotPlan.Categories[0].Entries) != 1 {
 		t.Fatalf("plan = %+v, want only the single /sudo/ entry", gotPlan.Categories)
@@ -545,17 +625,16 @@ func TestCleanJSON_PromptSudoOnTerminalMergesElevatedAndLiveLegs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Elevated failure still reports the real direct/live deletions.
+// 4. Elevated failure aborts before any direct/live deletion.
 // ---------------------------------------------------------------------------
 
-func TestCleanJSON_ElevatedFailureStillReportsDirectAndLiveCounts(t *testing.T) {
+func TestCleanJSON_ElevatedFailurePreservesAllOrNothing(t *testing.T) {
 	cases := []struct {
-		name       string
-		invokeErr  error
-		wantErrMsg string
+		name      string
+		invokeErr error
 	}{
-		{name: "elevation failed", invokeErr: elevate.ErrElevationFailed, wantErrMsg: "nothing was deleted"},
-		{name: "outcome unknown", invokeErr: elevate.ErrElevationOutcomeUnknown, wantErrMsg: ""},
+		{name: "elevation failed", invokeErr: elevate.ErrElevationFailed},
+		{name: "outcome unknown", invokeErr: elevate.ErrElevationOutcomeUnknown},
 	}
 
 	for _, tc := range cases {
@@ -595,53 +674,27 @@ func TestCleanJSON_ElevatedFailureStillReportsDirectAndLiveCounts(t *testing.T) 
 			)
 			out := stdout()
 
-			// A failed elevated leg is a category-level error, so the run
-			// reports a non-zero exit -- but only after the JSON describing
-			// what DID get deleted has already been written.
+			// Failure to establish a completed privileged leg aborts before
+			// any direct or ordinary cleaner starts. Outcome-unknown may mean
+			// the helper itself partially ran, but this process must not widen
+			// that uncertainty by starting more deletions afterwards.
 			if err == nil {
 				t.Fatal("expected a non-nil error: the elevated leg failed")
 			}
-			if !strings.Contains(err.Error(), sudoCat.DisplayName()) {
-				t.Errorf("exit error %q does not name the failing category", err)
+			if !errors.Is(err, tc.invokeErr) {
+				t.Errorf("error = %v, want it to preserve %v", err, tc.invokeErr)
 			}
-
-			decoded := decodeCleanJSON(t, out)
-			if !decoded.Result.HasErrors {
-				t.Error("has_errors = false, want true")
+			if out != "" {
+				t.Errorf("stdout must stay empty when orchestration aborts before the ordinary run, got:\n%s", out)
 			}
-			sudoFiles, sudoSize, sudoErrMsg := decoded.category(t, string(sudoCat))
-			if sudoFiles != 1 || sudoSize != 5 {
-				t.Errorf("sudo category = %d files / %d bytes, want the direct leg's real 1 / 5 preserved despite the elevated failure", sudoFiles, sudoSize)
+			if sudo.cleanCalls != 0 {
+				t.Errorf("the sudo category's direct leg ran %d time(s), want 0", sudo.cleanCalls)
 			}
-			if sudoErrMsg == "" {
-				t.Error("the sudo category must still carry the elevated leg's error")
+			if live.touched() {
+				t.Errorf("the ordinary category was touched after elevation failure: scanned=%v cleanCalls=%d", live.scanned, live.cleanCalls)
 			}
-			if tc.wantErrMsg != "" && !strings.Contains(sudoErrMsg, tc.wantErrMsg) {
-				t.Errorf("category error %q does not carry %q", sudoErrMsg, tc.wantErrMsg)
-			}
-			liveFiles, liveSize, liveErrMsg := decoded.category(t, string(live.category))
-			if liveFiles != 2 || liveSize != 25 {
-				t.Errorf("live category = %d files / %d bytes, want 2 / 25: an unrelated elevated failure must not discard it", liveFiles, liveSize)
-			}
-			if liveErrMsg != "" {
-				t.Errorf("live category carries error %q, want none", liveErrMsg)
-			}
-			if decoded.Result.TotalFiles != 3 || decoded.Result.TotalSize != 30 {
-				t.Errorf("totals = %d files / %d bytes, want 3 / 30 (1+5 direct, 2+25 live)", decoded.Result.TotalFiles, decoded.Result.TotalSize)
-			}
-
-			runs := historyRuns(t)
-			if len(runs) != 2 {
-				t.Fatalf("history has %d run(s), want 2: the direct leg's real deletion and the live run both belong in the audit trail: %+v", len(runs), runs)
-			}
-			var totalFiles int
-			var totalBytes int64
-			for _, run := range runs {
-				totalFiles += run.TotalFiles
-				totalBytes += run.TotalBytes
-			}
-			if totalFiles != 3 || totalBytes != 30 {
-				t.Errorf("history totals = %d files / %d bytes, want 3 / 30", totalFiles, totalBytes)
+			if runs := historyRuns(t); len(runs) != 0 {
+				t.Errorf("history has %d run(s), want 0 because this process observed no completed deletion: %+v", len(runs), runs)
 			}
 		})
 	}

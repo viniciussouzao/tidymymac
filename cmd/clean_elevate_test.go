@@ -551,6 +551,9 @@ func TestElevateForClean_SplitCategoryMergesDirectAndSudoLegs(t *testing.T) {
 	stubInvokeElevated(t, func(_ context.Context, plan elevate.Plan) (elevate.Result, error) {
 		invokeCalled = true
 		gotPlan = plan
+		if c.cleanCalls != 0 {
+			t.Errorf("direct leg ran before elevation completed: %d call(s)", c.cleanCalls)
+		}
 		return elevate.Result{
 			Clean: commands.CleanResult{
 				Categories: []commands.CleanCategoryResult{
@@ -718,7 +721,7 @@ func TestElevateForClean_OnlySudoEntriesUnchanged(t *testing.T) {
 	}
 }
 
-func TestElevateForClean_ElevatedFailureKeepsDirectLegCountsAndCarriesTheError(t *testing.T) {
+func TestElevateForClean_ElevatedFailureDoesNotStartDirectLeg(t *testing.T) {
 	withLoadedConfig(t)
 
 	const cat cleaner.Category = "mixed_failure_cat"
@@ -737,23 +740,14 @@ func TestElevateForClean_ElevatedFailureKeepsDirectLegCountsAndCarriesTheError(t
 	})
 
 	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
-	if err != nil {
-		t.Fatalf("elevateForClean: %v", err)
+	if !errors.Is(err, elevate.ErrElevationFailed) {
+		t.Fatalf("elevateForClean error = %v, want ErrElevationFailed", err)
 	}
-
-	assertNoDuplicateCategories(t, results)
-	if len(results) != 1 {
-		t.Fatalf("results = %+v, want a single merged row for %s", results, cat)
+	if len(results) != 0 {
+		t.Fatalf("results = %+v, want none from an aborted orchestration", results)
 	}
-	got := results[0]
-	if got.DeletedFiles != 1 || got.DeletedSize != 5 {
-		t.Errorf("got %d files / %d bytes, want the direct leg's real counts (1 file / 5 bytes) preserved despite the elevated failure", got.DeletedFiles, got.DeletedSize)
-	}
-	if got.Err == nil {
-		t.Fatal("Err = nil, want the elevated leg's failure to still be surfaced despite the direct leg's success")
-	}
-	if !strings.Contains(got.ErrMsg, "nothing was deleted") {
-		t.Errorf("ErrMsg = %q, want it to carry ErrElevationFailed's explanation", got.ErrMsg)
+	if c.cleanCalls != 0 || len(c.cleanedWith) != 0 {
+		t.Fatalf("direct leg ran after elevation failure: calls=%d entries=%v", c.cleanCalls, c.cleanedWith)
 	}
 }
 

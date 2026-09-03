@@ -186,9 +186,9 @@ tidymymac clean --from-file scan.json --execute
 # Output cleanup result as JSON
 tidymymac clean --output json
 
-# Actually delete via JSON output, allowing a sudo-requiring category to prompt
-# (refused unless both stdin and stderr are a terminal; otherwise the whole run
-# fails before anything is deleted rather than silently skip that category)
+# Actually delete via JSON output, allowing genuinely privileged entries to prompt
+# (requires a controlling terminal and terminal stderr; stdin may still carry
+# --from-file -. Without them, the whole run fails before anything is deleted.)
 tidymymac clean --execute --output json --prompt-sudo
 ```
 

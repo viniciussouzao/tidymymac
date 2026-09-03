@@ -22,6 +22,10 @@ type SummaryModel struct {
 	Celebration string
 	Width       int
 	Height      int
+	// ShowErrors expands every category's collapsed error summary into the
+	// full per-item list (path: reason) already carried on CleanResult.Errors
+	// -- toggled by the user, never computed here.
+	ShowErrors bool
 }
 
 // NewSummary creates a summary from clean results.
@@ -72,6 +76,11 @@ func (m *SummaryModel) SetSize(w, h int) {
 	m.Height = h
 }
 
+// ToggleShowErrors expands or collapses each category's error detail list.
+func (m *SummaryModel) ToggleShowErrors() {
+	m.ShowErrors = !m.ShowErrors
+}
+
 // View renders the summary screen.
 func (m SummaryModel) View() string {
 	var b strings.Builder
@@ -113,14 +122,21 @@ func (m SummaryModel) View() string {
 		)
 		b.WriteString(styles.Plain.Render(line))
 
-		switch len(r.Errors) {
-		case 0:
-		case 1:
-			b.WriteString(styles.Error.Render(" (" + r.Errors[0].Error() + ")"))
-		default:
-			b.WriteString(styles.Error.Render(fmt.Sprintf(" (%d errors)", len(r.Errors))))
+		if len(r.Errors) > 0 && !m.ShowErrors {
+			if len(r.Errors) == 1 {
+				b.WriteString(styles.Error.Render(" (" + r.Errors[0].Error() + ")"))
+			} else {
+				b.WriteString(styles.Error.Render(fmt.Sprintf(" (%d errors)", len(r.Errors))))
+			}
 		}
 		b.WriteString("\n")
+
+		if m.ShowErrors {
+			for _, e := range r.Errors {
+				b.WriteString(styles.Error.Render("        " + e.Error()))
+				b.WriteString("\n")
+			}
+		}
 	}
 
 	b.WriteString(styles.Dim.Render("  " + strings.Repeat("─", 46)))
@@ -149,7 +165,15 @@ func (m SummaryModel) View() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(styles.Help.Render("  Press enter to re-run or q to quit"))
+	helpText := "  Press enter to re-run or q to quit"
+	if m.ErrorCount > 0 {
+		if m.ShowErrors {
+			helpText += " | e to hide error details"
+		} else {
+			helpText += " | e to show error details"
+		}
+	}
+	b.WriteString(styles.Help.Render(helpText))
 
 	return b.String()
 }

@@ -937,6 +937,11 @@ func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, tea.Quit
 	}
 
+	if key.Matches(msg, keys.ShowErrors) {
+		a.summaryScr.ToggleShowErrors()
+		return a, nil
+	}
+
 	if key.Matches(msg, keys.Confirm) {
 		// Reset and return to dashboard for re-run
 		a.scanResults = make(map[cleaner.Category]*cleaner.ScanResult)

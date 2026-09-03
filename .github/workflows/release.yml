@@ -92,21 +92,27 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         working-directory: homebrew-tap
         run: |
-          FORMULA_VERSION="${VERSION#v}"
           ARM_URL="https://github.com/viniciussouzao/tidymymac/releases/download/${VERSION}/tidymymac-${VERSION}-darwin-arm64.tar.gz"
           AMD_URL="https://github.com/viniciussouzao/tidymymac/releases/download/${VERSION}/tidymymac-${VERSION}-darwin-amd64.tar.gz"
 
           ARM_SHA=$(curl --fail --location --silent --show-error "$ARM_URL" | shasum -a 256 | awk '{print $1}')
           AMD_SHA=$(curl --fail --location --silent --show-error "$AMD_URL" | shasum -a 256 | awk '{print $1}')
 
-          ruby - "$FORMULA_VERSION" "$VERSION" "$ARM_SHA" "$AMD_SHA" <<'RUBY'
-          version, tag, arm_sha, amd_sha = ARGV
+          ruby - "$VERSION" "$ARM_SHA" "$AMD_SHA" <<'RUBY'
+          tag, arm_sha, amd_sha = ARGV
           path = "Formula/tidymymac.rb"
           formula = File.read(path)
 
-          formula.sub!(/^  version ".*"$/, %(  version "#{version}"))
-          formula.sub!(/(on_arm do.*?sha256 ")[^"]+(")/m, "\\1#{arm_sha}\\2")
-          formula.sub!(/(on_intel do.*?sha256 ")[^"]+(")/m, "\\1#{amd_sha}\\2")
+          # No explicit `version` line: it's redundant with (and can drift
+          # from) the version Homebrew already scans from the release URL
+          # below, which is exactly what `brew audit` flags on every bump.
+          formula.sub!(/^  version ".*"\n/, "")
+          # Formula uses `if Hardware::CPU.arm? ... else ... end`, not
+          # `on_arm`/`on_intel` blocks: brew audit's ComponentsOrder check
+          # rejects url/sha256 inside those (they're only for depends_on,
+          # resource, and other on_* blocks).
+          formula.sub!(/(if Hardware::CPU\.arm\?.*?sha256 ")[^"]+(")/m, "\\1#{arm_sha}\\2")
+          formula.sub!(/(else.*?sha256 ")[^"]+(")/m, "\\1#{amd_sha}\\2")
           formula.gsub!(
             %r{releases/download/[^/]+/tidymymac-[^"]+-darwin-},
             "releases/download/#{tag}/tidymymac-#{tag}-darwin-"

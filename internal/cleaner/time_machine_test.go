@@ -310,3 +310,65 @@ func TestTimeMachineCleanerCleanProgress(t *testing.T) {
 		t.Errorf("progress calls = %d, want 2", calls)
 	}
 }
+
+func TestFilterExistingSnapshots(t *testing.T) {
+	current := []string{
+		"com.apple.TimeMachine.2026-03-29-120000.local",
+		"com.apple.TimeMachine.2026-03-30-120000.local",
+	}
+
+	tests := []struct {
+		name        string
+		entries     []FileEntry
+		wantKept    []string
+		wantMissing int
+	}{
+		{
+			name:     "no entries",
+			entries:  nil,
+			wantKept: nil,
+		},
+		{
+			name: "all still present",
+			entries: []FileEntry{
+				{Path: "com.apple.TimeMachine.2026-03-29-120000.local"},
+				{Path: "com.apple.TimeMachine.2026-03-30-120000.local"},
+			},
+			wantKept: []string{
+				"com.apple.TimeMachine.2026-03-29-120000.local",
+				"com.apple.TimeMachine.2026-03-30-120000.local",
+			},
+		},
+		{
+			name: "snapshot deleted since the scan",
+			entries: []FileEntry{
+				{Path: "com.apple.TimeMachine.2026-03-29-120000.local"},
+				{Path: "com.apple.TimeMachine.2026-01-01-120000.local"},
+			},
+			wantKept:    []string{"com.apple.TimeMachine.2026-03-29-120000.local"},
+			wantMissing: 1,
+		},
+		{
+			name:        "entry that is not a snapshot name at all",
+			entries:     []FileEntry{{Path: "/tmp/not-a-snapshot"}},
+			wantMissing: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kept, missing := filterExistingSnapshots(tt.entries, current)
+			if missing != tt.wantMissing {
+				t.Errorf("missing = %d, want %d", missing, tt.wantMissing)
+			}
+			if len(kept) != len(tt.wantKept) {
+				t.Fatalf("kept %d entries, want %d (%+v)", len(kept), len(tt.wantKept), kept)
+			}
+			for i, want := range tt.wantKept {
+				if kept[i].Path != want {
+					t.Errorf("kept[%d] = %q, want %q", i, kept[i].Path, want)
+				}
+			}
+		})
+	}
+}

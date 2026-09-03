@@ -2,7 +2,10 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"testing"
 	"time"
 
@@ -364,6 +367,81 @@ func TestRunClean_WholeDomainSkipAppliesInDryRunToo(t *testing.T) {
 	}
 }
 
+func TestRunClean_SkipsWholeDomainCleanerWhenScanFindsNothing(t *testing.T) {
+	mock := &mockCleanRunner{
+		category:           "cat_a",
+		deletesWholeDomain: true,
+		// entries deliberately nil: this is what buildCleanScanResult hands
+		// back for a --from-file prepared scan that never mentions cat_a at
+		// all, and what a stale/expired --from-file entry set revalidates
+		// down to -- indistinguishable, at this point, from a category that
+		// is genuinely already clean.
+		entries: nil,
+	}
+	r := newMockCleanRegistry(mock)
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if mock.cleanCalled {
+		t.Fatal("a whole-domain cleaner must never run against zero reviewed entries -- it shells out to a command that clears its entire domain regardless of what was passed in")
+	}
+	if result.HasErrors {
+		t.Errorf("HasErrors = true, want false: %+v", result.Categories[0])
+	}
+	if result.Categories[0].DeletedFiles != 0 || result.Categories[0].DeletedSize != 0 {
+		t.Errorf("Categories[0] = %+v, want a benign zero result", result.Categories[0])
+	}
+}
+
+func TestRunClean_WholeDomainZeroEntriesSkipDoesNotApplyInDryRun(t *testing.T) {
+	// Dry-run cleaners never shell out for real regardless of entries (see
+	// e.g. HomebrewCleaner.Clean's dryRun branch), so there is nothing to
+	// protect against here -- Clean still runs, purely to produce the
+	// (harmless, zero) preview.
+	mock := &mockCleanRunner{category: "cat_a", deletesWholeDomain: true, entries: nil}
+	r := newMockCleanRegistry(mock)
+
+	_, err := RunClean(t.Context(), r, nil, CleanerOptions{DryRun: true}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if !mock.cleanCalled {
+		t.Error("dry-run should still call Clean with zero entries; only --execute needs the guard")
+	}
+}
+
+func TestRunCleanWithPreparedScanResult_NeverRunsWholeDomainCleanerForACategoryTheScanFileOmits(t *testing.T) {
+	// The scenario this must close: a --from-file scan that only covers
+	// "other_cat" must never cause a registered whole-domain cleaner it
+	// doesn't even mention to run at all -- buildCleanScanResult hands that
+	// cleaner back an empty (not erroring) ScanResult, which previously let
+	// it straight through to Clean().
+	mock := &mockCleanRunner{category: "whole_domain_cat", deletesWholeDomain: true}
+	other := &mockCleanRunner{category: "other_cat", entries: []cleaner.FileEntry{{Path: "/tmp/a", Size: 5}}}
+	r := newMockCleanRegistry(mock, other)
+
+	prepared := PreparedScanResult{
+		Result: ScanResult{
+			Categories: []ScanCategoryResult{
+				{Category: "other_cat", TotalFiles: 1, Files: other.entries},
+			},
+		},
+	}
+
+	result, err := RunCleanWithPreparedScanResult(t.Context(), r, prepared, []string{"whole_domain_cat", "other_cat"}, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunCleanWithPreparedScanResult() error: %v", err)
+	}
+	if mock.cleanCalled {
+		t.Fatal("whole_domain_cat must never be cleaned when the prepared scan never mentions it")
+	}
+	if result.HasErrors {
+		t.Errorf("HasErrors = true, want false: %+v", result.Categories)
+	}
+}
+
 func TestRunClean_FailedCategoryExcludedFromTotals(t *testing.T) {
 	r := newMockCleanRegistry(
 		&mockCleanRunner{category: "ok_cat", entries: []cleaner.FileEntry{{Path: "/tmp/a", Size: 500}}},
@@ -379,5 +457,95 @@ func TestRunClean_FailedCategoryExcludedFromTotals(t *testing.T) {
 	}
 	if result.TotalFiles != 1 {
 		t.Errorf("TotalFiles = %d, want 1", result.TotalFiles)
+	}
+}
+
+// TestRunClean_PartialErrorsAreStructuredAndSetHasErrors: a cleaner that
+// deletes some entries and fails on others must report both -- the reclaimed
+// counts stay in the totals, the failures are carried as path+reason, and
+// the run as a whole is flagged so a partial failure never exits as success.
+func TestRunClean_PartialErrorsAreStructuredAndSetHasErrors(t *testing.T) {
+	r := newMockCleanRegistry(&mockCleanRunner{
+		category: "cat_a",
+		entries:  []cleaner.FileEntry{{Path: "/tmp/a", Size: 10}, {Path: "/tmp/b", Size: 20}},
+		cleanResult: &cleaner.CleanResult{
+			Category:     "cat_a",
+			FilesDeleted: 1,
+			BytesFreed:   10,
+			Errors: []error{
+				&fs.PathError{Op: "remove", Path: "/tmp/b", Err: errors.New("operation not permitted")},
+				errors.New("something else went wrong"),
+			},
+		},
+	})
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if !result.HasErrors {
+		t.Fatal("HasErrors = false, want true for a partial failure")
+	}
+	if result.TotalFiles != 1 || result.TotalSize != 10 {
+		t.Fatalf("totals = %d files / %d bytes, want the reclaimed 1 / 10 kept", result.TotalFiles, result.TotalSize)
+	}
+
+	cat := result.Categories[0]
+	if cat.Err != nil || cat.ErrMsg != "" {
+		t.Fatalf("a partial failure must not be reported as a fatal category error: %+v", cat)
+	}
+	if cat.PartialErrors != 2 || cat.PartialErrorsTruncated {
+		t.Fatalf("PartialErrors/Truncated = %d/%t, want 2/false", cat.PartialErrors, cat.PartialErrorsTruncated)
+	}
+	want := []ItemError{
+		{Path: "/tmp/b", Reason: "operation not permitted"},
+		{Reason: "something else went wrong"},
+	}
+	if len(cat.PartialErrorDetails) != len(want) {
+		t.Fatalf("PartialErrorDetails = %+v, want %+v", cat.PartialErrorDetails, want)
+	}
+	for i := range want {
+		if cat.PartialErrorDetails[i] != want[i] {
+			t.Fatalf("PartialErrorDetails[%d] = %+v, want %+v", i, cat.PartialErrorDetails[i], want[i])
+		}
+	}
+
+	// The whole point: it must survive the trip through JSON, which is how
+	// both --output json and the elevated helper's result carry it.
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded CleanResult
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got := decoded.Categories[0]
+	if got.PartialErrors != 2 || len(got.PartialErrorDetails) != 2 || got.PartialErrorDetails[0].Path != "/tmp/b" {
+		t.Fatalf("partial errors did not survive JSON: %+v", got)
+	}
+}
+
+func TestRunClean_PartialErrorDetailsAreBounded(t *testing.T) {
+	errs := make([]error, MaxPartialErrorDetails+7)
+	for i := range errs {
+		errs[i] = &fs.PathError{Op: "remove", Path: fmt.Sprintf("/tmp/%d", i), Err: errors.New("busy")}
+	}
+	r := newMockCleanRegistry(&mockCleanRunner{
+		category:    "cat_a",
+		entries:     []cleaner.FileEntry{{Path: "/tmp/a", Size: 10}},
+		cleanResult: &cleaner.CleanResult{Category: "cat_a", Errors: errs},
+	})
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	cat := result.Categories[0]
+	if cat.PartialErrors != len(errs) {
+		t.Fatalf("PartialErrors = %d, want the full count %d even when details are cut", cat.PartialErrors, len(errs))
+	}
+	if len(cat.PartialErrorDetails) != MaxPartialErrorDetails || !cat.PartialErrorsTruncated {
+		t.Fatalf("details/truncated = %d/%t, want %d/true", len(cat.PartialErrorDetails), cat.PartialErrorsTruncated, MaxPartialErrorDetails)
 	}
 }

@@ -75,6 +75,58 @@ func TestNewSummaryCelebratesOnlySuccessfulCategoriesInPartialCleanup(t *testing
 	}
 }
 
+func TestSummaryShowErrorsExpandsPerItemDetail(t *testing.T) {
+	summary := NewSummary([]*cleaner.CleanResult{
+		{
+			Category: cleaner.CategoryDocker,
+			Errors: []error{
+				errors.New("/private/tmp/locked: operation not permitted"),
+				errors.New("/private/tmp/gone: no such file or directory"),
+			},
+		},
+	}, false)
+
+	collapsed := summary.View()
+	if !strings.Contains(collapsed, "(2 errors)") {
+		t.Errorf("collapsed view = %q, want the (N errors) summary", collapsed)
+	}
+	if strings.Contains(collapsed, "operation not permitted") {
+		t.Errorf("collapsed view must not leak per-item detail:\n%s", collapsed)
+	}
+	if !strings.Contains(collapsed, "e to show error details") {
+		t.Errorf("collapsed view is missing the toggle hint:\n%s", collapsed)
+	}
+
+	summary.ToggleShowErrors()
+	if !summary.ShowErrors {
+		t.Fatal("ToggleShowErrors did not set ShowErrors")
+	}
+
+	expanded := summary.View()
+	if !strings.Contains(expanded, "operation not permitted") || !strings.Contains(expanded, "no such file or directory") {
+		t.Errorf("expanded view is missing per-item detail:\n%s", expanded)
+	}
+	if !strings.Contains(expanded, "e to hide error details") {
+		t.Errorf("expanded view is missing the toggle-off hint:\n%s", expanded)
+	}
+
+	summary.ToggleShowErrors()
+	if summary.ShowErrors {
+		t.Fatal("ToggleShowErrors did not clear ShowErrors on a second call")
+	}
+}
+
+func TestSummaryNoErrorsOmitsToggleHint(t *testing.T) {
+	summary := NewSummary([]*cleaner.CleanResult{
+		{Category: cleaner.CategoryTemp, BytesFreed: 10, FilesDeleted: 1},
+	}, false)
+
+	view := summary.View()
+	if strings.Contains(view, "show error details") || strings.Contains(view, "hide error details") {
+		t.Errorf("view must not offer an error toggle when nothing failed:\n%s", view)
+	}
+}
+
 func TestNewSummaryIgnoresNilResults(t *testing.T) {
 	summary := NewSummary([]*cleaner.CleanResult{
 		nil,

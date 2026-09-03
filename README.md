@@ -100,7 +100,10 @@ make build
 # Launch interactive TUI (dry-run, nothing is deleted)
 tidymymac
 
-# Actually delete the selected files
+# Launch the same TUI ready to actually delete the selected files
+tidymymac execute
+
+# Deprecated: still works, but prefer 'tidymymac execute' above
 tidymymac --execute
 ```
 
@@ -141,6 +144,13 @@ tidymymac scan --output csv
 # Include individual file paths in output
 tidymymac scan --output json --detailed
 
+# Concise human-readable report: totals + top 10 largest items per category
+# (Docker is broken down by resource type: images, containers, volumes)
+tidymymac scan --output table --detailed
+
+# List every item instead of capping at 10 per category/group
+tidymymac scan --output table --detailed --print-all
+
 # Save output to a timestamped file
 tidymymac scan --output csv --save
 
@@ -175,6 +185,11 @@ tidymymac clean --from-file scan.json --execute
 
 # Output cleanup result as JSON
 tidymymac clean --output json
+
+# Actually delete via JSON output, allowing genuinely privileged entries to prompt
+# (requires a controlling terminal and terminal stderr; stdin may still carry
+# --from-file -. Without them, the whole run fails before anything is deleted.)
+tidymymac clean --execute --output json --prompt-sudo
 ```
 
 #### `profile` — bundle categories and project paths
@@ -236,6 +251,7 @@ TidyMyMac is designed with safety as the primary concern:
 - ✅ **Dry-run by default**: scanning and reviewing never touches your files
 - ✅ **Explicit confirmation required**: deletion only happens with `--execute`
 - ✅ **Protected paths are a hard block**: anything in `protected_paths` is never deleted, and no CLI flag overrides it
+- ✅ **AI model stores protected by default**: `~/.ollama/models` and `~/.cache/huggingface` are built-in protected paths, even with no config file
 - ✅ **No silent operations**: every file is shown before removal
 - ✅ **Errors are non-fatal**: a failure on one file won't stop the rest
 

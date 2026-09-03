@@ -6,22 +6,47 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/viniciussouzao/tidymymac/internal/homedir"
 )
 
 // UpdatesCleaner is a cleaner that targets old macOS update residues and installers.
 type UpdatesCleaner struct {
 	homeDir string
+
+	// roots is the cleaner's domain: the only directories Scan walks and the
+	// only ones Clean will delete inside. Resolved once at construction so the
+	// two can never disagree.
+	roots []string
 }
 
-// NewUpdatesCleaner creates a new instance of UpdatesCleaner with the user's home directory.
+// NewUpdatesCleaner creates a new instance of UpdatesCleaner with the user's
+// home directory. It resolves via homedir.Resolve rather than os.UserHomeDir
+// because this cleaner requires sudo: when the process runs elevated,
+// os.UserHomeDir would resolve to root's home (/var/root) and the cleaner
+// would scan and clean the wrong home.
 func NewUpdatesCleaner() *UpdatesCleaner {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Resolve()
 	if err != nil {
 		home = ""
 	}
 	return &UpdatesCleaner{
 		homeDir: home,
+		roots:   updatesScanRoots(home),
 	}
+}
+
+// updatesScanRoots resolves the Updates domain, which is entirely
+// home-relative: with no home there is nothing to scan or clean.
+func updatesScanRoots(homeDir string) []string {
+	if homeDir == "" {
+		return nil
+	}
+	return resolveScanRoots([]string{
+		filepath.Join(homeDir, "Library", "Updates"),
+		filepath.Join(homeDir, "Library", "iTunes", "iPad Software Updates"),
+		filepath.Join(homeDir, "Library", "iTunes", "iPhone Software Updates"),
+	})
 }
 
 func (c *UpdatesCleaner) Category() Category { return CategoryUpdates }
@@ -42,13 +67,7 @@ func (c *UpdatesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) 
 	start := time.Now()
 	result := &ScanResult{Category: CategoryUpdates}
 
-	paths := []string{
-		filepath.Join(c.homeDir, "Library", "Updates"),
-		filepath.Join(c.homeDir, "Library", "iTunes", "iPad Software Updates"),
-		filepath.Join(c.homeDir, "Library", "iTunes", "iPhone Software Updates"),
-	}
-
-	for _, path := range paths {
+	for _, path := range c.roots {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
 		}
@@ -81,11 +100,26 @@ func (c *UpdatesCleaner) Scan(ctx context.Context, progress func(ScanProgress)) 
 				return nil
 			}
 
+			// Only regular files -- see the equivalent note in temp.go.
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			dev, ino, _ := fileIdentity(info)
+
+			// p, not path: path is the walk ROOT of the enclosing loop.
+			// Recording the root here made every entry claim to be the
+			// directory itself, which is both wrong reporting and, under
+			// elevation, a path the fresh-scan intersection would happily
+			// match.
 			result.Entries = append(result.Entries, FileEntry{
-				Path:     path,
+				Path:     p,
 				Size:     info.Size(),
 				ModTime:  info.ModTime(),
+				IsDir:    d.IsDir(),
 				Category: CategoryUpdates,
+				Dev:      dev,
+				Ino:      ino,
 			})
 
 			result.TotalSize += info.Size()
@@ -106,6 +140,11 @@ func (c *UpdatesCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun 
 	start := time.Now()
 	result := &CleanResult{Category: CategoryUpdates, DryRun: dryRun}
 
+	// Deletion never re-resolves entry.Path from "/": see rootedRemover for
+	// why a root process must not, and what it is confined to instead.
+	remover := newRootedRemover(c.roots...)
+	defer remover.Close()
+
 	for i, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -114,7 +153,7 @@ func (c *UpdatesCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun 
 			continue
 		}
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+			if err := remover.Remove(entry); err != nil && !os.IsNotExist(err) {
 				result.Errors = append(result.Errors, err)
 				continue
 			}

@@ -3,8 +3,10 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"sync"
 	"time"
 
@@ -29,10 +31,50 @@ type CleanCategoryResult struct {
 	Files        []cleaner.FileEntry `json:"files,omitempty"`
 	Err          error               `json:"-"`
 	ErrMsg       string              `json:"error,omitempty"`
-	// PartialErrors counts non-fatal per-file errors collected by the cleaner
-	// while it still reclaimed some space. Kept out of the JSON output to
-	// preserve the machine-readable schema.
-	PartialErrors int `json:"-"`
+	// PartialErrors counts non-fatal per-item errors the cleaner collected
+	// while continuing with the rest of its entries. The category may still
+	// have reclaimed space; DeletedFiles/DeletedSize stay accurate and are
+	// still folded into the totals, but HasErrors is set on the overall
+	// result so a partial failure never renders as a clean success.
+	PartialErrors int `json:"partial_errors,omitempty"`
+	// PartialErrorDetails carries the first MaxPartialErrorDetails of those
+	// errors, so the user can be told which path failed and why. It is
+	// bounded to keep the JSON output (and the elevated helper's stdout
+	// result) small even for a category with thousands of failures;
+	// PartialErrorsTruncated says when the bound was hit.
+	PartialErrorDetails    []ItemError `json:"partial_error_details,omitempty"`
+	PartialErrorsTruncated bool        `json:"partial_errors_truncated,omitempty"`
+}
+
+// ItemError is one non-fatal per-item failure inside a category. Path is
+// empty when the underlying error did not identify one.
+type ItemError struct {
+	Path   string `json:"path,omitempty"`
+	Reason string `json:"reason"`
+}
+
+// MaxPartialErrorDetails bounds CleanCategoryResult.PartialErrorDetails.
+const MaxPartialErrorDetails = 50
+
+// itemErrors converts a cleaner's collected errors into bounded, structured
+// ItemError values. *fs.PathError (what os.Remove & co. return) is split into
+// path and reason; anything else is carried as its message.
+func itemErrors(errs []error) (details []ItemError, truncated bool) {
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		if len(details) == MaxPartialErrorDetails {
+			return details, true
+		}
+		var pathErr *fs.PathError
+		if errors.As(err, &pathErr) {
+			details = append(details, ItemError{Path: pathErr.Path, Reason: pathErr.Err.Error()})
+			continue
+		}
+		details = append(details, ItemError{Reason: err.Error()})
+	}
+	return details, false
 }
 
 // CleanResult represents the overall result of the cleaning process.
@@ -136,9 +178,22 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 				}
 			}
 
+			// A whole-domain cleaner shells out to a command that clears its
+			// entire domain regardless of which entries are passed in -- so
+			// zero reviewed entries must never be read as "run it anyway".
+			// That matters most exactly when entries can under-report reality:
+			// a stale --from-file scan, a category the file never mentioned
+			// (buildCleanScanResult then hands back an empty result rather
+			// than an error), or every entry having been revalidated away.
+			// Skipping is indistinguishable on screen from "genuinely already
+			// clean" (both report 0 files, 0 bytes, no error), which is the
+			// same trade-off the elevated helper makes for an empty
+			// plan/scan intersection.
+			skipEmptyWholeDomain := !opts.DryRun && c.DeletesWholeDomain() && scanResult != nil && len(scanResult.Entries) == 0
+
 			var cleanRunResult *cleaner.CleanResult
 			var cleanErr error
-			if scanErr == nil {
+			if scanErr == nil && !skipEmptyWholeDomain {
 				cleanRunResult, cleanErr = c.Clean(ctx, scanResult.Entries, opts.DryRun, func(progress cleaner.CleanProgress) {
 					if onEvent != nil {
 						onEvent(CleanEvent{
@@ -164,6 +219,7 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 				item.DeletedFiles = cleanRunResult.FilesDeleted
 				item.DeletedSize = cleanRunResult.BytesFreed
 				item.PartialErrors = len(cleanRunResult.Errors)
+				item.PartialErrorDetails, item.PartialErrorsTruncated = itemErrors(cleanRunResult.Errors)
 			}
 
 			if scanErr != nil {
@@ -178,9 +234,12 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 			defer mu.Unlock()
 
 			result.Categories = append(result.Categories, item)
-			if item.Err != nil {
+			// A partial failure is still a failure for exit-status purposes,
+			// but what was reclaimed is real and stays in the totals.
+			if item.Err != nil || item.PartialErrors > 0 {
 				result.HasErrors = true
-			} else {
+			}
+			if item.Err == nil {
 				result.TotalSize += item.DeletedSize
 				result.TotalFiles += item.DeletedFiles
 			}
@@ -217,6 +276,75 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 	result.TotalSizeHuman = utils.FormatBytes(result.TotalSize)
 
 	return result, nil
+}
+
+// ApprovedCategory is one category's approved-for-deletion entries: freshly
+// scanned, tagged, and stripped of protected paths, but not cleaned.
+type ApprovedCategory struct {
+	Category cleaner.Category
+	Name     string
+	Entries  []cleaner.FileEntry
+
+	// Err is set when the scan itself failed, or when the category cannot
+	// honor a filtered entry list (DeletesWholeDomain) and protected paths
+	// were found in it -- the same "skip the whole category" rule runClean
+	// applies per cleaner. Entries is empty whenever Err is set.
+	Err error
+}
+
+// ResolveApprovedEntries scans, tags, and strips protected paths for exactly
+// the given categories, without cleaning anything. It runs the identical
+// per-category pipeline runClean's own loop applies right before calling
+// Clean -- including honoring a prepared --from-file scan the same way --
+// so a caller that needs a category's approved entries without cleaning it
+// can't drift from what an ordinary clean run would have used.
+//
+// It exists for the elevated-helper path in cmd/clean.go: entries destined
+// for elevate.Invoke must be gathered the same way as everything else clean
+// deletes, not through a second, possibly-divergent implementation of scan
+// + tag + strip.
+func ResolveApprovedEntries(ctx context.Context, registry *cleaner.Registry, selected []string, cfg *config.Config, preparedScan ScanResult, usePreparedScan bool) ([]ApprovedCategory, error) {
+	cleaners, err := resolveCleaners(registry, selected, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make([]ApprovedCategory, len(cleaners))
+	var wg sync.WaitGroup
+	wg.Add(len(cleaners))
+
+	for i, c := range cleaners {
+		i, c := i, c
+
+		go func() {
+			defer wg.Done()
+
+			name := c.Category().DisplayName()
+			results[i] = ApprovedCategory{Category: c.Category(), Name: name}
+
+			scanResult, scanErr := buildCleanScanResult(c, preparedScan, usePreparedScan)
+			if !usePreparedScan {
+				scanResult, scanErr = c.Scan(ctx, nil)
+			}
+			if scanErr != nil {
+				results[i].Err = scanErr
+				return
+			}
+			if scanResult == nil {
+				return
+			}
+
+			scanResult.Entries = cfg.Tag(scanResult.Entries)
+			if protected := config.CountProtected(scanResult.Entries); protected > 0 && c.DeletesWholeDomain() {
+				results[i].Err = fmt.Errorf("skipped: %d protected path(s) found in this category, and %s cannot selectively clean around them", protected, name)
+				return
+			}
+			results[i].Entries = config.StripProtected(scanResult.Entries)
+		}()
+	}
+
+	wg.Wait()
+	return results, nil
 }
 
 // buildCleanScanResult constructs a cleaner.ScanResult from a prepared ScanResult for a specific cleaner category.

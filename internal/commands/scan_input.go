@@ -33,7 +33,7 @@ func LoadScanResult(r io.Reader) (ScanResult, error) {
 // PrepareScanResultForClean takes a ScanResult and prepares it for the cleaning process by revalidating file entries and categorizing them according to the provided registry and selected categories.
 // It returns a PreparedScanResult that includes the original ScanResult along with metadata about the revalidation process, such as the number of revalidated files, missing files, type-changed files, and empty categories.
 // If any errors occur during preparation, they are returned as well.
-func PrepareScanResultForClean(registry *cleaner.Registry, scan ScanResult, selected []string, cfg *config.Config) (PreparedScanResult, error) {
+func PrepareScanResultForClean(ctx context.Context, registry *cleaner.Registry, scan ScanResult, selected []string, cfg *config.Config) (PreparedScanResult, error) {
 	if len(selected) == 0 {
 		for _, cat := range scan.Categories {
 			if cfg.IsCategoryDisabled(string(cat.Category)) {
@@ -84,7 +84,27 @@ func PrepareScanResultForClean(registry *cleaner.Registry, scan ScanResult, sele
 			continue
 		}
 
-		revalidated, missing, typeChanged := revalidateEntries(category.Files)
+		// Cleaners whose entries are not filesystem paths (Docker, Time
+		// Machine) revalidate against their own backing store; the os.Stat
+		// default would report every one of their entries as missing. A
+		// revalidator that cannot run at all (daemon down, tmutil absent)
+		// fails only its own category, matching how per-category scan errors
+		// are handled above.
+		var revalidated []cleaner.FileEntry
+		var missing, typeChanged int
+		if revalidator, ok := c.(cleaner.EntryRevalidator); ok {
+			var revalErr error
+			revalidated, missing, typeChanged, revalErr = revalidator.RevalidateEntries(ctx, category.Files)
+			if revalErr != nil {
+				item.Err = revalErr
+				item.ErrMsg = revalErr.Error()
+				prepared.Result.HasErrors = true
+				prepared.Result.Categories = append(prepared.Result.Categories, item)
+				continue
+			}
+		} else {
+			revalidated, missing, typeChanged = revalidateEntries(category.Files)
+		}
 		for i := range revalidated {
 			revalidated[i].Category = item.Category
 		}
@@ -141,12 +161,17 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 			continue
 		}
 
+		// Dev/Ino are deliberately not carried over. A scan file is
+		// untrusted input, and an identity taken from it would let a crafted
+		// file authorize a swap rather than let Clean detect one. Entries from
+		// here keep the scan-root confinement and skip the identity check.
 		revalidated = append(revalidated, cleaner.FileEntry{
-			Path:     entry.Path,
-			Size:     info.Size(),
-			IsDir:    info.IsDir(),
-			ModTime:  info.ModTime().UTC(),
-			Category: entry.Category,
+			Path:         entry.Path,
+			Size:         info.Size(),
+			IsDir:        info.IsDir(),
+			ModTime:      info.ModTime().UTC(),
+			Category:     entry.Category,
+			ResourceKind: entry.ResourceKind,
 		})
 	}
 

@@ -15,6 +15,7 @@ type keyMap struct {
 	FullPath       key.Binding
 	NextList       key.Binding
 	ToggleShowAll  key.Binding
+	ShowErrors     key.Binding
 }
 
 var keys = keyMap{
@@ -30,4 +31,5 @@ var keys = keyMap{
 	FullPath:       key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "full path")),
 	NextList:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next list")),
 	ToggleShowAll:  key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "show all")),
+	ShowErrors:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "show errors")),
 }

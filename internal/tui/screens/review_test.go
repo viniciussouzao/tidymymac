@@ -32,9 +32,22 @@ func TestReviewModelShouldWarnAboutSudo(t *testing.T) {
 		t.Fatal("ShouldWarnAboutSudo() = false, want true")
 	}
 
+	// AuthenticateSudo defaults to false (skip), so the sudo category (Logs,
+	// size 10) is excluded from the total by default -- only caches (20)
+	// count until the user explicitly opts into authenticating.
+	if m.AuthenticateSudo {
+		t.Fatal("AuthenticateSudo default = true, want false")
+	}
 	size, files := m.actionableTotals()
 	if size != 20 || files != 2 {
-		t.Fatalf("actionableTotals() = (%d, %d), want (20, 2)", size, files)
+		t.Fatalf("actionableTotals() with AuthenticateSudo=false (default) = (%d, %d), want (20, 2)", size, files)
+	}
+
+	// Choosing to authenticate instead includes the sudo category too.
+	m.AuthenticateSudo = true
+	size, files = m.actionableTotals()
+	if size != 30 || files != 3 {
+		t.Fatalf("actionableTotals() with AuthenticateSudo=true = (%d, %d), want (30, 3)", size, files)
 	}
 }
 

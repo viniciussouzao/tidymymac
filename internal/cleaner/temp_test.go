@@ -55,7 +55,7 @@ func TestTempCleanerScanContextCancellation(t *testing.T) {
 }
 
 func TestTempCleanerCleanDryRun(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	f := createTempFile(t, dir, "test.tmp", 512)
 
 	c := NewTempCleaner()
@@ -84,7 +84,7 @@ func TestTempCleanerCleanDryRun(t *testing.T) {
 }
 
 func TestTempCleanerCleanActualDeletion(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	f1 := createTempFile(t, dir, "a.tmp", 100)
 	f2 := createTempFile(t, dir, "b.tmp", 200)
 
@@ -113,7 +113,7 @@ func TestTempCleanerCleanActualDeletion(t *testing.T) {
 }
 
 func TestTempCleanerCleanSkipsDirectories(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	c := NewTempCleaner()
 	entries := []FileEntry{
 		{Path: dir, Size: 0, IsDir: true, Category: CategoryTemp},
@@ -131,7 +131,7 @@ func TestTempCleanerCleanSkipsDirectories(t *testing.T) {
 func TestTempCleanerCleanNonExistentFile(t *testing.T) {
 	c := NewTempCleaner()
 	entries := []FileEntry{
-		{Path: "/tmp/does-not-exist-tidymymac-test", Size: 100, Category: CategoryTemp},
+		{Path: filepath.Join(resolveScanRoot("/tmp"), "does-not-exist-tidymymac-test"), Size: 100, Category: CategoryTemp},
 	}
 
 	result, err := c.Clean(t.Context(), entries, false, nil)
@@ -160,7 +160,7 @@ func TestTempCleanerCleanContextCancellation(t *testing.T) {
 }
 
 func TestTempCleanerCleanProgress(t *testing.T) {
-	dir := t.TempDir()
+	dir := resolveScanRoot(t.TempDir())
 	var files []FileEntry
 	for i := range 3 {
 		f := createTempFile(t, dir, filepath.Base(filepath.Join(dir, string(rune('a'+i))+".tmp")), 100)
@@ -250,4 +250,168 @@ func createAllocatedFile(t *testing.T, dir, name string, size int64) string {
 	}
 
 	return path
+}
+
+// TestUserTempRoot pins the validation of $TMPDIR. TempCleaner requires sudo,
+// so whatever this returns can end up being walked -- and deleted -- by root.
+func TestUserTempRoot(t *testing.T) {
+	tests := []struct {
+		name   string
+		tmpDir string
+		euid   int
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "a real per-user temp dir is accepted",
+			tmpDir: "/var/folders/xy/abc123/T/",
+			euid:   501,
+			want:   "/var/folders/xy/abc123/T",
+			wantOK: true,
+		},
+		{
+			name:   "the firmlinked /private form is accepted too",
+			tmpDir: "/private/var/folders/xy/abc123/T",
+			euid:   501,
+			want:   "/private/var/folders/xy/abc123/T",
+			wantOK: true,
+		},
+		{
+			name:   "/private/tmp is a legitimate temp root",
+			tmpDir: "/private/tmp",
+			euid:   501,
+			want:   "/private/tmp",
+			wantOK: true,
+		},
+		{
+			name:   "/tmp is skipped because it is already scanned unconditionally",
+			tmpDir: "/tmp",
+			euid:   501,
+		},
+		{
+			name:   "an injected home path is refused",
+			tmpDir: "/Users/someone/Documents",
+			euid:   501,
+		},
+		{
+			name:   "a prefix lookalike is not a temp root",
+			tmpDir: "/var/folders-evil/x",
+			euid:   501,
+		},
+		{
+			name:   "traversal out of a temp root is refused after cleaning",
+			tmpDir: "/var/folders/../../Users/someone",
+			euid:   501,
+		},
+		{
+			name:   "a relative TMPDIR is refused",
+			tmpDir: "var/folders/x",
+			euid:   501,
+		},
+		{
+			name:   "an empty TMPDIR is refused",
+			tmpDir: "",
+			euid:   501,
+		},
+		{
+			name:   "an otherwise valid TMPDIR is dropped entirely when elevated",
+			tmpDir: "/var/folders/xy/abc123/T",
+			euid:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := userTempRoot(tt.tmpDir, tt.euid)
+			if ok != tt.wantOK {
+				t.Fatalf("userTempRoot(%q, %d) ok = %t, want %t", tt.tmpDir, tt.euid, ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Fatalf("userTempRoot(%q, %d) = %q, want %q", tt.tmpDir, tt.euid, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTempCleanerNeedsSudo covers the privilege split: only the shared,
+// world-writable roots may be handed to the elevated helper. Paths are built
+// from resolveScanRoot so the expectations use the same spelling Scan
+// produces, rather than assuming /tmp is or is not a symlink on this machine.
+func TestTempCleanerNeedsSudo(t *testing.T) {
+	const home = "/Users/someone"
+	const userTmp = "/var/folders/xy/abc123/T"
+
+	c := &TempCleaner{
+		homeDir:   home,
+		roots:     tempScanRoots(home, userTmp, 501),
+		sudoRoots: tempSudoRoots(),
+	}
+
+	tmpRoot := resolveScanRoot("/tmp")
+	varTmpRoot := resolveScanRoot("/var/tmp")
+	userTmpRoot := resolveScanRoot(userTmp)
+	tempItems := filepath.Join(home, "Library", "Caches", "TemporaryItems")
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "file under /tmp", path: filepath.Join(tmpRoot, "a.tmp"), want: true},
+		{name: "nested file under /tmp", path: filepath.Join(tmpRoot, "deep", "b.tmp"), want: true},
+		{name: "the /tmp root itself", path: tmpRoot, want: true},
+		{name: "file under /var/tmp", path: filepath.Join(varTmpRoot, "c.tmp"), want: true},
+		{name: "the /var/tmp root itself", path: varTmpRoot, want: true},
+		{name: "unnormalized path under /tmp", path: tmpRoot + "/./d.tmp", want: true},
+
+		{name: "file under the user's TMPDIR", path: filepath.Join(userTmpRoot, "e.tmp"), want: false},
+		{name: "file under Library/Caches/TemporaryItems", path: filepath.Join(tempItems, "f.tmp"), want: false},
+		{name: "a prefix lookalike of a sudo root", path: tmpRoot + "-evil/g.tmp", want: false},
+		{name: "somewhere else entirely", path: filepath.Join(home, "Documents", "notes.txt"), want: false},
+		{name: "empty path", path: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := c.NeedsSudo(FileEntry{Path: tt.path, Category: CategoryTemp}); got != tt.want {
+				t.Fatalf("NeedsSudo(%q) = %t, want %t", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTempCleanerSudoRootsAreSubsetOfRoots guards the invariant the split
+// depends on: an entry can only ever be elevated if the cleaner would also
+// have scanned -- and therefore be willing to delete -- it.
+func TestTempCleanerSudoRootsAreSubsetOfRoots(t *testing.T) {
+	c := &TempCleaner{
+		homeDir:   "/Users/someone",
+		roots:     tempScanRoots("/Users/someone", "/var/folders/xy/abc123/T", 501),
+		sudoRoots: tempSudoRoots(),
+	}
+	if len(c.sudoRoots) == 0 {
+		t.Fatal("sudoRoots is empty")
+	}
+	for _, sudoRoot := range c.sudoRoots {
+		found := false
+		for _, root := range c.roots {
+			if root == sudoRoot {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("sudo root %q is not one of the scan roots %v", sudoRoot, c.roots)
+		}
+	}
+	if len(c.sudoRoots) >= len(c.roots) {
+		t.Errorf("sudoRoots %v should be a strict subset of roots %v", c.sudoRoots, c.roots)
+	}
+}
+
+// TestTempCleanerImplementsPrivilegeSplitter fails loudly if the method is
+// renamed out from under the optional interface, which would silently revert
+// Temp to elevating every entry.
+func TestTempCleanerImplementsPrivilegeSplitter(t *testing.T) {
+	var _ PrivilegeSplitter = NewTempCleaner()
 }

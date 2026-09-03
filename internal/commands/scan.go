@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -186,6 +187,11 @@ func resolveCleaners(registry *cleaner.Registry, selected []string, cfg *config.
 	}
 
 	cleaners := make([]cleaner.Cleaner, 0, len(selected))
+	// Deduped by category: "clean docker docker" would otherwise run the
+	// cleaner twice, scanning and deleting the same domain in two passes. The
+	// sudo half of clean already deduped its own selection; this makes the
+	// ordinary path agree, for scan and clean alike.
+	seen := make(map[cleaner.Category]struct{}, len(selected))
 
 	for _, raw := range selected {
 		category := cleaner.Category(raw)
@@ -195,6 +201,11 @@ func resolveCleaners(registry *cleaner.Registry, selected []string, cfg *config.
 			return nil, fmt.Errorf("unknown category %q", raw)
 		}
 
+		if _, dup := seen[category]; dup {
+			continue
+		}
+		seen[category] = struct{}{}
+
 		cleaners = append(cleaners, c)
 	}
 
@@ -202,16 +213,129 @@ func resolveCleaners(registry *cleaner.Registry, selected []string, cfg *config.
 }
 
 // WriteOutput writes the scan result to w in the specified format.
-// format must be "json" or "csv". detailed controls whether individual file
-// entries are included (only applicable to json and csv formats).
-func WriteOutput(w io.Writer, result ScanResult, format string, detailed bool) error {
+// format must be "json", "csv" or "table". detailed controls whether
+// individual file entries are included (only applicable to json, csv, and
+// table formats). printAll only applies to table output: when false, each
+// category/group is capped at maxTableEntries rows.
+func WriteOutput(w io.Writer, result ScanResult, format string, detailed bool, printAll bool) error {
 	switch format {
 	case "json":
 		return writeJSON(w, result)
 	case "csv":
 		return writeCSV(w, result, detailed)
+	case "table":
+		return writeTable(w, result, printAll)
 	default:
-		return fmt.Errorf("unsupported format %q: must be json or csv", format)
+		return fmt.Errorf("unsupported format %q: must be json, csv, or table", format)
+	}
+}
+
+// maxTableEntries is the number of rows shown per category/group in table
+// output when printAll is false.
+const maxTableEntries = 10
+
+// dockerResourceGroup pairs a Docker ResourceKind with its display label.
+// Kept as an ordered slice (rather than a map) so a future kind (e.g. build
+// cache) can be added without restructuring writeTable; groups with no
+// matching entries simply don't render.
+type dockerResourceGroup struct {
+	kind  string
+	label string
+}
+
+var dockerResourceGroups = []dockerResourceGroup{
+	{cleaner.DockerResourceKindImageDangling, "Unreferenced images"},
+	{cleaner.DockerResourceKindImageStoppedContainer, "Images tied to stopped containers"},
+	{cleaner.DockerResourceKindContainerStopped, "Stopped containers"},
+	{cleaner.DockerResourceKindVolumeOrphaned, "Unused volumes"},
+}
+
+// writeTable writes a concise, human-readable report of result to w. It
+// requires detailed data (result.Categories[i].Files) to produce per-entry
+// breakdowns; categories without Files are reported by their totals only.
+func writeTable(w io.Writer, result ScanResult, printAll bool) error {
+	fmt.Fprintf(w, "Scan report - %s\n", result.ScannedAt.Local().Format("2006-01-02 15:04:05 MST"))
+	fmt.Fprintf(w, "Total: %d items, %s\n\n", result.TotalFiles, utils.FormatBytes(result.TotalSize))
+
+	for _, cat := range result.Categories {
+		fmt.Fprintf(w, "== %s ==\n", cat.Name)
+
+		if cat.Err != nil {
+			// Error text can embed a file name (fs.PathError does), so it
+			// gets the same treatment as the paths below.
+			fmt.Fprintf(w, "  error: %s (category skipped; re-run 'tidymymac scan %s' to retry)\n\n", utils.SanitizeForTerminal(cat.ErrMsg), cat.Category)
+			continue
+		}
+
+		if cat.TotalFiles == 0 {
+			fmt.Fprintln(w, "  nothing found")
+			fmt.Fprintln(w)
+			continue
+		}
+
+		fmt.Fprintf(w, "  %d items, %s\n", cat.TotalFiles, utils.FormatBytes(cat.TotalSize))
+
+		if cat.Category == cleaner.CategoryDocker {
+			writeDockerGroups(w, cat.Files, printAll)
+		} else {
+			writeEntryTable(w, cat.Files, printAll, "  ")
+		}
+
+		fmt.Fprintln(w)
+	}
+
+	return nil
+}
+
+// writeDockerGroups renders each Docker resource group (see
+// dockerResourceGroups) with its own count, size, and entry table.
+func writeDockerGroups(w io.Writer, files []cleaner.FileEntry, printAll bool) {
+	for _, group := range dockerResourceGroups {
+		var entries []cleaner.FileEntry
+		for _, f := range files {
+			if f.ResourceKind == group.kind {
+				entries = append(entries, f)
+			}
+		}
+		if len(entries) == 0 {
+			continue
+		}
+
+		var size int64
+		for _, e := range entries {
+			size += e.Size
+		}
+
+		fmt.Fprintf(w, "  -- %s (%d, %s) --\n", group.label, len(entries), utils.FormatBytes(size))
+		writeEntryTable(w, entries, printAll, "    ")
+	}
+}
+
+// writeEntryTable prints entries sorted by size descending, one per line,
+// prefixed with indent. When printAll is false, output is capped at
+// maxTableEntries rows and the omitted count is reported.
+func writeEntryTable(w io.Writer, entries []cleaner.FileEntry, printAll bool, indent string) {
+	sorted := make([]cleaner.FileEntry, len(entries))
+	copy(sorted, entries)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Size > sorted[j].Size })
+
+	shown := sorted
+	omitted := 0
+	if !printAll && len(sorted) > maxTableEntries {
+		shown = sorted[:maxTableEntries]
+		omitted = len(sorted) - maxTableEntries
+	}
+
+	for _, e := range shown {
+		// Paths are untrusted: a file name (or a Docker image tag) can carry
+		// a newline or an escape sequence that would inject a fake row or
+		// rewrite what the terminal shows. Escape for display only -- the
+		// entry itself is never modified.
+		fmt.Fprintf(w, "%s%10s  %s\n", indent, utils.FormatBytes(e.Size), utils.SanitizeForTerminal(e.Path))
+	}
+
+	if omitted > 0 {
+		fmt.Fprintf(w, "%s... %d more omitted, use --print-all to list all\n", indent, omitted)
 	}
 }
 

@@ -6,20 +6,45 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/viniciussouzao/tidymymac/internal/homedir"
 )
 
 // LogsCleaner scans and cleans system and user log files.
 type LogsCleaner struct {
 	homeDir string
+
+	// roots is the cleaner's domain: the only directories Scan walks and the
+	// only ones Clean will delete inside. Resolved once at construction so the
+	// two can never disagree.
+	roots []string
 }
 
-// NewLogsCleaner creates a LogsCleaner using the current user's home directory.
+// NewLogsCleaner creates a LogsCleaner using the current user's home
+// directory. It resolves via homedir.Resolve rather than os.UserHomeDir
+// because this cleaner requires sudo: when the process runs elevated,
+// os.UserHomeDir would resolve to root's home (/var/root) and the cleaner
+// would scan and clean the wrong home.
 func NewLogsCleaner() *LogsCleaner {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Resolve()
 	if err != nil {
 		home = ""
 	}
-	return &LogsCleaner{homeDir: home}
+	return &LogsCleaner{homeDir: home, roots: logsScanRoots(home)}
+}
+
+// logsScanRoots resolves the Logs domain. With no home directory there is no
+// domain at all: the system roots alone would let Clean delete under /var/log
+// on the strength of a scan that never established a user context.
+func logsScanRoots(homeDir string) []string {
+	if homeDir == "" {
+		return nil
+	}
+	return resolveScanRoots([]string{
+		filepath.Join(homeDir, "Library", "Logs"),
+		"/Library/Logs",
+		"/var/log",
+	})
 }
 
 func (c *LogsCleaner) Category() Category       { return CategoryLogs }
@@ -37,13 +62,7 @@ func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 	start := time.Now()
 	result := &ScanResult{Category: CategoryLogs}
 
-	paths := []string{
-		filepath.Join(c.homeDir, "Library", "Logs"),
-		"/Library/Logs",
-		"/var/log",
-	}
-
-	for _, root := range paths {
+	for _, root := range c.roots {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
@@ -70,11 +89,21 @@ func (c *LogsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 				return nil
 			}
 
+			// Only regular files -- see the equivalent note in temp.go.
+			// /var/log and ~/Library/Logs routinely hold symlinks and sockets.
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			dev, ino, _ := fileIdentity(info)
+
 			entry := FileEntry{
 				Path:     path,
 				Size:     info.Size(),
 				ModTime:  info.ModTime(),
 				Category: CategoryLogs,
+				Dev:      dev,
+				Ino:      ino,
 			}
 			result.Entries = append(result.Entries, entry)
 			result.TotalSize += info.Size()
@@ -114,6 +143,11 @@ func (c *LogsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		DryRun:   dryRun,
 	}
 
+	// Deletion never re-resolves entry.Path from "/": see rootedRemover for
+	// why a root process must not, and what it is confined to instead.
+	remover := newRootedRemover(c.roots...)
+	defer remover.Close()
+
 	for i, entry := range entries {
 		if ctx.Err() != nil {
 			return result, ctx.Err()
@@ -124,7 +158,7 @@ func (c *LogsCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 		}
 
 		if !dryRun {
-			if err := os.Remove(entry.Path); err != nil {
+			if err := remover.Remove(entry); err != nil {
 				if !os.IsNotExist(err) {
 					result.Errors = append(result.Errors, err)
 					continue

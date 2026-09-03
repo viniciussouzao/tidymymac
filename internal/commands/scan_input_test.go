@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +53,29 @@ func TestLoadScanResult_DecodesJSON(t *testing.T) {
 	}
 }
 
+func TestRevalidateEntries_PreservesResourceKind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	entries := []cleaner.FileEntry{
+		{Path: path, Size: 5, Category: cleaner.Category("temp_files"), ResourceKind: cleaner.DockerResourceKindImageDangling},
+	}
+
+	revalidated, missing, typeChanged := revalidateEntries(entries)
+	if missing != 0 || typeChanged != 0 {
+		t.Fatalf("missing = %d, typeChanged = %d, want 0/0", missing, typeChanged)
+	}
+	if len(revalidated) != 1 {
+		t.Fatalf("len = %d, want 1", len(revalidated))
+	}
+	if revalidated[0].ResourceKind != cleaner.DockerResourceKindImageDangling {
+		t.Errorf("ResourceKind = %q, want %q", revalidated[0].ResourceKind, cleaner.DockerResourceKindImageDangling)
+	}
+}
+
 func TestPrepareScanResultForClean_RevalidatesAndSkipsMissing(t *testing.T) {
 	dir := t.TempDir()
 	keep := filepath.Join(dir, "keep.log")
@@ -78,7 +103,7 @@ func TestPrepareScanResultForClean_RevalidatesAndSkipsMissing(t *testing.T) {
 		},
 	}
 
-	prepared, err := PrepareScanResultForClean(r, scan, nil, nil)
+	prepared, err := PrepareScanResultForClean(context.Background(), r, scan, nil, nil)
 	if err != nil {
 		t.Fatalf("PrepareScanResultForClean() error: %v", err)
 	}
@@ -135,7 +160,7 @@ func TestPrepareScanResultForClean_ReappliesCurrentConfigNotSavedFileState(t *te
 		t.Fatalf("config.New() error: %v", err)
 	}
 
-	prepared, err := PrepareScanResultForClean(r, scan, nil, cfg)
+	prepared, err := PrepareScanResultForClean(context.Background(), r, scan, nil, cfg)
 	if err != nil {
 		t.Fatalf("PrepareScanResultForClean() error: %v", err)
 	}
@@ -165,7 +190,7 @@ func TestPrepareScanResultForClean_RejectsSummaryOnlyScan(t *testing.T) {
 		},
 	}
 
-	prepared, err := PrepareScanResultForClean(r, scan, nil, nil)
+	prepared, err := PrepareScanResultForClean(context.Background(), r, scan, nil, nil)
 	if err != nil {
 		t.Fatalf("PrepareScanResultForClean() error: %v", err)
 	}
@@ -200,7 +225,7 @@ func TestPrepareScanResultForClean_SkipsTypeChangedEntries(t *testing.T) {
 		},
 	}
 
-	prepared, err := PrepareScanResultForClean(r, scan, nil, nil)
+	prepared, err := PrepareScanResultForClean(context.Background(), r, scan, nil, nil)
 	if err != nil {
 		t.Fatalf("PrepareScanResultForClean() error: %v", err)
 	}
@@ -213,5 +238,137 @@ func TestPrepareScanResultForClean_SkipsTypeChangedEntries(t *testing.T) {
 	}
 	if prepared.EmptyCategories != 1 {
 		t.Errorf("EmptyCategories = %d, want 1", prepared.EmptyCategories)
+	}
+}
+
+// mockRevalidatingCleaner is a mockCleaner that also implements
+// cleaner.EntryRevalidator, standing in for the virtual-resource cleaners
+// (Docker, Time Machine) whose entries are not filesystem paths.
+type mockRevalidatingCleaner struct {
+	mockCleaner
+	revalErr error
+	called   bool
+}
+
+func (m *mockRevalidatingCleaner) RevalidateEntries(_ context.Context, entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, int, error) {
+	m.called = true
+	if m.revalErr != nil {
+		return nil, 0, 0, m.revalErr
+	}
+	// Keep only the first entry, so the test can tell this ran instead of the
+	// os.Stat path (which would have dropped every non-existent path).
+	if len(entries) == 0 {
+		return nil, 0, 0, nil
+	}
+	return entries[:1], len(entries) - 1, 0, nil
+}
+
+func TestPrepareScanResultForClean_PrefersEntryRevalidator(t *testing.T) {
+	virtual := &mockRevalidatingCleaner{mockCleaner: mockCleaner{category: cleaner.Category("docker"), name: "Docker"}}
+
+	r := cleaner.NewRegistry()
+	r.Register(virtual)
+
+	scan := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Category:   cleaner.Category("docker"),
+				Name:       "Docker",
+				TotalFiles: 2,
+				Files: []cleaner.FileEntry{
+					{Path: "docker://image/abc123456789/nginx:latest", Size: 10},
+					{Path: "docker://image/def123456789/redis:latest", Size: 20},
+				},
+			},
+		},
+	}
+
+	prepared, err := PrepareScanResultForClean(context.Background(), r, scan, nil, nil)
+	if err != nil {
+		t.Fatalf("PrepareScanResultForClean() error: %v", err)
+	}
+
+	if !virtual.called {
+		t.Fatal("RevalidateEntries was not called; os.Stat path was used instead")
+	}
+	if prepared.RevalidatedFiles != 1 {
+		t.Errorf("RevalidatedFiles = %d, want 1", prepared.RevalidatedFiles)
+	}
+	if prepared.MissingFiles != 1 {
+		t.Errorf("MissingFiles = %d, want 1", prepared.MissingFiles)
+	}
+	files := prepared.Result.Categories[0].Files
+	if len(files) != 1 || files[0].Path != "docker://image/abc123456789/nginx:latest" {
+		t.Fatalf("files = %+v, want the single docker entry kept", files)
+	}
+	if prepared.Result.TotalSize != 10 {
+		t.Errorf("TotalSize = %d, want 10", prepared.Result.TotalSize)
+	}
+}
+
+func TestPrepareScanResultForClean_RevalidatorErrorIsScopedToItsCategory(t *testing.T) {
+	dir := t.TempDir()
+	keep := filepath.Join(dir, "keep.log")
+	if err := os.WriteFile(keep, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile() error: %v", err)
+	}
+
+	virtual := &mockRevalidatingCleaner{
+		mockCleaner: mockCleaner{category: cleaner.Category("docker"), name: "Docker"},
+		revalErr:    errors.New("docker daemon not running"),
+	}
+
+	r := cleaner.NewRegistry()
+	r.Register(virtual)
+	r.Register(&mockCleaner{category: cleaner.Category("temp_files"), name: "Temp Files"})
+
+	scan := ScanResult{
+		Categories: []ScanCategoryResult{
+			{
+				Category:   cleaner.Category("docker"),
+				Name:       "Docker",
+				TotalFiles: 1,
+				Files:      []cleaner.FileEntry{{Path: "docker://volume/orphan"}},
+			},
+			{
+				Category:   cleaner.Category("temp_files"),
+				Name:       "Temp Files",
+				TotalFiles: 1,
+				Files:      []cleaner.FileEntry{{Path: keep, Size: 1}},
+			},
+		},
+	}
+
+	prepared, err := PrepareScanResultForClean(context.Background(), r, scan, nil, nil)
+	if err != nil {
+		t.Fatalf("PrepareScanResultForClean() error: %v", err)
+	}
+
+	if !prepared.Result.HasErrors {
+		t.Error("HasErrors = false, want true")
+	}
+
+	byCategory := make(map[cleaner.Category]ScanCategoryResult)
+	for _, c := range prepared.Result.Categories {
+		byCategory[c.Category] = c
+	}
+
+	docker := byCategory[cleaner.Category("docker")]
+	if !strings.Contains(docker.ErrMsg, "docker daemon not running") {
+		t.Errorf("docker ErrMsg = %q, want the revalidation error", docker.ErrMsg)
+	}
+	if len(docker.Files) != 0 {
+		t.Errorf("docker files = %+v, want none", docker.Files)
+	}
+
+	temp := byCategory[cleaner.Category("temp_files")]
+	if temp.ErrMsg != "" {
+		t.Errorf("temp ErrMsg = %q, want empty (sibling category must be unaffected)", temp.ErrMsg)
+	}
+	if len(temp.Files) != 1 {
+		t.Fatalf("temp files = %+v, want the os.Stat-revalidated entry", temp.Files)
+	}
+	if temp.Files[0].Size != 5 {
+		t.Errorf("temp file size = %d, want 5 (os.Stat path must still run)", temp.Files[0].Size)
 	}
 }

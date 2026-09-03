@@ -95,18 +95,25 @@ func (m *CleaningModel) NextCategory() *CleaningCategory {
 	return nil
 }
 
-// UpdateCleanResult updates a category with its clean result
+// UpdateCleanResult updates a category with its clean result. result and err
+// are independent: a category can fail overall (err != nil, e.g. a fresh
+// re-scan error on the elevated path) while result still carries whatever
+// was actually deleted before the failure -- so result's counts are applied
+// whenever it is non-nil, regardless of err, rather than being discarded the
+// moment err is set.
 func (m *CleaningModel) UpdateCleanResult(category cleaner.Category, result *cleaner.CleanResult, err error) {
 	for i := range m.Categories {
 		if m.Categories[i].Category == category {
+			if result != nil {
+				m.Categories[i].Result = result
+				m.Categories[i].BytesDeleted = result.BytesFreed
+				m.Categories[i].FilesDeleted = result.FilesDeleted
+			}
 			if err != nil {
 				m.Categories[i].Status = "error"
 				m.Categories[i].Error = err
 			} else {
 				m.Categories[i].Status = "done"
-				m.Categories[i].Result = result
-				m.Categories[i].BytesDeleted = result.BytesFreed
-				m.Categories[i].FilesDeleted = result.FilesDeleted
 			}
 			m.Categories[i].CurrentFile = ""
 			break
@@ -165,11 +172,20 @@ func (m CleaningModel) Results() []*cleaner.CleanResult {
 	for _, c := range m.Categories {
 		switch {
 		case c.Result != nil:
-			results = append(results, c.Result)
+			// Copy rather than reuse the stored pointer: c.Error (set
+			// independently of c.Result, see UpdateCleanResult) must be
+			// folded into Errors here without mutating the model's own
+			// stored Result.
+			r := *c.Result
+			if c.Error != nil {
+				r.Errors = append(append([]error{}, r.Errors...), c.Error)
+			}
+			results = append(results, &r)
 		case c.Status == "skipped":
 			results = append(results, &cleaner.CleanResult{
-				Category: c.Category,
-				Skipped:  true,
+				Category:   c.Category,
+				Skipped:    true,
+				SkipReason: c.SkipReason,
 			})
 		default:
 			var errs []error
@@ -349,7 +365,14 @@ func (m CleaningModel) View() string {
 			detail = styles.Warning.Render("skipped")
 		case "error":
 			icon = styles.Error.Render("✗")
-			detail = styles.Error.Render("error")
+			msg := "error"
+			if cat.Error != nil {
+				msg = cat.Error.Error()
+			}
+			if cat.BytesDeleted > 0 || cat.FilesDeleted > 0 {
+				msg = fmt.Sprintf("%s freed (%d files) before error: %s", utils.FormatBytes(cat.BytesDeleted), cat.FilesDeleted, msg)
+			}
+			detail = styles.Error.Render(msg)
 		}
 
 		line := fmt.Sprintf("  %s  %-22s %s", icon, cat.Name, detail)

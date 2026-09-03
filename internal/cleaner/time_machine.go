@@ -111,6 +111,47 @@ func (c *TimeMachineCleaner) Clean(ctx context.Context, entries []FileEntry, dry
 	return result, nil
 }
 
+// RevalidateEntries implements EntryRevalidator. Time Machine entries carry a
+// snapshot name (com.apple.TimeMachine.<date>.local), not a filesystem path,
+// so the default os.Stat revalidation would drop all of them. The backing
+// store here is tmutil's current snapshot list.
+func (c *TimeMachineCleaner) RevalidateEntries(ctx context.Context, entries []FileEntry) ([]FileEntry, int, int, error) {
+	if _, err := exec.LookPath("tmutil"); err != nil {
+		return nil, 0, 0, fmt.Errorf("revalidate Time Machine snapshots: tmutil not found: %w", err)
+	}
+
+	out, err := exec.CommandContext(ctx, "tmutil", "listlocalsnapshots", "/").Output()
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("revalidate Time Machine snapshots: tmutil listlocalsnapshots: %w", err)
+	}
+
+	revalidated, missing := filterExistingSnapshots(entries, parseLocalSnapshots(string(out)))
+	// A snapshot has no file type to change, so typeChanged is always 0.
+	return revalidated, missing, 0, nil
+}
+
+// filterExistingSnapshots keeps the entries whose Path is still present in
+// current, counting the rest as missing. Split out from RevalidateEntries so
+// the membership logic is testable without tmutil.
+func filterExistingSnapshots(entries []FileEntry, current []string) ([]FileEntry, int) {
+	existing := make(map[string]bool, len(current))
+	for _, snapshot := range current {
+		existing[snapshot] = true
+	}
+
+	revalidated := make([]FileEntry, 0, len(entries))
+	var missing int
+	for _, entry := range entries {
+		if !existing[entry.Path] {
+			missing++
+			continue
+		}
+		revalidated = append(revalidated, entry)
+	}
+
+	return revalidated, missing
+}
+
 func parseLocalSnapshots(output string) []string {
 	lines := strings.Split(output, "\n")
 	snapshots := make([]string, 0, len(lines))

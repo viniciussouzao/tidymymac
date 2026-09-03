@@ -14,6 +14,18 @@ const stoppedThreshold = 7 * 24 * time.Hour
 
 const dockerStoppedContainerInspectFormat = `{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.FinishedAt}}|{{.SizeRw}}|{{.Image}}`
 
+// Values for FileEntry.ResourceKind produced by DockerCleaner.Scan. They exist
+// so reporting code can group Docker findings without parsing Path (which
+// cannot tell dangling images apart from images kept alive by a stopped
+// container). Adding a new kind is just adding a constant here and setting it
+// on the entries of a new scan step.
+const (
+	DockerResourceKindContainerStopped      = "container_stopped"
+	DockerResourceKindImageDangling         = "image_dangling"
+	DockerResourceKindImageStoppedContainer = "image_stopped_container"
+	DockerResourceKindVolumeOrphaned        = "volume_orphaned"
+)
+
 type containerInfo struct {
 	ID         string
 	Name       string
@@ -74,11 +86,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 
 	stoppedImageIDs := make(map[string]bool)
 	for _, sc := range stoppedContainers {
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://container/%s/%s", sc.ID[:12], strings.TrimPrefix(sc.Name, "/")),
-			Size:     sc.Size,
-			Category: CategoryDocker,
-		}
+		entry := dockerContainerEntry(sc)
 		result.Entries = append(result.Entries, entry)
 		result.TotalSize += sc.Size
 		result.TotalFiles++
@@ -101,16 +109,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	}
 
 	for _, img := range untaggedImages {
-		tag := "<none>"
-		if len(img.Tags) > 0 {
-			tag = img.Tags[0]
-		}
-
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://image/%s/%s", img.ID[:12], tag),
-			Size:     img.Size,
-			Category: CategoryDocker,
-		}
+		entry := dockerImageEntry(img, DockerResourceKindImageDangling)
 		result.Entries = append(result.Entries, entry)
 		result.TotalSize += img.Size
 		result.TotalFiles++
@@ -130,16 +129,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	imagesForStoppedContainers = excludeImagesUsedByStoppedContainers(imagesForStoppedContainers, stoppedImageIDs)
 
 	for _, img := range imagesForStoppedContainers {
-		tag := "<none>"
-		if len(img.Tags) > 0 {
-			tag = img.Tags[0]
-		}
-
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://image/%s/%s", img.ID[:12], tag),
-			Size:     img.Size,
-			Category: CategoryDocker,
-		}
+		entry := dockerImageEntry(img, DockerResourceKindImageStoppedContainer)
 		result.Entries = append(result.Entries, entry)
 		result.TotalSize += img.Size
 		result.TotalFiles++
@@ -157,11 +147,7 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 	}
 
 	for _, vol := range orphanedVolumes {
-		entry := FileEntry{
-			Path:     fmt.Sprintf("docker://volume/%s", vol),
-			Size:     0, // Docker doesn't provide size for volumes easily
-			Category: CategoryDocker,
-		}
+		entry := dockerVolumeEntry(vol)
 		result.Entries = append(result.Entries, entry)
 		result.TotalFiles++
 	}
@@ -173,6 +159,46 @@ func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (
 
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// dockerContainerEntry builds the entry for a stopped container. The
+// docker://container/<id>/<name> Path shape is part of the contract with
+// Clean and scriptgen and must not change.
+func dockerContainerEntry(sc containerInfo) FileEntry {
+	return FileEntry{
+		Path:         fmt.Sprintf("docker://container/%s/%s", sc.ID[:12], strings.TrimPrefix(sc.Name, "/")),
+		Size:         sc.Size,
+		Category:     CategoryDocker,
+		ResourceKind: DockerResourceKindContainerStopped,
+	}
+}
+
+// dockerImageEntry builds the entry for an image. kind distinguishes dangling
+// images from images kept around by a stopped container; the Path is identical
+// in both cases.
+func dockerImageEntry(img imageInfo, kind string) FileEntry {
+	tag := "<none>"
+	if len(img.Tags) > 0 {
+		tag = img.Tags[0]
+	}
+
+	return FileEntry{
+		Path:         fmt.Sprintf("docker://image/%s/%s", img.ID[:12], tag),
+		Size:         img.Size,
+		Category:     CategoryDocker,
+		ResourceKind: kind,
+	}
+}
+
+// dockerVolumeEntry builds the entry for an orphaned volume. Size stays 0:
+// Docker does not expose volume sizes cheaply.
+func dockerVolumeEntry(name string) FileEntry {
+	return FileEntry{
+		Path:         fmt.Sprintf("docker://volume/%s", name),
+		Size:         0,
+		Category:     CategoryDocker,
+		ResourceKind: DockerResourceKindVolumeOrphaned,
+	}
 }
 
 func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun bool, progress func(CleanProgress)) (*CleanResult, error) {
@@ -250,6 +276,194 @@ func (c *DockerCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun b
 
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// dockerResourceSets holds the identifiers Docker currently reports, per
+// resource type. A nil map means "that type was not queried" (no entry of that
+// kind was up for revalidation), which is distinct from an empty map meaning
+// "Docker has none of them left".
+type dockerResourceSets struct {
+	containers map[string]bool
+	images     map[string]bool
+	volumes    map[string]bool
+}
+
+// RevalidateEntries implements EntryRevalidator. Docker entries carry a
+// docker://<type>/<id>/<name> pseudo-path, not a filesystem path, so the
+// default os.Stat revalidation would drop all of them. Existence in the
+// daemon's current listings is the whole contract here: whether an image is
+// still dangling or a container has been stopped long enough is Scan's job,
+// not revalidation's.
+func (c *DockerCleaner) RevalidateEntries(ctx context.Context, entries []FileEntry) ([]FileEntry, int, int, error) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return nil, 0, 0, fmt.Errorf("revalidate docker entries: docker not found: %w", err)
+	}
+
+	// Only list the resource types actually present in entries, so a clean of
+	// (say) volumes alone never pays for an image listing.
+	var wantContainers, wantImages, wantVolumes bool
+	for _, entry := range entries {
+		switch dockerResourceType(entry.Path) {
+		case "container":
+			wantContainers = true
+		case "image":
+			wantImages = true
+		case "volume":
+			wantVolumes = true
+		}
+	}
+
+	var sets dockerResourceSets
+	var err error
+	if wantContainers {
+		if sets.containers, err = dockerListIDs(ctx, "ps", "-a", "--format", "{{.ID}}"); err != nil {
+			return nil, 0, 0, fmt.Errorf("revalidate docker containers: %w", err)
+		}
+	}
+	if wantImages {
+		if sets.images, err = dockerListIDs(ctx, "images", "-a", "--format", "{{.ID}}"); err != nil {
+			return nil, 0, 0, fmt.Errorf("revalidate docker images: %w", err)
+		}
+	}
+	if wantVolumes {
+		if sets.volumes, err = dockerListIDs(ctx, "volume", "ls", "--format", "{{.Name}}"); err != nil {
+			return nil, 0, 0, fmt.Errorf("revalidate docker volumes: %w", err)
+		}
+	}
+
+	revalidated, missing := matchDockerEntries(entries, sets)
+	// A Docker resource has no file type to change, so typeChanged is always 0.
+	return revalidated, missing, 0, nil
+}
+
+// dockerListIDs runs a docker listing command and returns its non-empty output
+// lines as a set. The returned map is never nil on success, so callers can
+// tell "queried, none left" from "not queried".
+func dockerListIDs(ctx context.Context, args ...string) (map[string]bool, error) {
+	out, err := exec.CommandContext(ctx, "docker", args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker %s: %w", strings.Join(args, " "), err)
+	}
+
+	ids := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			ids[line] = true
+		}
+	}
+	return ids, nil
+}
+
+// matchDockerEntries keeps the entries whose identifier is still present in
+// the corresponding current set, counting the rest as missing. Split out from
+// RevalidateEntries so the matching logic is testable without a daemon.
+func matchDockerEntries(entries []FileEntry, sets dockerResourceSets) ([]FileEntry, int) {
+	revalidated := make([]FileEntry, 0, len(entries))
+	var missing int
+
+	for _, entry := range entries {
+		resourceType, id, ok := parseDockerResourcePath(entry.Path)
+		if !ok {
+			// An unparseable path could never be deleted by Clean either, so
+			// dropping it as missing is the honest outcome.
+			missing++
+			continue
+		}
+
+		var current map[string]bool
+		switch resourceType {
+		case "container":
+			current = sets.containers
+		case "image":
+			current = sets.images
+		case "volume":
+			current = sets.volumes
+		default:
+			missing++
+			continue
+		}
+
+		// Volumes are identified by NAME, not by a truncatable hex id, so
+		// prefix matching would be meaningless there and dangerous ("db" would
+		// revalidate against "db-backup").
+		if !dockerIDPresent(current, id, resourceType != "volume") {
+			missing++
+			continue
+		}
+		revalidated = append(revalidated, entry)
+	}
+
+	return revalidated, missing
+}
+
+// dockerShortIDLen is docker's own short-ID width, and the minimum length a
+// prefix match is allowed to be decided on.
+const dockerShortIDLen = 12
+
+// dockerIDPresent matches by ID prefix in both directions: entry paths carry a
+// 12-char truncation of whatever Scan saw, which may itself have been a full
+// (or sha256:-prefixed) ID, while the listing commands emit short IDs.
+//
+// allowPrefix is false for resources identified by name (volumes), where only
+// exact equality is meaningful.
+//
+// The length floor is a safety bound, not an optimization. Revalidation is
+// what licenses Clean to run "docker rmi -f" on an entry, and an unbounded
+// prefix rule let a 1-char id from a stale or hand-edited saved scan match an
+// unrelated live resource -- resurrecting an approval for something the user
+// never reviewed. Requiring the SHORTER side of the comparison to be at least
+// a docker short ID makes an accidental collision implausible; exact equality
+// is always allowed, since a full id needs no prefix reasoning.
+func dockerIDPresent(current map[string]bool, id string, allowPrefix bool) bool {
+	if current == nil {
+		return false
+	}
+	if current[id] {
+		return true
+	}
+	if !allowPrefix {
+		return false
+	}
+
+	normalized := strings.TrimPrefix(id, "sha256:")
+	if normalized == "" {
+		return false
+	}
+	for candidate := range current {
+		candidate = strings.TrimPrefix(candidate, "sha256:")
+		if candidate == "" {
+			continue
+		}
+		if candidate == normalized {
+			return true
+		}
+		if min(len(candidate), len(normalized)) < dockerShortIDLen {
+			continue
+		}
+		if strings.HasPrefix(candidate, normalized) || strings.HasPrefix(normalized, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseDockerResourcePath splits a docker://<type>/<id>[/<name>] path the same
+// way Clean does -- that shape is the stable contract between Scan, Clean and
+// scriptgen.
+func parseDockerResourcePath(path string) (resourceType string, id string, ok bool) {
+	segments := strings.SplitN(strings.TrimPrefix(path, "docker://"), "/", 3)
+	if len(segments) < 2 || segments[0] == "" || segments[1] == "" {
+		return "", "", false
+	}
+	return segments[0], segments[1], true
+}
+
+func dockerResourceType(path string) string {
+	resourceType, _, ok := parseDockerResourcePath(path)
+	if !ok {
+		return ""
+	}
+	return resourceType
 }
 
 func findStoppedContainers(ctx context.Context) ([]containerInfo, error) {

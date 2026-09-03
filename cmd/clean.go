@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/viniciussouzao/tidymymac/internal/celebration"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
@@ -52,6 +53,9 @@ $ tidymymac clean --output json
 # Use a previous scan file and output the cleanup result as JSON
 $ tidymymac clean --from-file scan.json --output json
 
+# Allow a sudo-requiring category to be cleaned non-interactively (requires a terminal)
+$ tidymymac clean --execute --output json --prompt-sudo
+
 # Clean everything a profile bundles (categories + project paths)
 $ tidymymac clean --profile dev --execute
 
@@ -70,6 +74,7 @@ $ tidymymac clean --profile dev --include-large-files --execute
 		forceStaleScan, _ := cmd.Flags().GetBool("force-stale-scan")
 		output, _ := cmd.Flags().GetString("output")
 		quiet, _ := cmd.Flags().GetBool("quiet")
+		promptSudo, _ := cmd.Flags().GetBool("prompt-sudo")
 		profileName, _ := cmd.Flags().GetString("profile")
 		includeLargeFiles, _ := cmd.Flags().GetBool("include-large-files")
 
@@ -85,7 +90,7 @@ $ tidymymac clean --profile dev --include-large-files --execute
 		}
 
 		if output != "" {
-			return runCleanNonInteractive(cmd.Context(), registry, categories, detailed, fromFile, forceStaleScan, output, quiet)
+			return runCleanNonInteractive(cmd.Context(), registry, categories, detailed, fromFile, forceStaleScan, output, quiet, promptSudo)
 		}
 
 		return runCleanInteractive(cmd, registry, categories, detailed, fromFile, forceStaleScan)
@@ -102,6 +107,7 @@ func init() {
 	cleanCmd.Flags().String("from-file", "", "load a JSON scan file (from 'scan --output json --detailed') and revalidate its entries before cleaning")
 	cleanCmd.Flags().Bool("force-stale-scan", false, "allow --from-file scan results older than 24 hours when used with --execute")
 	cleanCmd.Flags().Bool("quiet", false, "suppress progress output to stderr")
+	cleanCmd.Flags().Bool("prompt-sudo", false, "allow prompting for a sudo password when a selected category requires it (only meaningful with --execute --output json; requires stdin and stderr to be a terminal)")
 }
 
 const (
@@ -109,7 +115,7 @@ const (
 	cleanScanMaxAge  = 24 * time.Hour
 )
 
-func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, categories []string, detailed bool, fromFile string, forceStaleScan bool, output string, quiet bool) error {
+func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, categories []string, detailed bool, fromFile string, forceStaleScan bool, output string, quiet bool, promptSudo bool) error {
 	start := time.Now()
 
 	stderr := func(format string, a ...any) {
@@ -128,6 +134,29 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 		b.WriteString("🧹 cleaning your mac...\n")
 	}
 
+	// allowSudo enforces this path's contract, the opposite of the
+	// interactive CLI's transparent prompt: a script piping to
+	// --output json must never hang on a sudo password prompt it cannot
+	// answer. Without --prompt-sudo the whole run is refused before any
+	// deletion happens anywhere; with it, a non-terminal stdin/stderr still
+	// refuses rather than risk a hang. Returning here happens before
+	// anything is written to stdout, matching the --from-file load-error
+	// path's existing guarantee.
+	allowSudo := func(sudoNames []string) error {
+		if !promptSudo {
+			return fmt.Errorf("%s: --prompt-sudo was not given, so nothing was cleaned", sudoRequirementMessage(registry, sudoNames))
+		}
+		if !stdinIsTerminal() || !stderrIsTerminal() {
+			return fmt.Errorf("%s: refusing to prompt for a sudo password because stdin/stderr is not a terminal", sudoRequirementMessage(registry, sudoNames))
+		}
+		return nil
+	}
+
+	outcome, err := resolveSudoElevation(ctx, registry, categories, fromFile, forceStaleScan, dryRun, allowSudo)
+	if err != nil {
+		return err
+	}
+
 	opts := commands.CleanerOptions{
 		Detailed: detailed,
 		DryRun:   dryRun,
@@ -136,18 +165,36 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 
 	var (
 		result       commands.CleanResult
-		err          error
+		liveErr      error
 		revalidation *commands.RevalidationSummary
 	)
 
-	result, revalidation, err = executeClean(ctx, registry, categories, fromFile, forceStaleScan, opts, cleanProgressPrinter(stderr), stderr)
-	if err != nil {
-		return err
+	if outcome.skipLiveRun {
+		result = commands.CleanResult{CleanedAt: time.Now().UTC()}
+		if outcome.usePreparedScan {
+			revalidation = &commands.RevalidationSummary{
+				RevalidatedFiles: outcome.prepared.RevalidatedFiles,
+				MissingFiles:     outcome.prepared.MissingFiles,
+				TypeChangedFiles: outcome.prepared.TypeChangedFiles,
+				EmptyCategories:  outcome.prepared.EmptyCategories,
+			}
+		}
+	} else {
+		result, revalidation, liveErr = runLiveClean(ctx, registry, outcome.nonSudoCategories, outcome.usePreparedScan, outcome.prepared, opts, cleanProgressPrinter(stderr))
 	}
 
-	if !dryRun {
+	// outcome.preResolved's own history record was already written
+	// synchronously inside resolveSudoElevation, right after elevate.Invoke
+	// returned -- recording it again here would double it, so this only
+	// covers the live (non-sudo) remainder, and only when it actually ran.
+	if !dryRun && !outcome.skipLiveRun && liveErr == nil {
 		_ = history.Append(buildRunRecord(result, time.Since(start).Milliseconds()))
 	}
+	// A structural failure of the separate, non-sudo live run (liveErr) must
+	// never hide an elevated deletion that already happened for real: merge
+	// outcome.preResolved unconditionally, mirroring cleanModel.Init()'s same
+	// guarantee for the interactive path.
+	result = mergeCleanResults(result, outcome.preResolved)
 
 	if output != "" {
 		if writeErr := commands.WriteCleanOutput(os.Stdout, commands.CleanOutput{
@@ -155,6 +202,9 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 			Revalidation: revalidation,
 		}, output); writeErr != nil {
 			return writeErr
+		}
+		if liveErr != nil {
+			return liveErr
 		}
 		if result.HasErrors {
 			return fmt.Errorf("clean completed with errors in: %s", strings.Join(failedCategoryNames(result), ", "))
@@ -187,6 +237,9 @@ func runCleanNonInteractive(ctx context.Context, registry *cleaner.Registry, cat
 
 	_, _ = fmt.Fprint(os.Stdout, b.String())
 
+	if liveErr != nil {
+		return liveErr
+	}
 	if result.HasErrors {
 		return fmt.Errorf("clean completed with errors in: %s", strings.Join(failedCategoryNames(result), ", "))
 	}
@@ -228,63 +281,11 @@ func writePartialErrors(b *strings.Builder, category commands.CleanCategoryResul
 	}
 }
 
-func executeClean(
-	ctx context.Context,
-	registry *cleaner.Registry,
-	args []string,
-	fromFile string,
-	forceStaleScan bool,
-	opts commands.CleanerOptions,
-	onEvent func(commands.CleanEvent),
-	stderr func(string, ...any),
-) (commands.CleanResult, *commands.RevalidationSummary, error) {
-	if fromFile != "" {
-		scanResult, loadErr := loadScanResultFile(fromFile)
-		if loadErr != nil {
-			return commands.CleanResult{}, nil, loadErr
-		}
-
-		age := time.Since(scanResult.ScannedAt)
-		if !scanResult.ScannedAt.IsZero() && age > cleanScanWarnAge {
-			stderr("warning: scan file is %s old; entries will be revalidated before cleaning\n", roundAge(age))
-		}
-		if !scanResult.ScannedAt.IsZero() && age > cleanScanMaxAge && !opts.DryRun && !forceStaleScan {
-			return commands.CleanResult{}, nil, fmt.Errorf("scan file is %s old; rerun the scan or use --force-stale-scan with --execute", roundAge(age))
-		}
-
-		prepared, prepErr := commands.PrepareScanResultForClean(ctx, registry, scanResult, args, opts.Config)
-		if prepErr != nil {
-			return commands.CleanResult{}, nil, prepErr
-		}
-
-		revalidation := &commands.RevalidationSummary{
-			RevalidatedFiles: prepared.RevalidatedFiles,
-			MissingFiles:     prepared.MissingFiles,
-			TypeChangedFiles: prepared.TypeChangedFiles,
-			EmptyCategories:  prepared.EmptyCategories,
-		}
-
-		result, err := commands.RunCleanWithPreparedScanResult(
-			ctx,
-			registry,
-			prepared,
-			args,
-			opts,
-			onEvent,
-		)
-		return result, revalidation, err
-	}
-
-	result, err := commands.RunClean(ctx, registry, args, opts, onEvent)
-	return result, nil, err
-}
-
-// runLiveClean is executeClean's counterpart for the interactive model's own
-// scan+clean, given a scan that was already loaded and prepared exactly
-// once by runCleanInteractive. Unlike executeClean it never touches
-// --from-file itself: reading it a second time here would either consume an
-// already-exhausted "--from-file -" stdin pipe, or simply redo the same
-// file parse and revalidation for no reason.
+// runLiveClean runs the non-sudo remainder of a clean against a scan that was
+// already loaded and prepared exactly once by resolveSudoElevation. It never
+// touches --from-file itself: reading it a second time here would either
+// consume an already-exhausted "--from-file -" stdin pipe, or simply redo the
+// same file parse and revalidation for no reason.
 func runLiveClean(
 	ctx context.Context,
 	registry *cleaner.Registry,
@@ -400,15 +401,46 @@ func expandCategoriesFromPreparedScan(categories []string, prepared commands.Pre
 	return expanded
 }
 
-func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categories []string, detailed bool, fromFile string, forceStaleScan bool) error {
-	ctx := cmd.Context()
-	dryRun := !executeFlag
+// sudoElevationOutcome is what resolveSudoElevation produces: everything a
+// caller needs to run the non-sudo remainder against the same (at-most-once)
+// scan load, plus whatever the sudo portion already produced.
+type sudoElevationOutcome struct {
+	prepared          commands.PreparedScanResult
+	usePreparedScan   bool
+	nonSudoCategories []string
+	preResolved       []commands.CleanCategoryResult
+	// skipLiveRun is true when every selected category went to
+	// elevateForClean, leaving nothing for the caller's own non-sudo run to
+	// do.
+	skipLiveRun bool
+}
 
+// resolveSudoElevation loads --from-file at most once, expands an empty
+// selection, splits sudo/non-sudo categories, and -- when allowSudo permits
+// it -- elevates the sudo portion via elevateForClean, recording its history
+// immediately (before returning to the caller) so an interrupted or failed
+// remainder can never cost it its audit trail.
+//
+// allowSudo is called only when there is at least one sudo category and
+// dryRun is false; returning a non-nil error aborts before elevateForClean
+// runs, and therefore before any deletion happens anywhere in this run. This
+// is the hook the two callers use for their different policies: the
+// interactive CLI always allows (transparent prompt, per Phase 3), while
+// --output json gates it behind --prompt-sudo and a TTY check.
+func resolveSudoElevation(
+	ctx context.Context,
+	registry *cleaner.Registry,
+	categories []string,
+	fromFile string,
+	forceStaleScan bool,
+	dryRun bool,
+	allowSudo func(sudoNames []string) error,
+) (sudoElevationOutcome, error) {
 	// Loaded and prepared at most once, up front, and reused by both the
-	// elevated-sudo path below and the live (non-sudo) run inside the
-	// bubbletea model: reading fromFile a second time would consume stdin
-	// ("--from-file -") against an already-exhausted pipe, and would let the
-	// two runs work from two different reads of the same file.
+	// elevated-sudo path below and the caller's own live (non-sudo) run:
+	// reading fromFile a second time would consume stdin ("--from-file -")
+	// against an already-exhausted pipe, and would let the two runs work
+	// from two different reads of the same file.
 	var prepared commands.PreparedScanResult
 	usePreparedScan := false
 	effectiveCategories := categories
@@ -416,27 +448,27 @@ func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categor
 	if fromFile != "" {
 		scanResult, err := loadScanResultFile(fromFile)
 		if err != nil {
-			return err
+			return sudoElevationOutcome{}, err
 		}
 		age := time.Since(scanResult.ScannedAt)
 		if !scanResult.ScannedAt.IsZero() && age > cleanScanWarnAge {
 			fmt.Fprintf(os.Stderr, "warning: scan file is %s old; entries will be revalidated before cleaning\n", roundAge(age))
 		}
 		if !dryRun && !scanResult.ScannedAt.IsZero() && age > cleanScanMaxAge && !forceStaleScan {
-			return fmt.Errorf("scan file is %s old; rerun the scan or use --force-stale-scan with --execute", roundAge(age))
+			return sudoElevationOutcome{}, fmt.Errorf("scan file is %s old; rerun the scan or use --force-stale-scan with --execute", roundAge(age))
 		}
 
 		p, err := commands.PrepareScanResultForClean(ctx, registry, scanResult, categories, loadedConfig)
 		if err != nil {
-			return err
+			return sudoElevationOutcome{}, err
 		}
 		prepared = p
 		usePreparedScan = true
 		effectiveCategories = expandCategoriesFromPreparedScan(effectiveCategories, prepared)
 	}
 
-	// Sudo categories are handled separately, before any bubbletea Program
-	// exists: dry-run needs no elevation (nothing gets deleted), so this
+	// Sudo categories are handled separately, before the caller's own live
+	// run starts: dry-run needs no elevation (nothing gets deleted), so this
 	// only ever runs for --execute.
 	nonSudoCategories := effectiveCategories
 	var preResolved []commands.CleanCategoryResult
@@ -445,13 +477,17 @@ func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categor
 	if !dryRun {
 		sudoNames, restNames, err := splitSudoCategories(registry, loadedConfig, effectiveCategories)
 		if err != nil {
-			return err
+			return sudoElevationOutcome{}, err
 		}
 		if len(sudoNames) > 0 {
+			if err := allowSudo(sudoNames); err != nil {
+				return sudoElevationOutcome{}, err
+			}
+
 			elevateStart := time.Now()
 			results, err := elevateForClean(ctx, registry, sudoNames, prepared.Result, usePreparedScan)
 			if err != nil {
-				return err
+				return sudoElevationOutcome{}, err
 			}
 			preResolved = results
 			nonSudoCategories = restNames
@@ -462,13 +498,13 @@ func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categor
 			// accidentally clean something the user never selected.
 			skipLiveRun = len(restNames) == 0
 
-			// Recorded immediately, before the live (non-sudo) run's own
-			// bubbletea Program even starts: elevate.Invoke already ran to
-			// completion by this point, so this deletion is real and final.
-			// It must not depend on the separate live run reaching its own
-			// history.Append later -- quitting (q/ctrl+c) mid-live-run
-			// abandons that goroutine entirely, which would otherwise take
-			// this already-completed elevated deletion's audit trail with it.
+			// Recorded immediately, before the caller's own live (non-sudo)
+			// run even starts: elevate.Invoke already ran to completion by
+			// this point, so this deletion is real and final. It must not
+			// depend on the separate live run reaching its own
+			// history.Append later -- an interrupted or failed remainder
+			// must never take this already-completed elevated deletion's
+			// audit trail with it.
 			_ = history.Append(buildRunRecord(
 				commands.CleanResult{CleanedAt: time.Now().UTC(), Categories: preResolved},
 				time.Since(elevateStart).Milliseconds(),
@@ -476,7 +512,29 @@ func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categor
 		}
 	}
 
-	m := newCleanModel(ctx, registry, nonSudoCategories, detailed, usePreparedScan, prepared, dryRun, preResolved, skipLiveRun)
+	return sudoElevationOutcome{
+		prepared:          prepared,
+		usePreparedScan:   usePreparedScan,
+		nonSudoCategories: nonSudoCategories,
+		preResolved:       preResolved,
+		skipLiveRun:       skipLiveRun,
+	}, nil
+}
+
+func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categories []string, detailed bool, fromFile string, forceStaleScan bool) error {
+	ctx := cmd.Context()
+	dryRun := !executeFlag
+
+	// The interactive CLI keeps Phase 3's transparent-prompt behavior: a
+	// sudo category is always allowed through to elevateForClean, which
+	// itself prompts on an ordinary terminal before any bubbletea Program
+	// exists.
+	outcome, err := resolveSudoElevation(ctx, registry, categories, fromFile, forceStaleScan, dryRun, func([]string) error { return nil })
+	if err != nil {
+		return err
+	}
+
+	m := newCleanModel(ctx, registry, outcome.nonSudoCategories, detailed, outcome.usePreparedScan, outcome.prepared, dryRun, outcome.preResolved, outcome.skipLiveRun)
 	p := tea.NewProgram(m)
 
 	final, err := p.Run()
@@ -571,12 +629,40 @@ func sudoNeedMessage(categories []elevate.PlanCategory) string {
 	return fmt.Sprintf("The following selected categories require sudo to clean: %s.", strings.Join(names, ", "))
 }
 
+// sudoRequirementMessage is sudoNeedMessage's counterpart for
+// resolveSudoElevation's allowSudo hook, called before any elevate.Plan
+// exists -- so it works from raw category name strings (as returned by
+// splitSudoCategories) rather than elevate.PlanCategory.
+func sudoRequirementMessage(registry *cleaner.Registry, sudoNames []string) string {
+	names := make([]string, 0, len(sudoNames))
+	for _, name := range sudoNames {
+		if c, ok := registry.Get(cleaner.Category(name)); ok {
+			names = append(names, c.Category().DisplayName())
+			continue
+		}
+		names = append(names, name)
+	}
+	if len(names) == 1 {
+		return fmt.Sprintf("%s requires sudo to clean", names[0])
+	}
+	return fmt.Sprintf("The following selected categories require sudo to clean: %s", strings.Join(names, ", "))
+}
+
 // invokeElevated is elevate.Invoke behind a package-level seam purely so
 // tests can substitute a fake outcome (success, ErrElevationFailed, ...)
 // without spawning a real sudo prompt -- elevate.Invoke has no such seam of
 // its own reachable from outside its package (sudoCommand/sudoAuthCommand
 // are unexported). Production code must never reassign it.
 var invokeElevated = elevate.Invoke
+
+// stdinIsTerminal and stderrIsTerminal are package-level seams so tests can
+// fake "is a terminal" without a real tty -- same pattern as invokeElevated.
+// runCleanNonInteractive checks both (never stdout, so
+// `--output json > result.json` keeps working) before ever attempting a sudo
+// prompt: a non-interactive process must never hang waiting for a password it
+// cannot supply.
+var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+var stderrIsTerminal = func() bool { return term.IsTerminal(int(os.Stderr.Fd())) }
 
 // elevateForClean scans, tags, and strips protected paths for sudoNames --
 // the same pipeline runClean applies to every other category -- then splits

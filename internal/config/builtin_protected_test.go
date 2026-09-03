@@ -91,7 +91,7 @@ func TestBuiltinProtected_NestedPaths(t *testing.T) {
 		// Siblings sharing a string prefix must not match.
 		{filepath.Join(home, ".ollama", "models-old", "blob"), false},
 		{filepath.Join(home, ".cache", "huggingface-old"), false},
-		// Neighbouring, genuinely cleanable directories stay cleanable.
+		// Neighboring, genuinely cleanable directories stay cleanable.
 		{filepath.Join(home, ".ollama", "history"), false},
 		{filepath.Join(home, ".cache", "pip"), false},
 	}

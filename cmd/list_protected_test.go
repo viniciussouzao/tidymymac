@@ -33,7 +33,7 @@ func TestReturnProtected_ShowsBuiltinsMarkedAndUserPathsPlain(t *testing.T) {
 		}
 	}
 
-	// The user's own entry must not be labelled built-in.
+	// The user's own entry must not be labeled built-in.
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "/Users/vini/Secrets") && strings.Contains(line, "built-in") {
 			t.Errorf("user-configured path wrongly marked built-in: %q", line)

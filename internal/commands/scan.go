@@ -254,34 +254,54 @@ var dockerResourceGroups = []dockerResourceGroup{
 // requires detailed data (result.Categories[i].Files) to produce per-entry
 // breakdowns; categories without Files are reported by their totals only.
 func writeTable(w io.Writer, result ScanResult, printAll bool) error {
-	fmt.Fprintf(w, "Scan report - %s\n", result.ScannedAt.Local().Format("2006-01-02 15:04:05 MST"))
-	fmt.Fprintf(w, "Total: %d items, %s\n\n", result.TotalFiles, utils.FormatBytes(result.TotalSize))
+	if _, err := fmt.Fprintf(w, "Scan report - %s\n", result.ScannedAt.Local().Format("2006-01-02 15:04:05 MST")); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Total: %d items, %s\n\n", result.TotalFiles, utils.FormatBytes(result.TotalSize)); err != nil {
+		return err
+	}
 
 	for _, cat := range result.Categories {
-		fmt.Fprintf(w, "== %s ==\n", cat.Name)
+		if _, err := fmt.Fprintf(w, "== %s ==\n", cat.Name); err != nil {
+			return err
+		}
 
 		if cat.Err != nil {
 			// Error text can embed a file name (fs.PathError does), so it
 			// gets the same treatment as the paths below.
-			fmt.Fprintf(w, "  error: %s (category skipped; re-run 'tidymymac scan %s' to retry)\n\n", utils.SanitizeForTerminal(cat.ErrMsg), cat.Category)
+			if _, err := fmt.Fprintf(w, "  error: %s (category skipped; re-run 'tidymymac scan %s' to retry)\n\n", utils.SanitizeForTerminal(cat.ErrMsg), cat.Category); err != nil {
+				return err
+			}
 			continue
 		}
 
 		if cat.TotalFiles == 0 {
-			fmt.Fprintln(w, "  nothing found")
-			fmt.Fprintln(w)
+			if _, err := fmt.Fprintln(w, "  nothing found"); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
 			continue
 		}
 
-		fmt.Fprintf(w, "  %d items, %s\n", cat.TotalFiles, utils.FormatBytes(cat.TotalSize))
-
-		if cat.Category == cleaner.CategoryDocker {
-			writeDockerGroups(w, cat.Files, printAll)
-		} else {
-			writeEntryTable(w, cat.Files, printAll, "  ")
+		if _, err := fmt.Fprintf(w, "  %d items, %s\n", cat.TotalFiles, utils.FormatBytes(cat.TotalSize)); err != nil {
+			return err
 		}
 
-		fmt.Fprintln(w)
+		var err error
+		if cat.Category == cleaner.CategoryDocker {
+			err = writeDockerGroups(w, cat.Files, printAll)
+		} else {
+			err = writeEntryTable(w, cat.Files, printAll, "  ")
+		}
+		if err != nil {
+			return err
+		}
+
+		if _, err := fmt.Fprintln(w); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -289,7 +309,7 @@ func writeTable(w io.Writer, result ScanResult, printAll bool) error {
 
 // writeDockerGroups renders each Docker resource group (see
 // dockerResourceGroups) with its own count, size, and entry table.
-func writeDockerGroups(w io.Writer, files []cleaner.FileEntry, printAll bool) {
+func writeDockerGroups(w io.Writer, files []cleaner.FileEntry, printAll bool) error {
 	for _, group := range dockerResourceGroups {
 		var entries []cleaner.FileEntry
 		for _, f := range files {
@@ -306,15 +326,20 @@ func writeDockerGroups(w io.Writer, files []cleaner.FileEntry, printAll bool) {
 			size += e.Size
 		}
 
-		fmt.Fprintf(w, "  -- %s (%d, %s) --\n", group.label, len(entries), utils.FormatBytes(size))
-		writeEntryTable(w, entries, printAll, "    ")
+		if _, err := fmt.Fprintf(w, "  -- %s (%d, %s) --\n", group.label, len(entries), utils.FormatBytes(size)); err != nil {
+			return err
+		}
+		if err := writeEntryTable(w, entries, printAll, "    "); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // writeEntryTable prints entries sorted by size descending, one per line,
 // prefixed with indent. When printAll is false, output is capped at
 // maxTableEntries rows and the omitted count is reported.
-func writeEntryTable(w io.Writer, entries []cleaner.FileEntry, printAll bool, indent string) {
+func writeEntryTable(w io.Writer, entries []cleaner.FileEntry, printAll bool, indent string) error {
 	sorted := make([]cleaner.FileEntry, len(entries))
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Size > sorted[j].Size })
@@ -331,12 +356,17 @@ func writeEntryTable(w io.Writer, entries []cleaner.FileEntry, printAll bool, in
 		// a newline or an escape sequence that would inject a fake row or
 		// rewrite what the terminal shows. Escape for display only -- the
 		// entry itself is never modified.
-		fmt.Fprintf(w, "%s%10s  %s\n", indent, utils.FormatBytes(e.Size), utils.SanitizeForTerminal(e.Path))
+		if _, err := fmt.Fprintf(w, "%s%10s  %s\n", indent, utils.FormatBytes(e.Size), utils.SanitizeForTerminal(e.Path)); err != nil {
+			return err
+		}
 	}
 
 	if omitted > 0 {
-		fmt.Fprintf(w, "%s... %d more omitted, use --print-all to list all\n", indent, omitted)
+		if _, err := fmt.Fprintf(w, "%s... %d more omitted, use --print-all to list all\n", indent, omitted); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // writeJSON encodes the ScanResult as pretty-printed JSON and writes it to w.

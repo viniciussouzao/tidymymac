@@ -51,7 +51,7 @@ var elevatedCleanCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		result, err := elevate.RunHelper(cmd.Context(), elevatedCleanPlanFile)
 		if err != nil {
-			fmt.Fprintln(cmd.ErrOrStderr(), err)
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), err)
 			os.Exit(elevate.HelperGuardRejectedExitCode)
 		}
 

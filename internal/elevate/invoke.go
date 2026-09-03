@@ -51,7 +51,7 @@ const sudoPath = "/usr/bin/sudo"
 const HelperGuardRejectedExitCode = 3
 
 // ErrElevationFailed means the elevated helper definitely did not delete
-// anything: authentication failed or was cancelled, sudo is unavailable, or a
+// anything: authentication failed or was canceled, sudo is unavailable, or a
 // guard rejected the plan before any deletion could start. The caller may
 // report this to the user as "nothing happened".
 var ErrElevationFailed = errors.New("elevated helper did not run; nothing was deleted")
@@ -66,7 +66,7 @@ var ErrElevationOutcomeUnknown = errors.New("the elevated helper was interrupted
 // helperKillDelay bounds how long Wait may block after cancellation. Without
 // it, os/exec's stdout-copying goroutine keeps Wait blocked until every writer
 // closes the pipe -- including a root helper that outlived the sudo process we
-// signalled.
+// signaled.
 const helperKillDelay = 5 * time.Second
 
 // sudoCommand builds the argv for the elevated child. It is a package-level
@@ -115,10 +115,10 @@ var sudoAuthCommand = func(ctx context.Context) *exec.Cmd {
 //	observation                                   | error
 //	----------------------------------------------|---------------------------
 //	could not even write the plan                  | ErrElevationFailed
-//	sudo -v failed / cancelled / unspawnable       | ErrElevationFailed
+//	sudo -v failed / canceled / unspawnable        | ErrElevationFailed
 //	helper could not be spawned                    | ErrElevationFailed
 //	exit HelperGuardRejectedExitCode (3)           | ErrElevationFailed
-//	ctx cancelled during the helper run            | ErrElevationOutcomeUnknown
+//	ctx canceled during the helper run             | ErrElevationOutcomeUnknown
 //	any other non-zero exit, signal, or kill       | ErrElevationOutcomeUnknown
 //	exit 0 but empty or undecodable stdout         | ErrElevationOutcomeUnknown
 //	exit 0, decodable, schema mismatch             | plain error (helper ran)
@@ -157,7 +157,7 @@ func Invoke(ctx context.Context, plan Plan) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrElevationFailed, err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	if err := authenticate(ctx); err != nil {
 		return Result{}, err
@@ -181,7 +181,7 @@ func Invoke(ctx context.Context, plan Plan) (Result, error) {
 	runErr := cmd.Run()
 
 	// Cancellation is checked first and always wins: the helper may well have
-	// been mid-deletion when we signalled it.
+	// been mid-deletion when we signaled it.
 	if ctx.Err() != nil {
 		return Result{}, fmt.Errorf("%w: %v", ErrElevationOutcomeUnknown, ctx.Err())
 	}
@@ -227,8 +227,8 @@ func Invoke(ctx context.Context, plan Plan) (Result, error) {
 
 // authenticate runs "sudo -v" with the branded prompt so the user's credential
 // is validated (and cached by sudo) before the helper is launched. Nothing is
-// executed as root here, so every failure -- a wrong password, a cancelled
-// prompt, a policy refusal, a cancelled context, an unspawnable sudo -- is
+// executed as root here, so every failure -- a wrong password, a canceled
+// prompt, a policy refusal, a canceled context, an unspawnable sudo -- is
 // provably pre-deletion and maps to ErrElevationFailed.
 //
 // stdin and stderr are inherited so the prompt reaches the terminal; stdout
@@ -242,7 +242,7 @@ func authenticate(ctx context.Context) error {
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("%w: cancelled while authenticating: %v", ErrElevationFailed, ctx.Err())
+			return fmt.Errorf("%w: canceled while authenticating: %v", ErrElevationFailed, ctx.Err())
 		}
 		return fmt.Errorf("%w: sudo authentication failed: %v", ErrElevationFailed, err)
 	}
@@ -276,14 +276,14 @@ func writePlanFile(plan Plan) (dir string, planPath string, err error) {
 		return "", "", fmt.Errorf("creating plan directory: %w", err)
 	}
 	if err := os.Chmod(dir, planDirPerm); err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return "", "", fmt.Errorf("securing plan directory: %w", err)
 	}
 
 	planPath = filepath.Join(dir, "plan.json")
 	f, err := os.OpenFile(planPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, planFilePerm)
 	if err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return "", "", fmt.Errorf("creating plan file: %w", err)
 	}
 
@@ -295,7 +295,7 @@ func writePlanFile(plan Plan) (dir string, planPath string, err error) {
 		writeErr = closeErr
 	}
 	if writeErr != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return "", "", fmt.Errorf("writing plan file: %w", writeErr)
 	}
 

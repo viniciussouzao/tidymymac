@@ -67,13 +67,13 @@ func rootExecuteDeprecationWarning(cmd *cobra.Command) string {
 // matters most for the hidden elevated helper: it runs as root and deletes
 // files, and without a cancellable context its cleaners' ctx.Done() checks
 // could never fire. sudo relays SIGTERM to the command it runs, so the
-// unprivileged parent cancelling its Invoke actually stops the root child
+// unprivileged parent canceling its Invoke actually stops the root child
 // here rather than orphaning a process that keeps deleting.
 func Execute() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if err := rootCmd.ExecuteContext(ctx); err != nil {
+	err := rootCmd.ExecuteContext(ctx)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

@@ -377,7 +377,7 @@ The safety layer, backed by `~/.tidymymac/config.yaml` (see [docs/CONFIGURATION.
 
 **Profile resolution.** `ResolveProfile(base, name, includeLargeFiles)` returns the `(categories, registry)` pair described above. When a profile has project paths, it rebuilds the registry from `base.All()` with a configured `ProjectArtifactsCleaner` substituted in place — rebuilt rather than re-`Register`ed, because `Register` replaces the `byID` entry but *appends* to the ordered slice, which would leave `All()` returning the cleaner twice. Profile paths are re-validated here, so a hand-edited entry fails only that profile.
 
-**Writing.** `write.go` and `write_profiles.go` edit the file as a `yaml.Node` tree rather than re-marshalling a struct, which is what preserves hand-written comments. Every write is atomic (temp file + rename, mirroring `internal/history`) and is followed by a reload that must still satisfy `Load`'s invariants — catching a node-surgery bug at `protect`/`profile` time instead of on the next real clean. An already-invalid file is refused rather than patched around.
+**Writing.** `write.go` and `write_profiles.go` edit the file as a `yaml.Node` tree rather than re-marshaling a struct, which is what preserves hand-written comments. Every write is atomic (temp file + rename, mirroring `internal/history`) and is followed by a reload that must still satisfy `Load`'s invariants — catching a node-surgery bug at `protect`/`profile` time instead of on the next real clean. An already-invalid file is refused rather than patched around.
 
 ### `internal/elevate/`
 
@@ -743,9 +743,9 @@ Authentication is a **separate `sudo` invocation**. `Invoke` first runs `sudo -v
 | Observation | Error | Caller may say |
 |---|---|---|
 | could not write the plan / spawn a child | `ErrElevationFailed` | nothing was deleted |
-| `sudo -v` failed, was cancelled, or refused | `ErrElevationFailed` | nothing was deleted |
+| `sudo -v` failed, was canceled, or refused | `ErrElevationFailed` | nothing was deleted |
 | exit 3 — guard rejected the plan | `ErrElevationFailed` | nothing was deleted |
-| context cancelled during the helper run | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
+| context canceled during the helper run | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
 | any other non-zero exit (including 1), signal, or kill | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
 | exit 0 but empty or undecodable stdout | `ErrElevationOutcomeUnknown` | outcome unknown, re-scan |
 | exit 0, decodable `Result` | `nil` | inspect `Result.HasErrors` |

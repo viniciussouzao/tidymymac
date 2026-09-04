@@ -23,9 +23,9 @@ import (
 
 // isolateCleanRun gives a test its own HOME -- so history.Append and
 // config.New's "~" expansion never touch the real user's files -- and installs
-// the package-level loadedConfig that resolveSudoElevation/elevateForClean
-// read. HOME must be set before withLoadedConfig, since config.New resolves the
-// builtin protected paths against it.
+// the package-level loadedConfig that resolveSudoElevation reads. HOME must
+// be set before withLoadedConfig, since config.New resolves the builtin
+// protected paths against it.
 func isolateCleanRun(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -285,7 +285,7 @@ func TestCleanJSON_SudoCategoryWithoutPromptSudoRefusesBeforeAnythingRuns(t *tes
 	registry.Register(sudo)
 	registry.Register(live)
 
-	forbidElevation(t, "the run must be refused before elevateForClean")
+	forbidElevation(t, "the run must be refused before resolveSudoElevation invokes elevation")
 	stubTerminals(t, true, true)
 
 	stdout := captureStdout(t)

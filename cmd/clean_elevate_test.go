@@ -459,8 +459,8 @@ func TestMergeCleanResults_PartialErrorsSetHasErrorsButKeepTotals(t *testing.T) 
 
 // splitPrivilegeCleaner is a RequiresSudo cleaner that needs root only for
 // entries under /sudo/, standing in for Temp's real /tmp vs $TMPDIR split, so
-// elevateForClean's privilege-split behavior can be exercised without a real
-// TempCleaner or real filesystem paths.
+// runElevateForClean's privilege-split behavior can be exercised without a
+// real TempCleaner or real filesystem paths.
 type splitPrivilegeCleaner struct {
 	category cleaner.Category
 	entries  []cleaner.FileEntry
@@ -493,9 +493,10 @@ func (c *splitPrivilegeCleaner) Clean(_ context.Context, entries []cleaner.FileE
 	return &cleaner.CleanResult{Category: c.category, FilesDeleted: len(entries), BytesFreed: freed}, nil
 }
 
-// withLoadedConfig sets the package-level loadedConfig elevateForClean reads,
-// and restores whatever was there before -- mirroring the save/set/cleanup
-// pattern used by list_protected_test.go and unprotect_test.go.
+// withLoadedConfig sets the package-level loadedConfig runElevateForClean
+// reads, and restores whatever was there before -- mirroring the
+// save/set/cleanup pattern used by list_protected_test.go and
+// unprotect_test.go.
 func withLoadedConfig(t *testing.T) {
 	t.Helper()
 	cfg, err := config.New(nil, nil)
@@ -510,13 +511,28 @@ func withLoadedConfig(t *testing.T) {
 // stubInvokeElevated swaps invokeElevated for fn and restores it afterwards
 // -- the same seam-substitution shape internal/elevate's own tests use for
 // sudoCommand/sudoAuthCommand, but reachable from cmd since invokeElevated is
-// declared in this package specifically so elevateForClean is testable
+// declared in this package specifically so runElevateForClean is testable
 // without spawning a real sudo prompt.
 func stubInvokeElevated(t *testing.T, fn func(ctx context.Context, plan elevate.Plan) (elevate.Result, error)) {
 	t.Helper()
 	prev := invokeElevated
 	invokeElevated = fn
 	t.Cleanup(func() { invokeElevated = prev })
+}
+
+// runElevateForClean is prepareElevation immediately followed by
+// executePreparedElevation -- exactly what the production elevateForClean
+// wrapper used to do before resolveSudoElevation absorbed both calls
+// directly and left the wrapper with no production caller. Kept here only so
+// these tests, which exercise that same prepare-then-execute sequence in
+// isolation, do not need to be rewritten around resolveSudoElevation's much
+// larger surface (--from-file loading, category splitting, history writes).
+func runElevateForClean(ctx context.Context, registry *cleaner.Registry, sudoNames []string, preparedScan commands.ScanResult, usePreparedScan bool) ([]commands.CleanCategoryResult, error) {
+	work, err := prepareElevation(ctx, registry, sudoNames, preparedScan, usePreparedScan)
+	if err != nil {
+		return nil, err
+	}
+	return executePreparedElevation(ctx, work)
 }
 
 func assertNoDuplicateCategories(t *testing.T, results []commands.CleanCategoryResult) {
@@ -563,9 +579,9 @@ func TestElevateForClean_SplitCategoryMergesDirectAndSudoLegs(t *testing.T) {
 		}, nil
 	})
 
-	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	results, err := runElevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
 	if err != nil {
-		t.Fatalf("elevateForClean: %v", err)
+		t.Fatalf("runElevateForClean: %v", err)
 	}
 	if !invokeCalled {
 		t.Fatal("expected elevate.Invoke (stubbed) to be called: this category has sudo-required entries")
@@ -620,9 +636,9 @@ func TestElevateForClean_DirectOnlyCategoryNeverReachesThePlan(t *testing.T) {
 		return elevate.Result{}, nil
 	})
 
-	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	results, err := runElevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
 	if err != nil {
-		t.Fatalf("elevateForClean: %v", err)
+		t.Fatalf("runElevateForClean: %v", err)
 	}
 
 	assertNoDuplicateCategories(t, results)
@@ -661,9 +677,9 @@ func TestElevateForClean_EveryCategoryDirectOnlySkipsInvokeEntirely(t *testing.T
 		return elevate.Result{}, nil
 	})
 
-	results, err := elevateForClean(context.Background(), registry, []string{string(catA), string(catB)}, commands.ScanResult{}, false)
+	results, err := runElevateForClean(context.Background(), registry, []string{string(catA), string(catB)}, commands.ScanResult{}, false)
 	if err != nil {
-		t.Fatalf("elevateForClean: %v", err)
+		t.Fatalf("runElevateForClean: %v", err)
 	}
 
 	assertNoDuplicateCategories(t, results)
@@ -701,9 +717,9 @@ func TestElevateForClean_OnlySudoEntriesUnchanged(t *testing.T) {
 		}, nil
 	})
 
-	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	results, err := runElevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
 	if err != nil {
-		t.Fatalf("elevateForClean: %v", err)
+		t.Fatalf("runElevateForClean: %v", err)
 	}
 	if !invokeCalled {
 		t.Fatal("expected invokeElevated to be called")
@@ -739,9 +755,9 @@ func TestElevateForClean_ElevatedFailureKeepsDirectLegCountsAndCarriesTheError(t
 		return elevate.Result{}, elevate.ErrElevationFailed
 	})
 
-	results, err := elevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
+	results, err := runElevateForClean(context.Background(), registry, []string{string(cat)}, commands.ScanResult{}, false)
 	if err != nil {
-		t.Fatalf("elevateForClean: %v", err)
+		t.Fatalf("runElevateForClean: %v", err)
 	}
 
 	assertNoDuplicateCategories(t, results)

@@ -38,7 +38,7 @@ func TestElevateHelperProcess(t *testing.T) {
 			_ = os.WriteFile(mark, []byte("authenticated\n"), 0o600)
 		}
 		if os.Getenv("TIDYMYMAC_TEST_AUTH_MODE") == "fail" {
-			// Wrong password / cancelled prompt: sudo's own exit code.
+			// Wrong password / canceled prompt: sudo's own exit code.
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -351,7 +351,7 @@ func TestInvokeAuthenticatesBeforeHelper(t *testing.T) {
 }
 
 // TestInvokeCancellationReturnsUnknownOutcome covers the case the old code got
-// wrong twice: cancelling SIGKILLed sudo while the root helper kept deleting,
+// wrong twice: canceling SIGKILLed sudo while the root helper kept deleting,
 // and Wait then blocked on the inherited stdout pipe anyway.
 func TestInvokeCancellationReturnsUnknownOutcome(t *testing.T) {
 	stubSudo(t, map[string]string{"TIDYMYMAC_TEST_HELPER_MODE": "sleep"})
@@ -375,7 +375,7 @@ func TestInvokeCancellationReturnsUnknownOutcome(t *testing.T) {
 		t.Fatalf("Invoke() error = %v, want ErrElevationOutcomeUnknown", err)
 	}
 	if errors.Is(err, ErrElevationFailed) {
-		t.Fatalf("a cancelled elevation must never be reported as ErrElevationFailed: %v", err)
+		t.Fatalf("a canceled elevation must never be reported as ErrElevationFailed: %v", err)
 	}
 	if strings.Contains(err.Error(), "nothing was deleted") {
 		t.Fatalf("error = %q, must not claim nothing was deleted after a cancellation", err.Error())

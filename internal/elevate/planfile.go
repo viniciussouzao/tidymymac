@@ -55,7 +55,7 @@ func readPlanFile(path string, expectedUID int) (Plan, error) {
 	if err != nil {
 		return Plan{}, fmt.Errorf("opening plan file: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {

@@ -543,7 +543,7 @@ func runCleanInteractive(cmd *cobra.Command, registry *cleaner.Registry, categor
 	dryRun := !executeFlag
 
 	// The interactive CLI keeps Phase 3's transparent-prompt behavior: a
-	// sudo category is always allowed through to elevateForClean, which
+	// sudo category is always allowed through resolveSudoElevation, which
 	// itself prompts on an ordinary terminal before any bubbletea Program
 	// exists.
 	outcome, err := resolveSudoElevation(ctx, registry, categories, fromFile, forceStaleScan, dryRun, func([]string) error { return nil })
@@ -791,17 +791,6 @@ func executePreparedElevation(ctx context.Context, work preparedElevation) ([]co
 	return results, nil
 }
 
-// elevateForClean is the interactive CLI convenience wrapper. The automation
-// path calls prepareElevation itself so it can apply its no-prompt policy to
-// the actual elevated plan before executePreparedElevation performs any work.
-func elevateForClean(ctx context.Context, registry *cleaner.Registry, sudoNames []string, preparedScan commands.ScanResult, usePreparedScan bool) ([]commands.CleanCategoryResult, error) {
-	work, err := prepareElevation(ctx, registry, sudoNames, preparedScan, usePreparedScan)
-	if err != nil {
-		return nil, err
-	}
-	return executePreparedElevation(ctx, work)
-}
-
 // mergeCleanResults folds elevate-derived category results into an ordinary
 // CleanResult, recomputing totals so the merged result renders and records
 // to history exactly as if a single clean run had produced it.
@@ -867,16 +856,17 @@ type cleanModel struct {
 	eventCh         chan commands.CleanEvent
 	celebration     string
 
-	// preResolved carries category results elevateForClean already produced
-	// -- including their history record already written -- before this
-	// model ever started. It is merged into the live run's result purely
-	// for display; it must never be written to history again here.
+	// preResolved carries category results resolveSudoElevation already
+	// produced -- including their history record already written -- before
+	// this model ever started. It is merged into the live run's result
+	// purely for display; it must never be written to history again here.
 	preResolved []commands.CleanCategoryResult
 	// skipLiveRun is true when every selected category went to
-	// elevateForClean, leaving nothing for this model's own scan+clean to
-	// do. args is empty in that case, and args being empty ordinarily means
-	// "every category" to the rest of this package -- this flag is what
-	// keeps that empty slice from being misread as "unspecified" here.
+	// resolveSudoElevation's sudo leg, leaving nothing for this model's own
+	// scan+clean to do. args is empty in that case, and args being empty
+	// ordinarily means "every category" to the rest of this package -- this
+	// flag is what keeps that empty slice from being misread as
+	// "unspecified" here.
 	skipLiveRun bool
 }
 

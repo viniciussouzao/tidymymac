@@ -488,7 +488,7 @@ func TestWriteTable_SortsBySizeDescending(t *testing.T) {
 	if bigIdx == -1 || midIdx == -1 || smallIdx == -1 {
 		t.Fatalf("missing entries in output: %s", out)
 	}
-	if !(bigIdx < midIdx && midIdx < smallIdx) {
+	if bigIdx >= midIdx || midIdx >= smallIdx {
 		t.Errorf("entries not sorted by size descending: %s", out)
 	}
 }

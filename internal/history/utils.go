@@ -11,6 +11,11 @@ import (
 	"github.com/viniciussouzao/tidymymac/internal/homedir"
 )
 
+// geteuid is indirected so tests can exercise appendAtPath's root guard
+// without actually being root, mirroring cmd/root_privileges.go's own seam
+// for the same check.
+var geteuid = os.Geteuid
+
 func path() (appDir string, err error) {
 	dir, err := homedir.AppDir()
 	if err != nil {
@@ -26,7 +31,7 @@ func loadAtPath(p string) (Record, error) {
 		return Record{}, nil
 	}
 	if err != nil {
-		return Record{}, err
+		return Record{}, withOwnershipHint(p, err)
 	}
 
 	var record Record
@@ -37,7 +42,27 @@ func loadAtPath(p string) (Record, error) {
 	return record, nil
 }
 
+// withOwnershipHint annotates a permission-denied error on an app-dir file
+// with the most likely cause and its fix. The only way p ends up owned by
+// another user is a past run that reached this code while elevated -- Append
+// now refuses that outright (see the geteuid check below), but a file
+// created by an older build, or by a command that bypassed that guard,
+// leaves the file stuck exactly this way: unreadable to the real user
+// forever after, with a bare "permission denied" giving no hint why. Other
+// errors are returned unchanged since they aren't this specific, diagnosable
+// case.
+func withOwnershipHint(p string, err error) error {
+	if !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+	return fmt.Errorf("%w (likely created by a previous run under sudo and now owned by another user; fix without losing history with: sudo chown $(id -un):$(id -gn) %s %s)", err, filepath.Dir(p), p)
+}
+
 func appendAtPath(p string, run RunRecord) (err error) {
+	if geteuid() == 0 {
+		return fmt.Errorf("refusing to write %s while running as root: every legitimate caller writes history unprivileged, so this would leave the file owned by root and unreadable to the real user afterwards", p)
+	}
+
 	lockFile, err := lockHistoryFile(p)
 	if err != nil {
 		return err
@@ -62,7 +87,7 @@ func appendAtPath(p string, run RunRecord) (err error) {
 
 	tmp, err := os.CreateTemp(filepath.Dir(p), "history-*.json")
 	if err != nil {
-		return err
+		return withOwnershipHint(filepath.Dir(p), err)
 	}
 	defer func() {
 		if removeErr := os.Remove(tmp.Name()); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) && err == nil {
@@ -91,7 +116,7 @@ func lockHistoryFile(p string) (*os.File, error) {
 	lockPath := p + ".lock"
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, withOwnershipHint(lockPath, err)
 	}
 
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {

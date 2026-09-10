@@ -1430,7 +1430,7 @@ func (a App) View() string {
 
 	var banner string
 	if !a.executeMode {
-		banner = styles.DryRunBanner.Render("DRY RUN MODE - No files will be deleted. Start the app with --execute to clean.") + "\n"
+		banner = styles.DryRunBanner.Render("DRY RUN MODE - No files will be deleted. Run 'tidymymac execute' to clean.") + "\n"
 	}
 
 	var content string

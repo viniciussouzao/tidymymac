@@ -210,7 +210,7 @@ func (m SummaryModel) View() string {
 
 	if m.DryRun {
 		b.WriteString("\n")
-		b.WriteString(styles.Warning.Render("  Run with --execute to actually delete these files."))
+		b.WriteString(styles.Warning.Render("  Run 'tidymymac execute' to actually delete these files."))
 		b.WriteString("\n")
 	}
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -144,6 +145,17 @@ type App struct {
 	// are still cleaning asynchronously. See pendingElevationState.
 	pendingElevation *pendingElevationState
 
+	// revalidating is true while a revalidateCmd dispatched from updateReview
+	// is in flight, so a second enter press can't dispatch another one
+	// racing it. revalidateSeq is stamped into each dispatch's
+	// revalidateCompleteMsg; handleRevalidateComplete discards any message
+	// whose seq doesn't match the current one (superseded by a later
+	// dispatch) or that arrives after currentScreen has left screenReview
+	// (the user backed out with esc while it was still running). See
+	// updateReview's Confirm and Back cases.
+	revalidating  bool
+	revalidateSeq int
+
 	// scriptMessage will support the generate-script-only flow.
 }
 
@@ -252,6 +264,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case directCleanCompleteMsg:
 		return a.handleDirectCleanComplete(msg)
+
+	case revalidateCompleteMsg:
+		return a.handleRevalidateComplete(msg)
 
 	case cleanProgressMsg:
 		a.cleaningScr.UpdateCleanProgress(msg.progress)
@@ -848,6 +863,38 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.revalidating {
+		// A revalidation is in flight (dispatched from the Confirm case
+		// below). ReviewModel.View()'s Revalidating branch takes priority
+		// over every other render while this is true, so the sudo dialog,
+		// the file list, none of it is actually on screen -- any other key
+		// here would mutate state (most importantly AuthenticateSudo via
+		// up/down, see keys.Up/Down below) that the user cannot see the
+		// effect of, and that mutated state would then feed whatever the
+		// in-flight result eventually does. Every key except back is
+		// ignored until it resolves.
+		if key.Matches(msg, keys.Back) {
+			// Actually invalidates the dispatch rather than merely hoping
+			// currentScreen changes enough to reject it later:
+			// revalidateSeq is bumped here so the in-flight
+			// revalidateCompleteMsg's stamped seq can never match again,
+			// even if the user later navigates back into screenReview and
+			// currentScreen would otherwise read the same as it did at
+			// dispatch time.
+			a.revalidating = false
+			a.reviewScr.Revalidating = false
+			a.reviewScr.RevalidationErr = nil
+			a.revalidateSeq++
+			if a.reviewScr.ConfirmState != screens.ConfirmNone {
+				a.reviewScr.ConfirmState = screens.ConfirmNone
+				return a, nil
+			}
+			a.currentScreen = screenScanning
+			return a, nil
+		}
+		return a, nil
+	}
+
 	switch {
 	case key.Matches(msg, keys.Confirm):
 		if a.reviewScr.TotalFiles == 0 {
@@ -870,24 +917,46 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// path straight to the final delete confirmation.
 			a.reviewScr.ConfirmState = screens.ConfirmExecute
 			return a, nil
-		case screens.ConfirmExecute:
+		case screens.ConfirmExecute, screens.ConfirmRevalidated:
+			// Both land here the same way: ConfirmExecute's own "delete?"
+			// question was already answered, and ConfirmRevalidated's second
+			// enter is the user re-confirming the corrected plan revalidation
+			// found below. Either way there is nothing left to ask before
+			// revalidating (or re-revalidating) one more time.
 			a.reviewScr.ConfirmState = screens.ConfirmNone
 		}
-		// Deliberately a.reviewScanResults, not a fresh a.scanningScr.Results()
-		// call: what gets cleaned (and, for sudo categories, what gets sent
-		// to the elevated helper) must be exactly what the review screen
-		// showed, even if a background re-scan mutated scanningScr since.
-		a.cleaningScr = screens.NewCleaningModel(a.reviewScanResults, !a.executeMode)
-		a.cleaningScr.SetSize(a.width, a.height)
-		a.currentScreen = screenCleaning
-		a.cleanStartTime = time.Now()
 
-		if a.reviewScr.ShouldWarnAboutSudo() && a.reviewScr.AuthenticateSudo {
-			return a.startElevation()
-		}
-		return a.startNextClean()
+		// Re-check the approved snapshot against disk and the current config
+		// right before it reaches cleaning: a.reviewScanResults may be
+		// however long the user sat on the review screen out of date, and
+		// nothing before this point has ever re-verified it. Still
+		// deliberately a.reviewScanResults, not a fresh a.scanningScr.Results()
+		// call -- revalidation only ever narrows what was already approved,
+		// it never lets a background re-scan introduce something new. See
+		// revalidatePlan's own doc comment.
+		//
+		// Dispatched as a Cmd rather than called inline: it os.Stats every
+		// approved entry and, for Docker/Time Machine, shells out to their
+		// EntryRevalidator, so running it synchronously here would freeze
+		// the event loop for however long that takes -- see revalidateCmd's
+		// own doc comment, which is the exact reasoning startElevation
+		// already documents for why directCleanCmd exists.
+		//
+		// revalidateSeq is stamped into the dispatched message and compared
+		// back in handleRevalidateComplete; the a.revalidating guard at the
+		// top of this function is what actually keeps a second enter from
+		// reaching here and dispatching a second revalidateCmd, and is also
+		// what routes esc, while this is in flight, to bump revalidateSeq
+		// instead of falling through to the ordinary Back case below.
+		a.revalidating = true
+		a.reviewScr.Revalidating = true
+		a.revalidateSeq++
+		return a, revalidateCmd(a.ctx, a.revalidateSeq, a.registry, a.cfg, a.reviewScanResults)
 
 	case key.Matches(msg, keys.Back):
+		// a.revalidating is never true here: the top-of-function guard
+		// above handles back on its own while one is in flight.
+		a.reviewScr.RevalidationErr = nil
 		if a.reviewScr.ConfirmState != screens.ConfirmNone {
 			a.reviewScr.ConfirmState = screens.ConfirmNone
 			return a, nil
@@ -916,6 +985,114 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, nil
+}
+
+// handleRevalidateComplete applies the outcome of revalidateCmd, dispatched
+// from updateReview's final confirm step. See revalidatePlan's own doc
+// comment for what it checks; this is purely the TUI-state decision built on
+// top of that result.
+func (a App) handleRevalidateComplete(msg revalidateCompleteMsg) (tea.Model, tea.Cmd) {
+	// A stale result. msg.seq != a.revalidateSeq is the real defense here:
+	// updateReview's top-of-function a.revalidating guard bumps
+	// revalidateSeq the instant the user presses back while this is in
+	// flight, so a dispatch the user has abandoned can never match again --
+	// not even if they later navigate back into screenReview and
+	// currentScreen happens to read the same as it did at dispatch time.
+	// currentScreen != screenReview is kept as a second, independent check
+	// (e.g. against some future path that changes screens without going
+	// through updateReview's Back handling). Acting on a stale result
+	// regardless of where the app is now is exactly how an aborted confirm
+	// could still start deleting, or how two overlapping enter presses
+	// could each dispatch their own clean pipeline over the same plan.
+	if msg.seq != a.revalidateSeq || a.currentScreen != screenReview {
+		return a, nil
+	}
+	a.revalidating = false
+	a.reviewScr.Revalidating = false
+
+	err := msg.err
+	if err == nil && len(msg.categoryErrs) > 0 {
+		// A category's own revalidation failing (e.g. Docker unreachable at
+		// confirm time) is data, not a structural error, but it must still
+		// block rather than silently vanish: NewCleaningModel below skips
+		// any category with 0 files with no trace of why. Surfacing it the
+		// same way a structural error is surfaced -- stop here, let the user
+		// retry with enter or back out with esc -- keeps every failure
+		// visible without teaching NewCleaningModel a new shape of "empty
+		// but not actually done" category. Deliberately NOT the same check
+		// as "does this category carry any ScanResult.Errors": those may be
+		// pre-existing, non-fatal scan-time issues (see revalidatePlan's doc
+		// comment) that must never permanently block confirming.
+		err = joinCategoryErrs(msg.categoryErrs)
+	}
+	if err != nil {
+		a.reviewScr.RevalidationErr = err
+		return a, nil
+	}
+	a.reviewScr.RevalidationErr = nil
+	a.reviewScanResults = msg.results
+
+	if msg.delta.Material() {
+		// Rebuild reviewScr from the revalidated snapshot rather than only
+		// swapping reviewScanResults: the review screen's own file list and
+		// totals otherwise keep showing the pre-revalidation state (a file
+		// already known gone, a total that no longer matches) underneath
+		// the very screen telling the user something changed. AuthenticateSudo
+		// is the one piece of user intent NewReview would otherwise reset to
+		// its default (skip) -- explicitly carried over so re-confirming a
+		// revalidated plan can never silently discard that choice.
+		authenticateSudo := a.reviewScr.AuthenticateSudo
+		delta := msg.delta
+		a.reviewScr = screens.NewReview(a.reviewScanResults, a.executeMode, a.registry, a.isElevated)
+		a.reviewScr.SetSize(a.width, a.height)
+		a.reviewScr.AuthenticateSudo = authenticateSudo
+		// Kept even when nothing survived (TotalFiles == 0 below), so
+		// View()'s empty-plan message can say why the plan is empty instead
+		// of reusing the same "already tidy" wording a scan that genuinely
+		// found nothing would show.
+		a.reviewScr.RevalidationDelta = &delta
+		if a.reviewScr.TotalFiles > 0 {
+			a.reviewScr.ConfirmState = screens.ConfirmRevalidated
+		}
+		// Else: nothing survived revalidation. ReviewModel.View()'s own
+		// TotalFiles == 0 branch renders an empty-plan message instead --
+		// entering ConfirmRevalidated here would show a "confirm updated
+		// plan" prompt whose enter key is a silent no-op (updateReview's
+		// own TotalFiles == 0 guard, at the very top of its Confirm case).
+		return a, nil
+	}
+	a.reviewScr.RevalidationDelta = nil
+
+	a.cleaningScr = screens.NewCleaningModel(a.reviewScanResults, !a.executeMode)
+	a.cleaningScr.SetSize(a.width, a.height)
+	a.currentScreen = screenCleaning
+	a.cleanStartTime = time.Now()
+
+	if a.reviewScr.ShouldWarnAboutSudo() && a.reviewScr.AuthenticateSudo {
+		return a.startElevation()
+	}
+	return a.startNextClean()
+}
+
+// joinCategoryErrs turns a set of per-category revalidation failures into
+// one deterministic error: map iteration order is not, so picking or
+// ordering by it would make the reported message (and, in a test, which
+// category "wins") vary run to run for the same input.
+func joinCategoryErrs(categoryErrs map[cleaner.Category]error) error {
+	names := make([]string, 0, len(categoryErrs))
+	byName := make(map[string]cleaner.Category, len(categoryErrs))
+	for cat := range categoryErrs {
+		names = append(names, string(cat))
+		byName[string(cat)] = cat
+	}
+	sort.Strings(names)
+
+	errs := make([]error, 0, len(names))
+	for _, name := range names {
+		cat := byName[name]
+		errs = append(errs, fmt.Errorf("%s: %w", cat.DisplayName(), categoryErrs[cat]))
+	}
+	return errors.Join(errs...)
 }
 
 func (a App) updateCleaning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

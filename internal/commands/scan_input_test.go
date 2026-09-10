@@ -76,6 +76,74 @@ func TestRevalidateEntries_PreservesResourceKind(t *testing.T) {
 	}
 }
 
+// TestRevalidateEntries_KeepsEntryOnAmbiguousStatError pins the fix for a
+// security finding: an os.Stat error that is NOT "does not exist" (here,
+// ENOTDIR from treating a regular file as a directory component -- the
+// portable way to provoke a non-NotExist stat error without relying on
+// permission bits) must not be treated as "missing". Doing so would silently
+// drop the entry from the plan, and for one protected_paths already tagged,
+// dropping it removes the only signal a DeletesWholeDomain cleaner's skip
+// check depends on -- see config.CountProtected's callers in cmd/clean.go
+// and internal/tui/app.go.
+func TestRevalidateEntries_KeepsEntryOnAmbiguousStatError(t *testing.T) {
+	dir := t.TempDir()
+	regularFile := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(regularFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// regularFile is a file, so treating it as a directory component makes
+	// every os.Stat on this path fail with ENOTDIR, not ENOENT.
+	ambiguous := filepath.Join(regularFile, "child")
+
+	original := cleaner.FileEntry{Path: ambiguous, Size: 999, Category: cleaner.Category("temp_files")}
+	revalidated, missing, typeChanged := revalidateEntries([]cleaner.FileEntry{original})
+
+	if missing != 0 || typeChanged != 0 {
+		t.Fatalf("missing = %d, typeChanged = %d, want 0/0 (the entry must be kept, not counted as missing)", missing, typeChanged)
+	}
+	if len(revalidated) != 1 || revalidated[0] != original {
+		t.Fatalf("revalidated = %+v, want the original entry kept unchanged", revalidated)
+	}
+}
+
+// TestRevalidateEntries_PreservesDirectorySize pins the fix for a security
+// finding: a directory entry's own Lstat size is the filesystem's tiny
+// inode/metadata size, not the recursive size of what it contains (every
+// cleaner that reports a directory entry records the recursive size it
+// measured while walking it). Overwriting Size with info.Size() here would
+// silently collapse the reported reclaimable size to near-zero -- on the
+// TUI's review/dry-run screens, a lie about how much would be freed --
+// while Clean still deletes the full tree.
+func TestRevalidateEntries_PreservesDirectorySize(t *testing.T) {
+	dir := t.TempDir()
+	subdir := filepath.Join(dir, "big-dir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "file.bin"), make([]byte, 5_000_000), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// The scan-time recursive size, as every directory-reporting cleaner
+	// would have recorded it -- deliberately much larger than whatever a
+	// bare Lstat on the directory itself would report.
+	const recursiveSize = 5_000_000
+	entries := []cleaner.FileEntry{
+		{Path: subdir, Size: recursiveSize, IsDir: true, Category: cleaner.Category("temp_files")},
+	}
+
+	revalidated, missing, typeChanged := revalidateEntries(entries)
+	if missing != 0 || typeChanged != 0 {
+		t.Fatalf("missing = %d, typeChanged = %d, want 0/0", missing, typeChanged)
+	}
+	if len(revalidated) != 1 {
+		t.Fatalf("revalidated = %+v, want 1 entry", revalidated)
+	}
+	if revalidated[0].Size != recursiveSize {
+		t.Fatalf("Size = %d, want %d (the scan-time recursive size, not the directory's own Lstat size)", revalidated[0].Size, recursiveSize)
+	}
+}
+
 func TestPrepareScanResultForClean_RevalidatesAndSkipsMissing(t *testing.T) {
 	dir := t.TempDir()
 	keep := filepath.Join(dir, "keep.log")

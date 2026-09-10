@@ -147,18 +147,52 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 	var typeChanged int
 
 	for _, entry := range entries {
-		info, err := os.Stat(entry.Path)
+		// Lstat, not Stat: the original scan walks with filepath.WalkDir,
+		// which Lstats every entry and never follows a symlink into it (see
+		// internal/cleaner/saferemove.go's own doc comments on this). Using
+		// Stat here would revalidate a different object than the one that
+		// was ever scanned or approved, and would report its size measured
+		// through the link rather than the link itself.
+		info, err := os.Lstat(entry.Path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				missing++
 				continue
 			}
-			missing++
+			// Any other stat error (permission denied, I/O error, an
+			// unmounted network volume, ...) does not mean the entry is
+			// gone -- it means its current state is unknown. Treating that
+			// the same as "missing" would silently drop the entry from the
+			// plan, and for one protected_paths already tagged, dropping it
+			// is exactly what removes the one signal a DeletesWholeDomain
+			// cleaner's skip check depends on (see config.CountProtected
+			// callers). Keep the entry's last-known data instead: at worst
+			// it is stale until the next real scan, which fails closed
+			// rather than open.
+			revalidated = append(revalidated, entry)
 			continue
 		}
 		if info.IsDir() != entry.IsDir {
 			typeChanged++
 			continue
+		}
+
+		// A directory entry's own Lstat size is the filesystem's tiny
+		// inode/metadata size, not the recursive size of what it contains --
+		// every cleaner that reports a directory entry (project artifacts,
+		// Downloads, Trash, App Orphans, iOS backups, ...) records the
+		// recursive size it measured while walking it, via its own
+		// size-summing walk. Overwriting that with info.Size() here would
+		// silently collapse the reported (and, on the dry-run screen,
+		// promised) reclaimable size to near-zero while Clean still deletes
+		// the full tree -- a directory still existing as a directory is all
+		// this revalidation pass can cheaply confirm without walking the
+		// whole subtree again, which would defeat the point of a fast
+		// revalidation. Trust the scan-time size for a directory; only a
+		// file's size is actually re-measured.
+		size := info.Size()
+		if entry.IsDir {
+			size = entry.Size
 		}
 
 		// Dev/Ino are deliberately not carried over. A scan file is
@@ -167,7 +201,7 @@ func revalidateEntries(entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, i
 		// here keep the scan-root confinement and skip the identity check.
 		revalidated = append(revalidated, cleaner.FileEntry{
 			Path:         entry.Path,
-			Size:         info.Size(),
+			Size:         size,
 			IsDir:        info.IsDir(),
 			ModTime:      info.ModTime().UTC(),
 			Category:     entry.Category,

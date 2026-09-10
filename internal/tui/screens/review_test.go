@@ -1,6 +1,7 @@
 package screens
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
@@ -140,5 +141,64 @@ func TestReviewModel_ActionableTotalsExcludeProtectedFiles(t *testing.T) {
 	size, files := m.actionableTotals()
 	if size != 20 || files != 1 {
 		t.Fatalf("actionableTotals() = (%d, %d), want (20, 1) excluding the protected file", size, files)
+	}
+}
+
+func TestRevalidationDelta_Material(t *testing.T) {
+	cases := []struct {
+		name  string
+		delta RevalidationDelta
+		want  bool
+	}{
+		{"nothing changed", RevalidationDelta{}, false},
+		{"missing files", RevalidationDelta{MissingFiles: 1}, true},
+		{"type changed", RevalidationDelta{TypeChangedFiles: 1}, true},
+		{"newly protected", RevalidationDelta{NewlyProtected: 1}, true},
+		{"size changed only", RevalidationDelta{SizeChanged: true}, false},
+	}
+	for _, tc := range cases {
+		if got := tc.delta.Material(); got != tc.want {
+			t.Errorf("%s: Material() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestReviewModel_ViewRendersRevalidationDelta(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewTempCleaner())
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cleaner.CategoryTemp: {
+			Category:   cleaner.CategoryTemp,
+			TotalSize:  10,
+			TotalFiles: 1,
+			Entries:    []cleaner.FileEntry{{Path: "/tmp/a", Size: 10}},
+		},
+	}
+
+	m := NewReview(results, true, registry, false)
+	m.ConfirmState = ConfirmRevalidated
+	m.RevalidationDelta = &RevalidationDelta{
+		MissingFiles:     2,
+		TypeChangedFiles: 1,
+		TotalSize:        5,
+		TotalFiles:       1,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "2 item(s) no longer exist") {
+		t.Errorf("View() missing the missing-files line:\n%s", view)
+	}
+	if !strings.Contains(view, "1 item(s) changed type") {
+		t.Errorf("View() missing the type-changed line:\n%s", view)
+	}
+	if !strings.Contains(view, "confirm updated plan") {
+		t.Errorf("View() missing the execute-mode re-confirm hint:\n%s", view)
+	}
+
+	m.ExecuteMode = false
+	view = m.View()
+	if !strings.Contains(view, "nothing will be deleted") {
+		t.Errorf("View() missing the dry-run wording:\n%s", view)
 	}
 }

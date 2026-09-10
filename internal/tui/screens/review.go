@@ -15,10 +15,45 @@ import (
 type ConfirmState int
 
 const (
-	ConfirmNone    ConfirmState = iota
-	ConfirmSudo                 // waiting for user to confirm sudo-warning before proceeding
-	ConfirmExecute              // waiting for user to confirm execute-mode deletion
+	ConfirmNone        ConfirmState = iota
+	ConfirmSudo                     // waiting for user to confirm sudo-warning before proceeding
+	ConfirmExecute                  // waiting for user to confirm execute-mode deletion
+	ConfirmRevalidated              // waiting for user to re-confirm after revalidation found a material change
 )
+
+// RevalidationDelta summarizes what changed when the approved plan was
+// re-checked against disk and the current config immediately before
+// cleaning -- see internal/tui.revalidatePlan. A nil *RevalidationDelta on
+// ReviewModel means revalidation hasn't run yet (or found nothing material);
+// this type only exists to describe a material change worth showing the user.
+type RevalidationDelta struct {
+	MissingFiles     int
+	TypeChangedFiles int
+	NewlyProtected   int
+	SizeChanged      bool
+	TotalSize        int64
+	TotalFiles       int
+}
+
+// Material reports whether this delta is worth interrupting the user for --
+// anything that shrinks or alters what was approved, per the same "never
+// silently clean less than reviewed, never more" rule the rest of the
+// revalidation pipeline follows.
+// Material deliberately does NOT include SizeChanged on its own. Missing,
+// type-changed, and newly-protected entries all change what will actually
+// be deleted or skipped -- a size drift alone (a log or cache file that grew
+// a few bytes between scan and confirm, the common case for Logs/Caches/Temp
+// on a live system) does not, and gating a re-confirmation on it would fire
+// on nearly every run, training the user to press enter twice reflexively --
+// exactly what would blunt this screen for the changes that do matter.
+// SizeChanged is still computed, but -- deliberately, per the above -- has
+// no rendering of its own in View(): TotalSize/TotalFiles (which already
+// reflect any size drift) are shown whenever a summary IS displayed for one
+// of the other reasons, but a size-only drift with nothing else material
+// produces no summary at all and is accepted silently by design.
+func (d RevalidationDelta) Material() bool {
+	return d.MissingFiles > 0 || d.TypeChangedFiles > 0 || d.NewlyProtected > 0
+}
 
 type fileSummary struct {
 	Path      string
@@ -55,6 +90,24 @@ type ReviewModel struct {
 	UnknownCount   int
 	SudoCategories []cleaner.Category
 	ConfirmState   ConfirmState
+
+	// RevalidationDelta is set right before entering ConfirmRevalidated, and
+	// rendered by the ConfirmRevalidated case in View(). nil otherwise.
+	RevalidationDelta *RevalidationDelta
+
+	// RevalidationErr holds a structural failure from revalidatePlan itself
+	// (as opposed to a per-category failure, which is data, not an error) --
+	// e.g. an unexpected registry mismatch. Rendered as a banner; ConfirmState
+	// stays ConfirmNone so pressing enter again simply retries.
+	RevalidationErr error
+
+	// Revalidating is true while a revalidateCmd dispatched from this
+	// confirm is in flight -- it can take a while (Docker/Time Machine
+	// shell-outs, tens of thousands of Lstats for a large category), and
+	// without some visible feedback here an enter press that seems to do
+	// nothing invites pressing it again, which App.revalidating (not this
+	// field) is what actually guards against.
+	Revalidating bool
 
 	// AuthenticateSudo is the pending choice on the ConfirmSudo dialog: true
 	// authenticates via sudo for the categories in SudoCategories, false
@@ -436,10 +489,41 @@ func (m ReviewModel) View() string {
 	}
 
 	if m.TotalFiles == 0 {
+		if m.RevalidationDelta != nil {
+			// This plan was not empty a moment ago -- it was approved,
+			// reviewed, and confirmed, and revalidation is what emptied it
+			// (every entry vanished, changed type, or became protected
+			// between review and confirm). Reusing the plain "already
+			// tidy" wording below would read as if nothing had ever been
+			// found, hiding exactly the information the user most needs
+			// here.
+			d := m.RevalidationDelta
+			b.WriteString("The approved plan is now empty:")
+			b.WriteString("\n")
+			if d.MissingFiles > 0 {
+				fmt.Fprintf(&b, "  - %d item(s) no longer exist\n", d.MissingFiles)
+			}
+			if d.TypeChangedFiles > 0 {
+				fmt.Fprintf(&b, "  - %d item(s) changed type\n", d.TypeChangedFiles)
+			}
+			if d.NewlyProtected > 0 {
+				fmt.Fprintf(&b, "  - %d item(s) are now protected\n", d.NewlyProtected)
+			}
+			b.WriteString("\n")
+			b.WriteString(styles.Help.Render("  esc: back to dashboard  |  q: quit"))
+			return b.String()
+		}
 		b.WriteString("No files to clean! All categories are already tidy! 🎉")
 		b.WriteString("\n")
 		b.WriteString(styles.Help.Render("  Press q to quit"))
 		return b.String()
+	}
+
+	if m.RevalidationErr != nil {
+		b.WriteString(styles.Error.Render(fmt.Sprintf("  Failed to revalidate the plan: %v", m.RevalidationErr)))
+		b.WriteString("\n")
+		b.WriteString(styles.Help.Render("  Press enter to retry."))
+		b.WriteString("\n\n")
 	}
 
 	lines := []string{}
@@ -603,6 +687,9 @@ func (m ReviewModel) View() string {
 	}
 
 	switch {
+	case m.Revalidating:
+		b.WriteString(styles.Help.Render("  Revalidating the plan against disk... please wait"))
+
 	case m.ConfirmState == ConfirmSudo:
 		sudoNames := make([]string, len(m.SudoCategories))
 		for i, cat := range m.SudoCategories {
@@ -652,6 +739,28 @@ func (m ReviewModel) View() string {
 			)
 		}
 		b.WriteString(styles.Error.Bold(true).Render(message))
+
+	case m.ConfirmState == ConfirmRevalidated && m.RevalidationDelta != nil:
+		d := m.RevalidationDelta
+		b.WriteString(styles.Warning.Bold(true).Render("  The plan changed since it was reviewed:"))
+		b.WriteString("\n")
+		if d.MissingFiles > 0 {
+			fmt.Fprintf(&b, "    - %d item(s) no longer exist -- will be skipped\n", d.MissingFiles)
+		}
+		if d.TypeChangedFiles > 0 {
+			fmt.Fprintf(&b, "    - %d item(s) changed type -- will be skipped\n", d.TypeChangedFiles)
+		}
+		if d.NewlyProtected > 0 {
+			fmt.Fprintf(&b, "    - %d item(s) are now protected -- will be skipped\n", d.NewlyProtected)
+		}
+		b.WriteString("\n")
+		fmt.Fprintf(&b, "  New plan: %s · %d files\n\n", utils.FormatBytes(d.TotalSize), d.TotalFiles)
+		if m.ExecuteMode {
+			b.WriteString(styles.Help.Render("  enter: confirm updated plan  |  esc: back to review"))
+		} else {
+			b.WriteString(styles.Help.Render("  enter: continue (dry run, nothing will be deleted)  |  esc: back to review"))
+		}
+
 	case m.ExecuteMode:
 		if switchListHintTxt != "" {
 			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))

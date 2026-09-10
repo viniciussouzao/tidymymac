@@ -873,6 +873,12 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.reviewScr = screens.NewReview(results, a.executeMode, a.registry, a.isElevated)
 				a.reviewScanResults = results
 				a.reviewBuilt = true
+				// A fresh review session: any breakdown captured by a
+				// previous confirm attempt on a now-discarded scan belongs
+				// to that session, not this one. See mergeReviewBreakdown's
+				// own doc comment for why a.reviewBreakdown otherwise
+				// accumulates across rounds within the same session.
+				a.reviewBreakdown = nil
 			}
 			a.reviewScr.SetSize(a.width, a.height)
 			a.currentScreen = screenReview
@@ -1024,7 +1030,7 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// reset to ConfirmNone above).
 			return a, nil
 		}
-		a.reviewBreakdown = a.reviewScr.Breakdown()
+		a.reviewBreakdown = mergeReviewBreakdown(a.reviewBreakdown, a.reviewScr.Breakdown())
 
 		// revalidateCmd is handed the filtered snapshot directly rather
 		// than through a.reviewScanResults -- which deliberately stays
@@ -1238,6 +1244,44 @@ func joinCategoryErrs(categoryErrs map[cleaner.Category]error) error {
 		errs = append(errs, fmt.Errorf("%s: %w", cat.DisplayName(), categoryErrs[cat]))
 	}
 	return errors.Join(errs...)
+}
+
+// mergeReviewBreakdown folds a freshly computed per-confirm breakdown
+// (next) into whatever a previous round of the same review session already
+// captured (prev) -- see updateReview's Confirm case, which calls this on
+// every confirm, and updateScanning's Confirm handler, which resets
+// a.reviewBreakdown to nil at the start of a new session so nothing leaks
+// across an unrelated scan.
+//
+// A material revalidation delta rebuilds a.reviewScr from
+// a.reviewScanResults (see handleRevalidateComplete), which by then has
+// already had every deselected entry stripped out entirely -- so that
+// rebuilt model's own Breakdown() can never again report an exclusion from
+// an earlier round; the entry simply isn't there for it to see. Without
+// merging, a user who deselects something, confirms, and then re-confirms
+// after revalidation found something else material would see their
+// original exclusion count silently vanish from the eventual summary.
+// ExcludedByUser therefore accumulates across rounds: an entry excluded
+// once stays excluded for the rest of the session, so each round's count
+// is additional information, never a correction of the last. Protected is
+// instead taken as the latest snapshot (state, not a one-way event) --
+// summing it across rounds would double-count the same protected entries
+// every time the user re-confirms without anything having changed.
+func mergeReviewBreakdown(prev, next map[cleaner.Category]screens.ReviewBreakdown) map[cleaner.Category]screens.ReviewBreakdown {
+	if len(prev) == 0 {
+		return next
+	}
+	merged := make(map[cleaner.Category]screens.ReviewBreakdown, len(prev)+len(next))
+	for cat, bd := range prev {
+		merged[cat] = bd
+	}
+	for cat, bd := range next {
+		m := merged[cat]
+		m.ExcludedByUser += bd.ExcludedByUser
+		m.Protected = bd.Protected
+		merged[cat] = m
+	}
+	return merged
 }
 
 func (a App) updateCleaning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

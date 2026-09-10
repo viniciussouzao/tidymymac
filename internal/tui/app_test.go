@@ -535,6 +535,62 @@ func TestUpdateReview_ConfirmFiltersOutDeselectedEntry(t *testing.T) {
 	}
 }
 
+// TestUpdateReview_BreakdownSurvivesRevalidationReconfirm pins a
+// BRANCH-REVIEW follow-up finding: a material revalidation delta rebuilds
+// a.reviewScr from a.reviewScanResults (via screens.NewReview), which by
+// then has already had every deselected entry stripped out entirely -- so
+// the rebuilt model's own Breakdown() can never again report an earlier
+// round's exclusion; the entry simply isn't there for it to see. Before
+// mergeReviewBreakdown, re-confirming after such a delta silently replaced
+// a.reviewBreakdown with that (empty) result, so the eventual summary's
+// "(N excluded)" line for a category the user genuinely excluded something
+// from would vanish.
+func TestUpdateReview_BreakdownSurvivesRevalidationReconfirm(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	excluded := writeFile(t, dir, "exclude", 128)
+	vanishing := writeFile(t, dir, "vanish", 64)
+
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: excluded, Size: 128},
+		{Path: vanishing, Size: 64},
+	})
+
+	ci := selectableCategoryIndex(app)
+	// Sorted desc by size: kept(512), excluded(128), vanishing(64).
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 1)
+	app.reviewScr.ToggleSelected() // deselect "excluded"
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+
+	// Force a material revalidation delta on the first confirm round, so
+	// the review screen gets rebuilt from scratch (screens.NewReview always
+	// starts every entry Selected -- the rebuilt model has no memory of the
+	// original deselection).
+	if err := os.Remove(vanishing); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+	app, _ = confirmAndRevalidate(t, app)
+	if app.reviewScr.ConfirmState != screens.ConfirmRevalidated {
+		t.Fatalf("ConfirmState = %v, want ConfirmRevalidated", app.reviewScr.ConfirmState)
+	}
+	if bd := app.reviewBreakdown[cleaner.Category("mock_selectable")]; bd.ExcludedByUser != 1 {
+		t.Fatalf("reviewBreakdown ExcludedByUser after the first (material) round = %d, want 1", bd.ExcludedByUser)
+	}
+
+	// Re-confirm the corrected plan -- nothing further changes, so this
+	// round proceeds straight to cleaning.
+	app, _ = confirmAndRevalidate(t, app)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning after re-confirming", app.currentScreen)
+	}
+	if bd := app.reviewBreakdown[cleaner.Category("mock_selectable")]; bd.ExcludedByUser != 1 {
+		t.Fatalf("reviewBreakdown ExcludedByUser after re-confirming = %d, want 1 (must survive the rebuild)", bd.ExcludedByUser)
+	}
+}
+
 func TestUpdateReview_DeselectingWholeCategoryDropsItFromPlan(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "solo", 256)

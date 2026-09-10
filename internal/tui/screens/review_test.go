@@ -1,11 +1,31 @@
 package screens
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 )
+
+// wholeDomainSelectableMockCleaner is a test double that (incorrectly, on
+// purpose) claims both cleaner.ItemSelectable and DeletesWholeDomain --
+// standing in for a future cleaner that might make that mistake, since none
+// of the four real cleaners that implement ItemSelectable today do.
+type wholeDomainSelectableMockCleaner struct{}
+
+func (wholeDomainSelectableMockCleaner) Category() cleaner.Category { return "mock_whole_selectable" }
+func (wholeDomainSelectableMockCleaner) Name() string                { return "mock" }
+func (wholeDomainSelectableMockCleaner) Description() string         { return "mock" }
+func (wholeDomainSelectableMockCleaner) RequiresSudo() bool          { return false }
+func (wholeDomainSelectableMockCleaner) DeletesWholeDomain() bool    { return true }
+func (wholeDomainSelectableMockCleaner) SupportsItemSelection() bool { return true }
+func (wholeDomainSelectableMockCleaner) Scan(context.Context, func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
+	return nil, nil
+}
+func (wholeDomainSelectableMockCleaner) Clean(context.Context, []cleaner.FileEntry, bool, func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	return nil, nil
+}
 
 func TestReviewModelShouldWarnAboutSudo(t *testing.T) {
 	registry := cleaner.NewRegistry()
@@ -281,6 +301,36 @@ func TestNewReview_MarksSelectableCategories(t *testing.T) {
 	}
 }
 
+// TestNewReview_WholeDomainClearsItemSelectableFlag pins a BRANCH-REVIEW
+// follow-up finding: SupportsItemSelection() alone used to be enough to
+// mark a category Selectable, with only a test (registry_test.go's
+// TestItemSelectableCleaners) -- not the code itself -- ensuring no real
+// cleaner combines it with DeletesWholeDomain. A whole-domain Clean ignores
+// whatever entry list it's given and clears its entire domain regardless,
+// so per-item selection on one would be a lie: a deselected entry gets
+// deleted anyway.
+func TestNewReview_WholeDomainClearsItemSelectableFlag(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(wholeDomainSelectableMockCleaner{})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		"mock_whole_selectable": {
+			Category:   "mock_whole_selectable",
+			TotalSize:  10,
+			TotalFiles: 1,
+			Entries:    []cleaner.FileEntry{{Path: "/mock/a", Size: 10}},
+		},
+	}
+
+	m := NewReview(results, false, registry, false)
+	if len(m.Categories) != 1 {
+		t.Fatalf("expected exactly 1 category, got %d", len(m.Categories))
+	}
+	if m.Categories[0].Selectable {
+		t.Error("a DeletesWholeDomain cleaner must never be marked Selectable, even if it claims SupportsItemSelection")
+	}
+}
+
 func TestToggleSelected_TogglesEligibleEntry(t *testing.T) {
 	m := downloadsReview(t)
 	ci := downloadsCategoryIndex(m)
@@ -461,6 +511,60 @@ func TestFilter_NoMatchesRendersMessage(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "no items match") {
 		t.Errorf("View() missing the no-match message:\n%s", view)
+	}
+}
+
+// TestHeaderLineIndexForCategory_AccountsForNoMatchLine pins a BRANCH-REVIEW
+// follow-up finding: the "(no items match ...)" line View() renders in
+// place of a zero-match category's (empty) file list used to be invisible
+// to headerLineIndexForCategory/fileLineIndex, which compute where each
+// category's header actually lands among the rendered lines -- so every
+// category after a zero-match one had its scroll position off by one.
+func TestHeaderLineIndexForCategory_AccountsForNoMatchLine(t *testing.T) {
+	m := twoSelectableCategoriesReview(t)
+	downloadsIdx, dockerIdx := 0, 1
+	if m.Categories[downloadsIdx].Category != cleaner.CategoryDownloads {
+		downloadsIdx, dockerIdx = dockerIdx, downloadsIdx
+	}
+
+	m.Cursor = m.globalFileIndexFor(downloadsIdx, 0)
+	m.OpenFilter()
+	for _, r := range "no-such-item" {
+		m.AppendFilterRune(r)
+	}
+	if m.categoryMatchCount(downloadsIdx) != 0 {
+		t.Fatalf("test setup: expected the Downloads filter to match nothing")
+	}
+
+	// Downloads' rendered block with zero matches is exactly 3 lines: its
+	// own header, the "(no items match ...)" line, and the spacer -- no
+	// file rows, no "+N more" line (categoryMatchCount - shown = 0).
+	if got := m.headerLineIndexForCategory(dockerIdx); got != 3 {
+		t.Fatalf("headerLineIndexForCategory(docker) = %d, want 3", got)
+	}
+	if got := m.fileLineIndex(dockerIdx, 0); got != 4 {
+		t.Fatalf("fileLineIndex(docker, 0) = %d, want 4 (header line + its own header row)", got)
+	}
+}
+
+// TestFilter_QueryIsSanitizedForTerminal pins a BRANCH-REVIEW follow-up
+// finding: every other user-influenced string in View() goes through
+// utils.SanitizeForTerminal so a control character can't inject rows or
+// escape sequences into the rendered screen (see displayPath) -- the "/"
+// filter's own query, typed by the same user, must not be an exception.
+func TestFilter_QueryIsSanitizedForTerminal(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	for _, r := range "\x1b[31mmovie" {
+		m.AppendFilterRune(r)
+	}
+
+	view := m.View()
+	if strings.Contains(view, "\x1b[31m") {
+		t.Errorf("View() must not echo a raw escape sequence from FilterQuery:\n%q", view)
 	}
 }
 

@@ -204,7 +204,16 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 		if registry != nil {
 			if c, ok := registry.Get(result.Category); ok {
 				if s, ok := c.(cleaner.ItemSelectable); ok {
-					selectable = s.SupportsItemSelection()
+					// !DeletesWholeDomain is a defense-in-depth belt on top
+					// of the existing test (registry_test.go's
+					// TestItemSelectableCleaners), which only pins today's
+					// four cleaners and would not stop a future whole-domain
+					// cleaner from opting in by mistake. A whole-domain
+					// Clean ignores whatever entry list it's given and
+					// clears its entire domain regardless, so per-item
+					// selection on one would be a lie: a deselected entry
+					// gets deleted anyway.
+					selectable = s.SupportsItemSelection() && !c.DeletesWholeDomain()
 				}
 			}
 		}
@@ -798,6 +807,9 @@ func (m ReviewModel) headerLineIndexForCategory(i int) int {
 		if !m.Categories[c].SizeKnown {
 			line++ // warning line shown before files for unknown-size categories
 		}
+		if m.categoryFilteringToZero(c) {
+			line++ // "(no items match ...)" line, see View()
+		}
 		shown := 0
 		if c < len(m.VisibleCount) {
 			shown = m.VisibleCount[c]
@@ -818,12 +830,27 @@ func (m ReviewModel) headerLineIndexForCategory(i int) int {
 	return line
 }
 
+// categoryFilteringToZero reports whether category ci is currently narrowed
+// by the "/" filter to zero matches -- the one case View() renders an extra
+// "(no items match ...)" line in place of the (empty) file list, which the
+// line-index accounting above and in fileLineIndex must both account for to
+// keep scrolling in sync with what's actually on screen.
+func (m ReviewModel) categoryFilteringToZero(ci int) bool {
+	if ci != m.FilterCategory || strings.TrimSpace(m.FilterQuery) == "" {
+		return false
+	}
+	return m.categoryMatchCount(ci) == 0
+}
+
 // fileLineIndex returns the rendered line index of the file at position fi within category ci.
 func (m ReviewModel) fileLineIndex(ci, fi int) int {
 	line := m.headerLineIndexForCategory(ci)
 	line++ // the header line itself
 	if !m.Categories[ci].SizeKnown {
 		line++ // warning line before files
+	}
+	if m.categoryFilteringToZero(ci) {
+		line++ // "(no items match ...)" line, see View()
 	}
 	return line + fi
 }
@@ -920,7 +947,12 @@ func (m ReviewModel) View() string {
 
 	if m.FilterActive && m.FilterCategory >= 0 && m.FilterCategory < len(m.Categories) {
 		filterCat := m.Categories[m.FilterCategory].Name
-		b.WriteString(fmt.Sprintf("  filter (%s): %s_\n", filterCat, m.FilterQuery))
+		// Every other user-influenced string this View() renders goes
+		// through SanitizeForTerminal (see displayPath below) specifically
+		// so a control character can't inject rows or escape sequences into
+		// the screen -- FilterQuery is typed by the same user but must not
+		// be an exception just because it never touches disk.
+		b.WriteString(fmt.Sprintf("  filter (%s): %s_\n", filterCat, utils.SanitizeForTerminal(m.FilterQuery)))
 		b.WriteString(styles.Help.Render("  type to filter  |  enter: apply  |  esc: clear"))
 		b.WriteString("\n\n")
 	}
@@ -965,10 +997,9 @@ func (m ReviewModel) View() string {
 		}
 
 		matchCount := m.categoryMatchCount(ci)
-		filtering := ci == m.FilterCategory && strings.TrimSpace(m.FilterQuery) != ""
 
-		if filtering && matchCount == 0 {
-			lines = append(lines, styles.Dim.Render(fmt.Sprintf("    (no items match %q)", m.FilterQuery)))
+		if m.categoryFilteringToZero(ci) {
+			lines = append(lines, styles.Dim.Render(fmt.Sprintf("    (no items match %q)", utils.SanitizeForTerminal(m.FilterQuery))))
 		}
 
 		for fi := 0; fi < shown; fi++ {

@@ -94,6 +94,7 @@ func revalidatePlan(ctx context.Context, registry *cleaner.Registry, cfg *config
 	var beforeSize, afterSize int64
 	var beforeFiles, afterFiles int
 	var newlyProtected int
+	var identityChanged int
 
 	for _, orig := range originalByKey {
 		if orig.Protected {
@@ -117,12 +118,25 @@ func revalidatePlan(ctx context.Context, registry *cleaner.Registry, cfg *config
 			categoryErrs[item.Category] = item.Err
 		}
 
+		// Docker/Time Machine entries are not filesystem paths (a container
+		// ID, a snapshot name); Lstat-ing them would resolve against the
+		// process cwd and attach a meaningless identity. Their cleaner
+		// implementing cleaner.EntryRevalidator is what makes that true,
+		// independent of category -- the same signal PrepareScanResultForClean
+		// itself already dispatches on above.
+		skipIdentity := false
+		if c, ok := registry.Get(item.Category); ok {
+			_, skipIdentity = c.(cleaner.EntryRevalidator)
+		}
+
 		// Copy rather than mutate results' own *ScanResult: results still
 		// belongs to the caller, and fields commands.ScanCategoryResult has
 		// no equivalent for -- notably SizeKnown, used for Time Machine's
 		// "unknown size" badge -- must survive the round trip unchanged.
 		next := *out
-		next.Entries = attachFreshIdentity(item.Files, item.Category, originalByKey)
+		var changed int
+		next.Entries, changed = attachFreshIdentity(item.Files, item.Category, originalByKey, skipIdentity)
+		identityChanged += changed
 		next.TotalFiles = len(next.Entries)
 		next.TotalSize = 0
 		for _, e := range next.Entries {
@@ -146,6 +160,7 @@ func revalidatePlan(ctx context.Context, registry *cleaner.Registry, cfg *config
 		MissingFiles:     prepared.MissingFiles,
 		TypeChangedFiles: prepared.TypeChangedFiles,
 		NewlyProtected:   newlyProtected,
+		IdentityChanged:  identityChanged,
 		SizeChanged:      afterSize != beforeSize || afterFiles != beforeFiles,
 		TotalSize:        afterSize,
 		TotalFiles:       afterFiles,
@@ -206,56 +221,80 @@ func prepareRevalidationInput(results map[cleaner.Category]*cleaner.ScanResult) 
 	return scan, selected, originalByKey, wasProtected
 }
 
-// attachFreshIdentity re-attaches Dev/Ino to each revalidated entry, captured
-// fresh via this call's own Lstat rather than carried over from the original
-// scan. PrepareScanResultForClean's own revalidation deliberately never sets
-// Dev/Ino (see revalidateEntries' doc comment): it exists mainly to serve
-// `clean --from-file`, where the input is an untrusted scan file and
-// inventing an identity for it would let a crafted entry authorize a swap.
-// The TUI's input has no such problem -- every entry originated from this
-// same process's own Cleaner.Scan call -- so leaving Dev/Ino unset here
-// would only weaken saferemove's swap check at actual delete time for no
-// reason.
+// attachFreshIdentity restores each revalidated entry's Dev/Ino to the value
+// captured at scan time -- the moment the user actually approved the file --
+// rather than re-deriving it now. PrepareScanResultForClean's own
+// revalidation deliberately never sets Dev/Ino (see revalidateEntries' doc
+// comment): it exists mainly to serve `clean --from-file`, where the input
+// is an untrusted scan file and inventing an identity for it would let a
+// crafted entry authorize a swap. The TUI's input has no such problem --
+// every entry originated from this same process's own Cleaner.Scan call --
+// so leaving Dev/Ino unset here would only weaken saferemove's swap check at
+// actual delete time for no reason.
 //
-// The identity is captured NOW, not restored from the original scan: an
-// entry legitimately rewritten between scan and confirm (log rotation, an
-// atomically-replaced cache file) gets a new inode, and carrying the OLD
-// identity forward would make every such entry fail saferemove's identity
-// check at delete time with a false "swap detected" even though nothing
-// unsafe happened. A failed Lstat here (the file vanished in the instant
-// between PrepareScanResultForClean's own check and this one) just leaves
-// Dev/Ino unset, exactly the state an ordinary cleaner leaves an entry in
-// when identity was never tracked for it to begin with (see
-// internal/cleaner.fileIdentity's own "ok=false" contract) -- not treated as
-// a reason to drop the entry.
+// The identity is deliberately NOT re-captured via a fresh Lstat here: this
+// revalidation pass runs at the end of the exact window (the user sitting on
+// the review screen) an in-root symlink redirect could happen in (see
+// internal/cleaner/saferemove.go's rootedRemover doc comment on that
+// threat). Re-reading identity now would compare the fresh, possibly
+// already-redirected Lstat against itself at delete time and let the swap
+// through. Carrying the scan-time identity forward instead means
+// saferemove's own check at delete time is comparing against the moment the
+// user actually approved the file, closing that window as designed.
+//
+// A entry legitimately rewritten between scan and confirm (log rotation, an
+// atomically-replaced cache file) gets a new inode; that case is not treated
+// as a swap silently allowed through with the new identity, nor as a false
+// "swap detected" surfacing as an opaque per-item failure during cleaning.
+// Instead this Lstats once, purely to compare against the scan-time
+// identity: a genuine mismatch drops the entry from the plan now and is
+// counted so the caller can show it to the user as a delta, matching how
+// missing/type-changed/newly-protected entries are already handled. An
+// Lstat that fails, or an entry whose scan-time identity was never known
+// (Ino == 0, e.g. revalidateEntries' own keep-on-ambiguous-stat-error path),
+// is not treated as a mismatch -- the file's current state is simply
+// unconfirmed here, and saferemove's own Lstat-then-compare immediately
+// before unlink remains the final, fail-closed authority.
+//
+// skipIdentity is true for a category whose cleaner implements
+// cleaner.EntryRevalidator (Docker, Time Machine): their entries are not
+// filesystem paths at all (a container ID, a snapshot name), so Lstat-ing
+// them would resolve against the process cwd and attach a meaningless
+// identity. Their Dev/Ino is left exactly as RevalidateEntries returned it
+// (normally unset).
 //
 // An entry that does not correspond to any originally-approved {category,
 // path} pair IS dropped: PrepareScanResultForClean trusts its
 // EntryRevalidator to only narrow, but that is a contract, not a check (see
 // revalidatePlan's own doc comment), and this is the second, independent
 // guard against a misbehaving one inventing a path the user never reviewed.
-func attachFreshIdentity(entries []cleaner.FileEntry, category cleaner.Category, originalByKey map[entryKey]cleaner.FileEntry) []cleaner.FileEntry {
+//
+// Returns the filtered entries and how many were dropped for an identity
+// mismatch (as opposed to for not being in originalByKey at all).
+func attachFreshIdentity(entries []cleaner.FileEntry, category cleaner.Category, originalByKey map[entryKey]cleaner.FileEntry, skipIdentity bool) ([]cleaner.FileEntry, int) {
 	out := make([]cleaner.FileEntry, 0, len(entries))
+	var changed int
 	for _, e := range entries {
-		if _, ok := originalByKey[entryKey{category, e.Path}]; !ok {
+		orig, ok := originalByKey[entryKey{category, e.Path}]
+		if !ok {
 			continue
 		}
-		// Explicitly cleared, not left as whatever revalidateEntries'
-		// keep-on-ambiguous-stat-error path may have carried forward on e
-		// (see its own doc comment): an identity this call cannot itself
-		// confirm right now must read as "unknown" (fileIdentity's own
-		// ok=false contract), never as a stale one left over from a
-		// different moment in time.
-		e.Dev, e.Ino = 0, 0
-		if info, err := os.Lstat(e.Path); err == nil {
-			if dev, ino, ok := fileIdentity(info); ok {
-				e.Dev = dev
-				e.Ino = ino
+		if skipIdentity {
+			out = append(out, e)
+			continue
+		}
+		e.Dev, e.Ino = orig.Dev, orig.Ino
+		if orig.Ino != 0 {
+			if info, err := os.Lstat(e.Path); err == nil {
+				if dev, ino, ok := fileIdentity(info); ok && (dev != orig.Dev || ino != orig.Ino) {
+					changed++
+					continue
+				}
 			}
 		}
 		out = append(out, e)
 	}
-	return out
+	return out, changed
 }
 
 // fileIdentity mirrors internal/cleaner's unexported helper of the same name

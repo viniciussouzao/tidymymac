@@ -360,7 +360,13 @@ func TestRevalidatePlan_NeverTouchesRegistryWhenNothingToRevalidate(t *testing.T
 	}
 }
 
-func TestRevalidatePlan_CapturesFreshIdentityForSurvivingEntries(t *testing.T) {
+// TestRevalidatePlan_PreservesScanTimeIdentity pins the F1 security-review
+// fix: the identity used at delete time must be the one captured when the
+// user approved the plan (scan time), not one re-derived at confirm time --
+// re-deriving it now would compare a possibly-already-redirected Lstat
+// against itself and let an in-root symlink swap made during the review
+// window through saferemove's check undetected.
+func TestRevalidatePlan_PreservesScanTimeIdentity(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "keep.log", 10)
 
@@ -368,7 +374,7 @@ func TestRevalidatePlan_CapturesFreshIdentityForSurvivingEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Lstat fixture: %v", err)
 	}
-	wantDev, wantIno, ok := fileIdentity(info)
+	scanDev, scanIno, ok := fileIdentity(info)
 	if !ok {
 		t.Skip("platform does not expose Dev/Ino via syscall.Stat_t")
 	}
@@ -381,18 +387,13 @@ func TestRevalidatePlan_CapturesFreshIdentityForSurvivingEntries(t *testing.T) {
 			Category:   cleaner.CategoryTemp,
 			TotalFiles: 1,
 			TotalSize:  10,
-			// A stale/bogus identity from a hypothetical earlier scan --
-			// must be overwritten with a freshly captured one, never trusted
-			// as-is (see attachFreshIdentity's doc comment on why the OLD
-			// identity would produce false swap-detected failures for a
-			// file legitimately rewritten between scan and confirm).
 			Entries: []cleaner.FileEntry{
-				{Path: path, Size: 10, Category: cleaner.CategoryTemp, Dev: 999999, Ino: 999999},
+				{Path: path, Size: 10, Category: cleaner.CategoryTemp, Dev: scanDev, Ino: scanIno},
 			},
 		},
 	}
 
-	revalidated, _, _, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
+	revalidated, delta, _, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
 	if err != nil {
 		t.Fatalf("revalidatePlan() error = %v", err)
 	}
@@ -400,26 +401,127 @@ func TestRevalidatePlan_CapturesFreshIdentityForSurvivingEntries(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries = %+v, want 1", entries)
 	}
-	if entries[0].Dev != wantDev || entries[0].Ino != wantIno {
-		t.Fatalf("Dev/Ino = %d/%d, want the freshly Lstat'd %d/%d (not the stale scan-time values)", entries[0].Dev, entries[0].Ino, wantDev, wantIno)
+	if entries[0].Dev != scanDev || entries[0].Ino != scanIno {
+		t.Fatalf("Dev/Ino = %d/%d, want the scan-time %d/%d preserved unchanged", entries[0].Dev, entries[0].Ino, scanDev, scanIno)
+	}
+	if delta.IdentityChanged != 0 || delta.Material() {
+		t.Fatalf("delta = %+v, want no identity change reported (nothing actually changed)", delta)
 	}
 }
 
-// TestRevalidatePlan_ZeroesIdentityWhenFreshLstatFails pins a security
-// review finding: revalidateEntries' keep-on-ambiguous-stat-error path (see
-// internal/commands/scan_input.go) can carry a stale, scan-time Dev/Ino
-// forward on the entry it keeps. attachFreshIdentity's own Lstat on that
-// same path fails the same way -- it must zero Dev/Ino rather than leave
-// that stale identity in place, matching cleaner.fileIdentity's own
-// "ok=false means unknown" contract instead of silently keeping a value
-// that was never actually confirmed at this revalidation pass.
-func TestRevalidatePlan_ZeroesIdentityWhenFreshLstatFails(t *testing.T) {
+// TestRevalidatePlan_DropsEntryWithChangedIdentity pins the other half of
+// the F1 fix: a file whose identity at confirm time no longer matches its
+// scan-time identity (the case a symlink-redirect swap would produce) must
+// be dropped from the plan and reported in the delta, not silently carried
+// through with a freshly re-derived identity.
+func TestRevalidatePlan_DropsEntryWithChangedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "keep.log", 10)
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat fixture: %v", err)
+	}
+	scanDev, scanIno, ok := fileIdentity(info)
+	if !ok {
+		t.Skip("platform does not expose Dev/Ino via syscall.Stat_t")
+	}
+
+	// Replace the file at the same path -- a new inode, simulating a swap
+	// (or an innocuous atomic rewrite; either way the identity check must
+	// not silently accept it).
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing fixture for replacement: %v", err)
+	}
+	writeFile(t, dir, "keep.log", 20)
+
+	registry := cleaner.NewRegistry()
+	registry.Register(&wholeDomainMockCleaner{category: cleaner.CategoryTemp})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cleaner.CategoryTemp: {
+			Category:   cleaner.CategoryTemp,
+			TotalFiles: 1,
+			TotalSize:  10,
+			Entries: []cleaner.FileEntry{
+				{Path: path, Size: 10, Category: cleaner.CategoryTemp, Dev: scanDev, Ino: scanIno},
+			},
+		},
+	}
+
+	revalidated, delta, _, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
+	if err != nil {
+		t.Fatalf("revalidatePlan() error = %v", err)
+	}
+	entries := revalidated[cleaner.CategoryTemp].Entries
+	if len(entries) != 0 {
+		t.Fatalf("entries = %+v, want 0 (identity-changed entry must be dropped)", entries)
+	}
+	if delta.IdentityChanged != 1 {
+		t.Fatalf("delta.IdentityChanged = %d, want 1", delta.IdentityChanged)
+	}
+	if !delta.Material() {
+		t.Fatalf("delta.Material() = false, want true (an identity change must force re-confirmation)")
+	}
+}
+
+// TestRevalidatePlan_EntryRevalidatorSkipsIdentityLstat pins F6: a category
+// whose cleaner implements cleaner.EntryRevalidator (Docker, Time Machine)
+// has entries that are not filesystem paths at all, so attachFreshIdentity
+// must never Lstat them -- doing so would resolve against the process cwd
+// and attach a meaningless identity. Their Dev/Ino must pass through exactly
+// as RevalidateEntries returned it.
+func TestRevalidatePlan_EntryRevalidatorSkipsIdentityLstat(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(&mockRevalCleaner{
+		wholeDomainMockCleaner: wholeDomainMockCleaner{category: cleaner.CategoryDocker},
+		revalFn: func(_ context.Context, entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, int, error) {
+			return entries, 0, 0, nil
+		},
+	})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cleaner.CategoryDocker: {
+			Category:   cleaner.CategoryDocker,
+			TotalFiles: 1,
+			TotalSize:  10,
+			Entries: []cleaner.FileEntry{
+				{Path: "container-id-abc123", Size: 10, Category: cleaner.CategoryDocker},
+			},
+		},
+	}
+
+	revalidated, delta, _, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
+	if err != nil {
+		t.Fatalf("revalidatePlan() error = %v", err)
+	}
+	entries := revalidated[cleaner.CategoryDocker].Entries
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want 1", entries)
+	}
+	if entries[0].Dev != 0 || entries[0].Ino != 0 {
+		t.Fatalf("Dev/Ino = %d/%d, want 0/0 (never Lstat'd for an EntryRevalidator category)", entries[0].Dev, entries[0].Ino)
+	}
+	if delta.IdentityChanged != 0 {
+		t.Fatalf("delta.IdentityChanged = %d, want 0", delta.IdentityChanged)
+	}
+}
+
+// TestRevalidatePlan_KeepsScanTimeIdentityWhenFreshLstatFails pins the F2
+// fix: revalidateEntries' keep-on-ambiguous-stat-error path (see
+// internal/commands/scan_input.go) carries the scan-time Dev/Ino forward on
+// the entry it keeps. attachFreshIdentity's own Lstat on that same path
+// fails the same way -- since the current state genuinely cannot be
+// confirmed right now, the scan-time identity must be preserved (not
+// zeroed), so saferemove's own check at delete time still has something to
+// compare against instead of skipping the identity check entirely.
+func TestRevalidatePlan_KeepsScanTimeIdentityWhenFreshLstatFails(t *testing.T) {
 	dir := t.TempDir()
 	regularFile := writeFile(t, dir, "not-a-dir", 1)
 	// regularFile is a file, so treating it as a directory component makes
 	// every Lstat on this path fail with ENOTDIR -- both the one inside
-	// revalidateEntries (which then keeps the entry as-is, stale identity
-	// included) and attachFreshIdentity's own, later one.
+	// revalidateEntries (which then keeps the entry as-is, scan-time
+	// identity included) and attachFreshIdentity's own, later one.
 	ambiguous := filepath.Join(regularFile, "child")
 
 	registry := cleaner.NewRegistry()
@@ -436,7 +538,7 @@ func TestRevalidatePlan_ZeroesIdentityWhenFreshLstatFails(t *testing.T) {
 		},
 	}
 
-	revalidated, _, _, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
+	revalidated, delta, _, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
 	if err != nil {
 		t.Fatalf("revalidatePlan() error = %v", err)
 	}
@@ -444,8 +546,11 @@ func TestRevalidatePlan_ZeroesIdentityWhenFreshLstatFails(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("entries = %+v, want 1 (an ambiguous stat error must keep the entry, not drop it)", entries)
 	}
-	if entries[0].Dev != 0 || entries[0].Ino != 0 {
-		t.Fatalf("Dev/Ino = %d/%d, want 0/0 (unknown, not the stale scan-time values) since this pass could not confirm identity", entries[0].Dev, entries[0].Ino)
+	if entries[0].Dev != 999999 || entries[0].Ino != 999999 {
+		t.Fatalf("Dev/Ino = %d/%d, want the scan-time 999999/999999 preserved since this pass could not confirm a change", entries[0].Dev, entries[0].Ino)
+	}
+	if delta.IdentityChanged != 0 {
+		t.Fatalf("delta.IdentityChanged = %d, want 0 (an unconfirmable Lstat is not a detected change)", delta.IdentityChanged)
 	}
 }
 

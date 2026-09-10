@@ -514,12 +514,18 @@ func TestUpdateReview_StaleRevalidationAfterBackOutIsDiscarded(t *testing.T) {
 	if !app.revalidating {
 		t.Fatal("expected a.revalidating = true while the command is in flight")
 	}
+	if app.revalidateCancel == nil {
+		t.Fatal("expected a.revalidateCancel to be set for the in-flight dispatch")
+	}
 
 	// The user changes their mind before the revalidation result arrives.
 	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEsc})
 	app = model.(App)
 	if app.currentScreen != screenScanning {
 		t.Fatalf("currentScreen after esc = %v, want screenScanning", app.currentScreen)
+	}
+	if app.revalidateCancel != nil {
+		t.Fatal("expected esc to clear a.revalidateCancel after calling it")
 	}
 
 	// The in-flight result lands anyway.
@@ -747,6 +753,40 @@ func TestUpdateReview_EmptyAfterRevalidationSkipsConfirmScreen(t *testing.T) {
 	}
 	if view := app.reviewScr.View(); !strings.Contains(view, "now empty") {
 		t.Errorf("View() does not explain the plan emptied via revalidation:\n%s", view)
+	}
+}
+
+// TestUpdateReview_EmptyAfterRevalidationResetsScanCache pins the F5 fix: an
+// emptied-by-revalidation plan must not leave a.scanResults holding the same
+// stale entries that just revalidated to nothing, or re-selecting the
+// category from the dashboard (updateScanning's a.scanResults[id] reuse
+// path) would rebuild and revalidate to empty again -- a dead end short of
+// quitting or backing out twice.
+func TestUpdateReview_EmptyAfterRevalidationResetsScanCache(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+	app.reviewBuilt = true
+	app.scanResults = map[cleaner.Category]*cleaner.ScanResult{
+		"mock_cat": app.reviewScanResults["mock_cat"],
+	}
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // the one entry vanished -> plan is empty
+	if app.reviewScr.TotalFiles != 0 {
+		t.Fatalf("reviewScr.TotalFiles = %d, want 0", app.reviewScr.TotalFiles)
+	}
+	if app.reviewBuilt {
+		t.Fatal("expected reviewBuilt = false after revalidation emptied the plan, to force a re-scan")
+	}
+	if _, exists := app.scanResults["mock_cat"]; exists {
+		t.Fatal("expected the emptied category to be removed from a.scanResults, not left stale")
 	}
 }
 

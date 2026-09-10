@@ -30,6 +30,7 @@ type RevalidationDelta struct {
 	MissingFiles     int
 	TypeChangedFiles int
 	NewlyProtected   int
+	IdentityChanged  int
 	SizeChanged      bool
 	TotalSize        int64
 	TotalFiles       int
@@ -38,7 +39,9 @@ type RevalidationDelta struct {
 // Material reports whether this delta is worth interrupting the user for --
 // anything that shrinks or alters what was approved, per the same "never
 // silently clean less than reviewed, never more" rule the rest of the
-// revalidation pipeline follows.
+// revalidation pipeline follows. IdentityChanged counts an entry whose
+// on-disk identity (Dev/Ino) no longer matches what it was at scan time --
+// dropped from the plan the same way a missing or type-changed entry is.
 // Material deliberately does NOT include SizeChanged on its own. Missing,
 // type-changed, and newly-protected entries all change what will actually
 // be deleted or skipped -- a size drift alone (a log or cache file that grew
@@ -52,7 +55,7 @@ type RevalidationDelta struct {
 // of the other reasons, but a size-only drift with nothing else material
 // produces no summary at all and is accepted silently by design.
 func (d RevalidationDelta) Material() bool {
-	return d.MissingFiles > 0 || d.TypeChangedFiles > 0 || d.NewlyProtected > 0
+	return d.MissingFiles > 0 || d.TypeChangedFiles > 0 || d.NewlyProtected > 0 || d.IdentityChanged > 0
 }
 
 type fileSummary struct {
@@ -509,6 +512,9 @@ func (m ReviewModel) View() string {
 			if d.NewlyProtected > 0 {
 				fmt.Fprintf(&b, "  - %d item(s) are now protected\n", d.NewlyProtected)
 			}
+			if d.IdentityChanged > 0 {
+				fmt.Fprintf(&b, "  - %d item(s) changed on disk\n", d.IdentityChanged)
+			}
 			b.WriteString("\n")
 			b.WriteString(styles.Help.Render("  esc: back to dashboard  |  q: quit"))
 			return b.String()
@@ -752,6 +758,9 @@ func (m ReviewModel) View() string {
 		}
 		if d.NewlyProtected > 0 {
 			fmt.Fprintf(&b, "    - %d item(s) are now protected -- will be skipped\n", d.NewlyProtected)
+		}
+		if d.IdentityChanged > 0 {
+			fmt.Fprintf(&b, "    - %d item(s) changed on disk -- will be skipped\n", d.IdentityChanged)
 		}
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "  New plan: %s · %d files\n\n", utils.FormatBytes(d.TotalSize), d.TotalFiles)

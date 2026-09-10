@@ -156,6 +156,16 @@ type App struct {
 	revalidating  bool
 	revalidateSeq int
 
+	// revalidateCancel cancels the context passed to the in-flight
+	// revalidateCmd, if any. Bumping revalidateSeq (see above) stops its
+	// result from being acted on, but does not by itself stop the goroutine
+	// -- it would otherwise keep Lstat-ing every approved entry, and for
+	// Docker/Time Machine keep shelling out, to completion even after the
+	// user has backed out. Set on dispatch (updateReview's Confirm case),
+	// cleared (after calling it) on esc-while-in-flight and once a result is
+	// accepted in handleRevalidateComplete.
+	revalidateCancel context.CancelFunc
+
 	// scriptMessage will support the generate-script-only flow.
 }
 
@@ -880,15 +890,22 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// revalidateCompleteMsg's stamped seq can never match again,
 			// even if the user later navigates back into screenReview and
 			// currentScreen would otherwise read the same as it did at
-			// dispatch time.
+			// dispatch time. revalidateCancel is called for the same
+			// reason on the goroutine's own side: a discarded result must
+			// not mean an abandoned goroutine still running to completion.
 			a.revalidating = false
 			a.reviewScr.Revalidating = false
 			a.reviewScr.RevalidationErr = nil
 			a.revalidateSeq++
-			if a.reviewScr.ConfirmState != screens.ConfirmNone {
-				a.reviewScr.ConfirmState = screens.ConfirmNone
-				return a, nil
+			if a.revalidateCancel != nil {
+				a.revalidateCancel()
+				a.revalidateCancel = nil
 			}
+			// ConfirmState is always ConfirmNone here: the Confirm case
+			// below resets it to ConfirmNone before ever dispatching
+			// revalidateCmd, and nothing else can set it while
+			// a.revalidating is true (this guard ignores every key but
+			// back until it resolves).
 			a.currentScreen = screenScanning
 			return a, nil
 		}
@@ -951,7 +968,9 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.revalidating = true
 		a.reviewScr.Revalidating = true
 		a.revalidateSeq++
-		return a, revalidateCmd(a.ctx, a.revalidateSeq, a.registry, a.cfg, a.reviewScanResults)
+		ctx, cancel := context.WithCancel(a.ctx)
+		a.revalidateCancel = cancel
+		return a, revalidateCmd(ctx, a.revalidateSeq, a.registry, a.cfg, a.reviewScanResults)
 
 	case key.Matches(msg, keys.Back):
 		// a.revalidating is never true here: the top-of-function guard
@@ -1009,6 +1028,10 @@ func (a App) handleRevalidateComplete(msg revalidateCompleteMsg) (tea.Model, tea
 	}
 	a.revalidating = false
 	a.reviewScr.Revalidating = false
+	if a.revalidateCancel != nil {
+		a.revalidateCancel()
+		a.revalidateCancel = nil
+	}
 
 	err := msg.err
 	if err == nil && len(msg.categoryErrs) > 0 {
@@ -1053,12 +1076,26 @@ func (a App) handleRevalidateComplete(msg revalidateCompleteMsg) (tea.Model, tea
 		a.reviewScr.RevalidationDelta = &delta
 		if a.reviewScr.TotalFiles > 0 {
 			a.reviewScr.ConfirmState = screens.ConfirmRevalidated
+		} else {
+			// Nothing survived revalidation. ReviewModel.View()'s own
+			// TotalFiles == 0 branch renders an empty-plan message instead --
+			// entering ConfirmRevalidated here would show a "confirm updated
+			// plan" prompt whose enter key is a silent no-op (updateReview's
+			// own TotalFiles == 0 guard, at the very top of its Confirm case).
+			//
+			// a.scanResults' cached entries for every category in this plan
+			// are now known-stale (that is exactly what emptied it), and
+			// updateScanning's dashboard-reuse path (a.scanResults[id])
+			// would otherwise rebuild the same review from the same stale
+			// results and revalidate it to empty again -- a dead end short
+			// of quitting or backing all the way out twice. Clearing
+			// reviewBuilt and the affected cache entries forces a real
+			// re-scan the next time these categories are selected.
+			a.reviewBuilt = false
+			for category := range a.reviewScanResults {
+				delete(a.scanResults, category)
+			}
 		}
-		// Else: nothing survived revalidation. ReviewModel.View()'s own
-		// TotalFiles == 0 branch renders an empty-plan message instead --
-		// entering ConfirmRevalidated here would show a "confirm updated
-		// plan" prompt whose enter key is a silent no-op (updateReview's
-		// own TotalFiles == 0 guard, at the very top of its Confirm case).
 		return a, nil
 	}
 	a.reviewScr.RevalidationDelta = nil

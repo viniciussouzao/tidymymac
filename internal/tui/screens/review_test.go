@@ -229,3 +229,477 @@ func TestReviewModel_ViewRendersEmptiedPlanIdentityChanged(t *testing.T) {
 		t.Errorf("View() missing the identity-changed line:\n%s", view)
 	}
 }
+
+// downloadsReview builds a ReviewModel with a Selectable Downloads category
+// (three files) and a non-Selectable Temp category (one file), for the
+// per-item selection and filter tests below.
+func downloadsReview(t *testing.T) ReviewModel {
+	t.Helper()
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewDownloadsCleaner())
+	registry.Register(cleaner.NewTempCleaner())
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cleaner.CategoryDownloads: {
+			Category:   cleaner.CategoryDownloads,
+			TotalSize:  30,
+			TotalFiles: 3,
+			Entries: []cleaner.FileEntry{
+				{Path: "/Users/vini/Downloads/movie.mp4", Size: 20},
+				{Path: "/Users/vini/Downloads/installer.dmg", Size: 8},
+				{Path: "/Users/vini/Downloads/locked.zip", Size: 2, Protected: true},
+			},
+		},
+		cleaner.CategoryTemp: {
+			Category:   cleaner.CategoryTemp,
+			TotalSize:  5,
+			TotalFiles: 1,
+			Entries:    []cleaner.FileEntry{{Path: "/tmp/a", Size: 5}},
+		},
+	}
+
+	return NewReview(results, false, registry, false)
+}
+
+func downloadsCategoryIndex(m ReviewModel) int {
+	for i, c := range m.Categories {
+		if c.Category == cleaner.CategoryDownloads {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestNewReview_MarksSelectableCategories(t *testing.T) {
+	m := downloadsReview(t)
+
+	for _, c := range m.Categories {
+		want := c.Category == cleaner.CategoryDownloads
+		if c.Selectable != want {
+			t.Errorf("category %q: Selectable = %v, want %v", c.Category, c.Selectable, want)
+		}
+	}
+}
+
+func TestToggleSelected_TogglesEligibleEntry(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	// Cursor starts at index 0 globally; Downloads sorts by size desc, so
+	// the largest file (movie.mp4, 20) is first.
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	if !m.Categories[ci].AllFiles[0].Selected {
+		t.Fatal("entry should start Selected")
+	}
+	m.ToggleSelected()
+	if m.Categories[ci].AllFiles[0].Selected {
+		t.Error("ToggleSelected() did not deselect the entry")
+	}
+	m.ToggleSelected()
+	if !m.Categories[ci].AllFiles[0].Selected {
+		t.Error("ToggleSelected() did not re-select the entry")
+	}
+}
+
+func TestToggleSelected_NoopOnNonSelectableCategory(t *testing.T) {
+	m := downloadsReview(t)
+	var tempIdx int
+	for i, c := range m.Categories {
+		if c.Category == cleaner.CategoryTemp {
+			tempIdx = i
+		}
+	}
+	m.Cursor = m.globalFileIndexFor(tempIdx, 0)
+
+	m.ToggleSelected()
+	if !m.Categories[tempIdx].AllFiles[0].Selected {
+		t.Error("ToggleSelected() must be a no-op on a non-Selectable category")
+	}
+}
+
+func TestToggleSelected_NoopOnProtectedEntry(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	// locked.zip is the smallest file, so it sorts last.
+	lastFi := len(m.Categories[ci].AllFiles) - 1
+	m.Cursor = m.globalFileIndexFor(ci, lastFi)
+	if !m.Categories[ci].AllFiles[lastFi].Protected {
+		t.Fatal("test setup: expected the cursor on the protected entry")
+	}
+
+	m.ToggleSelected()
+	if !m.Categories[ci].AllFiles[lastFi].Selected {
+		t.Error("ToggleSelected() must be a no-op on a Protected entry")
+	}
+}
+
+func TestActionableTotals_ExcludesDeselectedEntries(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0) // movie.mp4, size 20
+	m.ToggleSelected()
+
+	size, files := m.actionableTotals()
+	// Total actionable (excluding the always-protected locked.zip) would be
+	// 20 + 8 (Downloads) + 5 (Temp) = 33 across 3 files; deselecting
+	// movie.mp4 removes 20 bytes / 1 file.
+	if size != 13 || files != 2 {
+		t.Fatalf("actionableTotals() after deselecting movie.mp4 = (%d, %d), want (13, 2)", size, files)
+	}
+}
+
+func TestExcludedByUserCount(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+
+	if got := m.excludedByUserCount(); got != 0 {
+		t.Fatalf("excludedByUserCount() before any toggle = %d, want 0", got)
+	}
+
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+	m.ToggleSelected()
+
+	if got := m.excludedByUserCount(); got != 1 {
+		t.Fatalf("excludedByUserCount() after deselecting one entry = %d, want 1", got)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "1 excluded from this run") {
+		t.Errorf("View() title missing the excluded count:\n%s", view)
+	}
+}
+
+func TestReviewModel_ViewRendersSelectionHeaderAndCheckboxes(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+	m.ToggleSelected()
+
+	view := m.View()
+	// 3 files total; movie.mp4 was just deselected and locked.zip is
+	// Protected (never counted as selected), leaving only installer.dmg.
+	if !strings.Contains(view, "1/3 selected") {
+		t.Errorf("View() missing the Downloads selection header:\n%s", view)
+	}
+	if !strings.Contains(view, "[ ] ") {
+		t.Errorf("View() missing an unchecked checkbox:\n%s", view)
+	}
+	if !strings.Contains(view, "[x] ") {
+		t.Errorf("View() missing a checked checkbox:\n%s", view)
+	}
+	if !strings.Contains(view, "Temp (") && strings.Contains(view, "1/1 selected") {
+		t.Errorf("Temp (non-Selectable) must keep the plain header format:\n%s", view)
+	}
+}
+
+func TestOpenFilter_NoopOnNonSelectableCategory(t *testing.T) {
+	m := downloadsReview(t)
+	var tempIdx int
+	for i, c := range m.Categories {
+		if c.Category == cleaner.CategoryTemp {
+			tempIdx = i
+		}
+	}
+	m.Cursor = m.globalFileIndexFor(tempIdx, 0)
+
+	m.OpenFilter()
+	if m.FilterActive {
+		t.Error("OpenFilter() must be a no-op on a non-Selectable category")
+	}
+}
+
+func TestFilter_NarrowsMatchingEntriesCaseInsensitive(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	if !m.FilterActive {
+		t.Fatal("OpenFilter() did not activate filtering")
+	}
+	for _, r := range "MOVIE" {
+		m.AppendFilterRune(r)
+	}
+
+	if got := m.categoryMatchCount(ci); got != 1 {
+		t.Fatalf("categoryMatchCount() = %d, want 1 (only movie.mp4 matches)", got)
+	}
+	if m.VisibleCount[ci] != 1 {
+		t.Fatalf("VisibleCount[Downloads] = %d, want 1", m.VisibleCount[ci])
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "movie.mp4") {
+		t.Errorf("View() should still show the matching entry:\n%s", view)
+	}
+	if strings.Contains(view, "installer.dmg") {
+		t.Errorf("View() should hide the non-matching entry while filtered:\n%s", view)
+	}
+
+	// Selection and category membership must survive filtering unchanged.
+	if !m.Categories[ci].AllFiles[0].Selected {
+		t.Error("filtering must not mutate Selected")
+	}
+	if len(m.Categories[ci].AllFiles) != 3 {
+		t.Errorf("filtering must not remove entries from AllFiles, got %d", len(m.Categories[ci].AllFiles))
+	}
+}
+
+func TestFilter_NoMatchesRendersMessage(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	for _, r := range "nonexistent-query" {
+		m.AppendFilterRune(r)
+	}
+
+	if got := m.categoryMatchCount(ci); got != 0 {
+		t.Fatalf("categoryMatchCount() = %d, want 0", got)
+	}
+	view := m.View()
+	if !strings.Contains(view, "no items match") {
+		t.Errorf("View() missing the no-match message:\n%s", view)
+	}
+}
+
+func TestFilter_EscClearsQueryAndRestoresFullList(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	for _, r := range "movie" {
+		m.AppendFilterRune(r)
+	}
+	m.CloseFilter(true) // esc
+
+	if m.FilterActive {
+		t.Error("CloseFilter(true) must exit filter mode")
+	}
+	if m.FilterQuery != "" {
+		t.Errorf("CloseFilter(true) must clear the query, got %q", m.FilterQuery)
+	}
+	if got := m.categoryMatchCount(ci); got != 3 {
+		t.Fatalf("categoryMatchCount() after clearing = %d, want 3 (full list restored)", got)
+	}
+	view := m.View()
+	if !strings.Contains(view, "installer.dmg") {
+		t.Errorf("View() should show every entry again after clearing the filter:\n%s", view)
+	}
+}
+
+func TestFilter_EnterKeepsQueryAppliedAndClosesOverlay(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	for _, r := range "movie" {
+		m.AppendFilterRune(r)
+	}
+	m.CloseFilter(false) // enter
+
+	if m.FilterActive {
+		t.Error("CloseFilter(false) must close the overlay")
+	}
+	if m.FilterQuery != "movie" {
+		t.Errorf("CloseFilter(false) must keep the query, got %q", m.FilterQuery)
+	}
+	if got := m.categoryMatchCount(ci); got != 1 {
+		t.Fatalf("categoryMatchCount() after enter = %d, want 1 (still narrowed)", got)
+	}
+}
+
+func TestFilter_BackspaceRemovesLastRune(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	for _, r := range "movz" {
+		m.AppendFilterRune(r)
+	}
+	if got := m.categoryMatchCount(ci); got != 0 {
+		t.Fatalf("categoryMatchCount() for %q = %d, want 0", m.FilterQuery, got)
+	}
+	m.BackspaceFilter()
+	if m.FilterQuery != "mov" {
+		t.Fatalf("BackspaceFilter() query = %q, want %q", m.FilterQuery, "mov")
+	}
+	if got := m.categoryMatchCount(ci); got != 1 {
+		t.Fatalf("categoryMatchCount() after backspace = %d, want 1", got)
+	}
+}
+
+func TestFilter_MatchesFriendlyDisplayName(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewDockerCleaner())
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cleaner.CategoryDocker: {
+			Category:   cleaner.CategoryDocker,
+			TotalSize:  10,
+			TotalFiles: 1,
+			Entries: []cleaner.FileEntry{
+				{Path: "docker://image/qwen2.5-coder", Size: 10},
+			},
+		},
+	}
+	m := NewReview(results, false, registry, false)
+	m.Cursor = 0
+
+	m.OpenFilter()
+	for _, r := range "qwen" {
+		m.AppendFilterRune(r)
+	}
+
+	if got := m.categoryMatchCount(0); got != 1 {
+		t.Fatalf("categoryMatchCount() matching the friendly docker name = %d, want 1", got)
+	}
+}
+
+// twoSelectableCategoriesReview builds a ReviewModel with two Selectable
+// categories (Downloads and Docker), for tests about switching the "/"
+// filter from one category to another.
+func twoSelectableCategoriesReview(t *testing.T) ReviewModel {
+	t.Helper()
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewDownloadsCleaner())
+	registry.Register(cleaner.NewDockerCleaner())
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cleaner.CategoryDownloads: {
+			Category:   cleaner.CategoryDownloads,
+			TotalSize:  30,
+			TotalFiles: 3,
+			Entries: []cleaner.FileEntry{
+				{Path: "/Users/vini/Downloads/movie.mp4", Size: 20},
+				{Path: "/Users/vini/Downloads/installer.dmg", Size: 8},
+				{Path: "/Users/vini/Downloads/zip.zip", Size: 2},
+			},
+		},
+		cleaner.CategoryDocker: {
+			Category:   cleaner.CategoryDocker,
+			TotalSize:  2,
+			TotalFiles: 2,
+			Entries: []cleaner.FileEntry{
+				{Path: "docker://image/alpha", Size: 1},
+				{Path: "docker://image/beta", Size: 1},
+			},
+		},
+	}
+	return NewReview(results, false, registry, false)
+}
+
+// TestOpenFilter_SwitchingCategoryUnnarrowsPrevious pins a BRANCH-REVIEW
+// follow-up finding: OpenFilter used to reassign FilterCategory to the new
+// category before un-narrowing the old one, so applyFilter's own "clear the
+// previous category" step ran against the wrong (already-switched)
+// category, permanently pinning the old one's VisibleCount/order to its
+// last query -- with no overlay, "+N more" line, or way to scroll back to
+// the rows it was still hiding, even though they were still part of the
+// plan and would still be deleted.
+func TestOpenFilter_SwitchingCategoryUnnarrowsPrevious(t *testing.T) {
+	m := twoSelectableCategoriesReview(t)
+	downloadsIdx, dockerIdx := 0, 1
+	if m.Categories[downloadsIdx].Category != cleaner.CategoryDownloads {
+		downloadsIdx, dockerIdx = dockerIdx, downloadsIdx
+	}
+
+	m.Cursor = m.globalFileIndexFor(downloadsIdx, 0)
+	m.OpenFilter()
+	for _, r := range "movie" {
+		m.AppendFilterRune(r)
+	}
+	m.CloseFilter(false) // enter: keep the query applied, close the overlay
+	if got := m.categoryMatchCount(downloadsIdx); got != 1 {
+		t.Fatalf("categoryMatchCount(Downloads) after filtering = %d, want 1", got)
+	}
+
+	// Move the cursor into Docker and open a filter there instead.
+	m.Cursor = m.globalFileIndexFor(dockerIdx, 0)
+	m.OpenFilter()
+
+	if got := m.categoryMatchCount(downloadsIdx); got != 3 {
+		t.Fatalf("categoryMatchCount(Downloads) after switching the filter away = %d, want 3 (un-narrowed)", got)
+	}
+	if got := m.VisibleCount[downloadsIdx]; got != 3 {
+		t.Fatalf("VisibleCount[Downloads] after switching the filter away = %d, want 3", got)
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "installer.dmg") || !strings.Contains(view, "zip.zip") {
+		t.Errorf("View() must show every Downloads entry again once its filter is no longer active:\n%s", view)
+	}
+}
+
+// TestToggleSelected_NoopWhenCursorBeyondVisibleRange pins a BRANCH-REVIEW
+// follow-up finding: a zero-match "/" filter leaves VisibleCount at 0 (no
+// row rendered, nothing highlighted), but the cursor -- which addresses
+// AllFiles directly and knows nothing about VisibleCount -- still resolves
+// to a real entry. Without this guard, ToggleSelected would silently flip
+// that invisible entry's Selected: deselect a file, then filter to a typo
+// with no matches and press space out of habit, and the file is silently
+// re-selected with nothing on screen to suggest it happened.
+func TestToggleSelected_NoopWhenCursorBeyondVisibleRange(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+	m.ToggleSelected() // deselect movie.mp4 (the largest, first-sorted file)
+	if m.Categories[ci].AllFiles[0].Selected {
+		t.Fatal("test setup: expected movie.mp4 to be deselected")
+	}
+
+	m.OpenFilter()
+	for _, r := range "no-such-file" {
+		m.AppendFilterRune(r)
+	}
+	if got := m.categoryMatchCount(ci); got != 0 {
+		t.Fatalf("categoryMatchCount() = %d, want 0", got)
+	}
+	if m.VisibleCount[ci] != 0 {
+		t.Fatalf("VisibleCount[Downloads] = %d, want 0 (nothing rendered)", m.VisibleCount[ci])
+	}
+
+	before := make([]bool, len(m.Categories[ci].AllFiles))
+	for i, f := range m.Categories[ci].AllFiles {
+		before[i] = f.Selected
+	}
+
+	m.ToggleSelected() // must be a no-op: nothing is currently visible
+
+	for i, f := range m.Categories[ci].AllFiles {
+		if f.Selected != before[i] {
+			t.Errorf("ToggleSelected() with a zero-match filter changed entry %d (%q) Selected from %v to %v, want no-op",
+				i, f.Path, before[i], f.Selected)
+		}
+	}
+}
+
+func TestScrollDown_SkipsFilteredOutEntries(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.SetSize(80, 40)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	// "installer.dmg" is the only match; movie.mp4 and locked.zip are
+	// filtered out and must be unreachable via ScrollDown.
+	for _, r := range "installer" {
+		m.AppendFilterRune(r)
+	}
+	m.CloseFilter(false)
+
+	startCi, startFi := m.cursorCatFile()
+	if m.Categories[startCi].AllFiles[startFi].Path != "/Users/vini/Downloads/installer.dmg" {
+		t.Fatalf("cursor should land on the sole match after filtering, got %q", m.Categories[startCi].AllFiles[startFi].Path)
+	}
+
+	before := m.Cursor
+	m.ScrollDown()
+	if m.Cursor != before {
+		t.Error("ScrollDown() should not move past the only visible (matching) entry")
+	}
+}

@@ -58,11 +58,35 @@ func (d RevalidationDelta) Material() bool {
 	return d.MissingFiles > 0 || d.TypeChangedFiles > 0 || d.NewlyProtected > 0 || d.IdentityChanged > 0
 }
 
+// ReviewBreakdown summarizes, for one category, how the review screen's own
+// state carved up its entries at confirm time -- captured once, before the
+// filtered plan is built and sent for revalidation/cleaning, so the summary
+// screen can show why a category's cleaned count is smaller than what was
+// reviewed. Protected and ExcludedByUser are not mutually exclusive with a
+// category's existing sudo-skip (CleanResult.Skipped) or with anything
+// revalidation itself later drops (RevalidationDelta) -- those are captured
+// at other points in the flow and rendered separately.
+type ReviewBreakdown struct {
+	// Protected counts entries config.Tag already marked Protected -- never
+	// sent to Clean regardless of selection (config.StripProtected removes
+	// them right before Clean runs).
+	Protected int
+	// ExcludedByUser counts non-Protected entries in a Selectable category
+	// the user deselected for this run via ToggleSelected.
+	ExcludedByUser int
+}
+
 type fileSummary struct {
 	Path      string
 	Size      int64
 	IsDir     bool
 	Protected bool
+
+	// Selected is whether this entry is part of the plan that will actually
+	// be cleaned. Only meaningful when its category is Selectable; defaults
+	// to true for every entry (including in non-Selectable categories, where
+	// it is simply never toggled). See ReviewModel.ToggleSelected.
+	Selected bool
 }
 
 // ReviewCategory represents a category of files to review, with its total size, file count, and lists of files.
@@ -74,6 +98,29 @@ type ReviewCategory struct {
 	SizeKnown bool
 	TopFiles  []fileSummary // to show the top 10 largest files in this category
 	AllFiles  []fileSummary // to show all files in the review screen
+
+	// Selectable is true when this category's cleaner implements
+	// cleaner.ItemSelectable and opts in -- only then does the review screen
+	// offer per-item selection (checkboxes, the "/" filter); every other
+	// category keeps the aggregate, category-level review.
+	Selectable bool
+}
+
+// selectedCount returns how many of this category's non-protected entries
+// are currently Selected -- the numerator of the "N/M selected" header shown
+// for a Selectable category. A Protected entry is never counted: it can
+// never be toggled and is never actually cleaned regardless of Selected.
+func (c ReviewCategory) selectedCount() int {
+	n := 0
+	for _, f := range c.AllFiles {
+		if f.Protected {
+			continue
+		}
+		if f.Selected {
+			n++
+		}
+	}
+	return n
 }
 
 // ReviewModel is the model for the review screen, containing all categories and their files, as well as UI state for scrolling and toggling views.
@@ -121,13 +168,26 @@ type ReviewModel struct {
 	// caches successful auth for ~5 minutes on macOS) can never authenticate
 	// the user without an explicit, deliberate switch to the other option.
 	AuthenticateSudo bool
+
+	// FilterActive is true while the user is typing into the "/" filter
+	// overlay for the Selectable category under FilterCategory. FilterQuery
+	// is the in-progress (or, once CloseFilter(false) applies it, the
+	// active) text. FilterCategory is an index into Categories, or -1 when
+	// no category has ever been filtered; it stays set (with FilterActive
+	// false) after enter closes the overlay so the narrowing persists until
+	// the query is cleared or a different category is filtered. See
+	// OpenFilter/AppendFilterRune/BackspaceFilter/CloseFilter.
+	FilterActive   bool
+	FilterQuery    string
+	FilterCategory int
 }
 
 // NewReview constructs a ReviewModel from the scan results
 func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode bool, registry *cleaner.Registry, isElevated bool) ReviewModel {
 	m := ReviewModel{
-		ExecuteMode: executeMode,
-		IsElevated:  isElevated,
+		ExecuteMode:    executeMode,
+		IsElevated:     isElevated,
+		FilterCategory: -1,
 	}
 
 	for _, result := range results {
@@ -140,12 +200,22 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 			sizeKnown = result.SizeKnown || result.TotalFiles == 0
 		}
 
+		selectable := false
+		if registry != nil {
+			if c, ok := registry.Get(result.Category); ok {
+				if s, ok := c.(cleaner.ItemSelectable); ok {
+					selectable = s.SupportsItemSelection()
+				}
+			}
+		}
+
 		cat := ReviewCategory{
-			Name:      string(result.Category),
-			Category:  result.Category,
-			Size:      result.TotalSize,
-			Files:     result.TotalFiles,
-			SizeKnown: sizeKnown,
+			Name:       string(result.Category),
+			Category:   result.Category,
+			Size:       result.TotalSize,
+			Files:      result.TotalFiles,
+			SizeKnown:  sizeKnown,
+			Selectable: selectable,
 		}
 
 		// Build file summaries.
@@ -160,6 +230,7 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 				Size:      entry.Size,
 				IsDir:     entry.IsDir,
 				Protected: entry.Protected,
+				Selected:  true,
 			})
 		}
 
@@ -233,12 +304,124 @@ func (m ReviewModel) actionableTotals() (int64, int) {
 			if f.Protected {
 				continue
 			}
+			// A deselected entry in a Selectable category never reaches the
+			// cleaner (see App's filtered-plan construction at confirm
+			// time), so it must not count toward what "will be deleted"
+			// here either. Every entry in a non-Selectable category keeps
+			// Selected at its NewReview default (true) and is unaffected.
+			if !f.Selected {
+				continue
+			}
 			totalSize += f.Size
 			totalFiles++
 		}
 	}
 
 	return totalSize, totalFiles
+}
+
+// excludedByUserCount reports how many non-protected entries across every
+// Selectable category the user has deselected for this run.
+func (m ReviewModel) excludedByUserCount() int {
+	n := 0
+	for _, cat := range m.Categories {
+		if !cat.Selectable {
+			continue
+		}
+		for _, f := range cat.AllFiles {
+			if f.Protected || f.Selected {
+				continue
+			}
+			n++
+		}
+	}
+	return n
+}
+
+// Breakdown computes, per category, the ReviewBreakdown App captures at
+// confirm time -- before the filtered plan (Selected entries only) is built
+// and handed off for revalidation/cleaning. Only Selectable categories can
+// have a non-zero ExcludedByUser; Protected is counted for every category,
+// Selectable or not, since config.Tag runs on every entry regardless.
+func (m ReviewModel) Breakdown() map[cleaner.Category]ReviewBreakdown {
+	out := make(map[cleaner.Category]ReviewBreakdown, len(m.Categories))
+	for _, cat := range m.Categories {
+		var b ReviewBreakdown
+		for _, f := range cat.AllFiles {
+			if f.Protected {
+				b.Protected++
+				continue
+			}
+			if cat.Selectable && !f.Selected {
+				b.ExcludedByUser++
+			}
+		}
+		if b.Protected > 0 || b.ExcludedByUser > 0 {
+			out[cat.Category] = b
+		}
+	}
+	return out
+}
+
+// SelectedResults builds a filtered copy of results -- the exact scan
+// snapshot this ReviewModel was built from -- containing, for each
+// Selectable category, only entries the user has not deselected. A
+// Protected entry is always kept regardless of Selected: it is never
+// actually sent to Clean (config.StripProtected removes it right before
+// Clean runs), but downstream code (config.CountProtected, checked against
+// a whole-domain cleaner's DeletesWholeDomain) still needs to see it to
+// decide whether that category can run at all -- dropping it here would
+// silently defeat that check. Every non-Selectable category passes through
+// unchanged. A category left with zero entries after filtering is omitted
+// from the returned map entirely, the same way an empty scan result already
+// is throughout this pipeline (NewReview, revalidatePlan,
+// NewCleaningModel all skip TotalFiles == 0).
+func (m ReviewModel) SelectedResults(results map[cleaner.Category]*cleaner.ScanResult) map[cleaner.Category]*cleaner.ScanResult {
+	deselected := make(map[cleaner.Category]map[string]struct{}, len(m.Categories))
+	for _, cat := range m.Categories {
+		if !cat.Selectable {
+			continue
+		}
+		set := make(map[string]struct{})
+		for _, f := range cat.AllFiles {
+			if !f.Protected && !f.Selected {
+				set[f.Path] = struct{}{}
+			}
+		}
+		deselected[cat.Category] = set
+	}
+
+	out := make(map[cleaner.Category]*cleaner.ScanResult, len(results))
+	for category, result := range results {
+		if result == nil {
+			continue
+		}
+		excluded, isSelectable := deselected[category]
+		if !isSelectable {
+			out[category] = result
+			continue
+		}
+
+		entries := make([]cleaner.FileEntry, 0, len(result.Entries))
+		var size int64
+		for _, e := range result.Entries {
+			if _, skip := excluded[e.Path]; skip {
+				continue
+			}
+			entries = append(entries, e)
+			size += e.Size
+		}
+		if len(entries) == 0 {
+			continue
+		}
+
+		next := *result
+		next.Entries = entries
+		next.TotalFiles = len(entries)
+		next.TotalSize = size
+		out[category] = &next
+	}
+	return out
 }
 
 // sudoTotals returns the size and file count across only the categories in
@@ -326,14 +509,18 @@ func (m *ReviewModel) scrollIntoView(ci, fi int) {
 func (m *ReviewModel) ToggleShowAll() {
 	ci, fi := m.cursorCatFile()
 	m.ShowAll = !m.ShowAll
-	// Adjust visible counts accordingly
+	// Adjust visible counts accordingly. A category currently narrowed by
+	// the "/" filter must expand/collapse across its match count, not its
+	// raw AllFiles length -- otherwise "show all" would reveal entries the
+	// active filter had hidden.
 	for i := range m.Categories {
+		total := m.categoryMatchCount(i)
 		if m.ShowAll {
-			m.VisibleCount[i] = len(m.Categories[i].AllFiles)
+			m.VisibleCount[i] = total
 		} else {
 			limit := 10
-			if len(m.Categories[i].AllFiles) < limit {
-				limit = len(m.Categories[i].AllFiles)
+			if total < limit {
+				limit = total
 			}
 			m.VisibleCount[i] = limit
 		}
@@ -355,6 +542,200 @@ func (m *ReviewModel) ToggleShowAll() {
 // ToggleFullPath toggles between shortened and full path display.
 func (m *ReviewModel) ToggleFullPath() {
 	m.ShowFull = !m.ShowFull
+}
+
+// ToggleSelected flips Selected on the entry under the cursor. A no-op when
+// the entry's category isn't Selectable (aggregate categories have nothing
+// to toggle) or the entry is Protected (a locked item can never be
+// selected/deselected -- see the card's "LOCKED items can't be toggled"
+// acceptance criterion).
+func (m *ReviewModel) ToggleSelected() {
+	ci, fi := m.cursorCatFile()
+	if ci < 0 || ci >= len(m.Categories) {
+		return
+	}
+	cat := &m.Categories[ci]
+	if !cat.Selectable || fi < 0 || fi >= len(cat.AllFiles) {
+		return
+	}
+	// cursorCatFile addresses AllFiles directly and knows nothing about
+	// VisibleCount -- with a zero-match "/" filter (or, less commonly, a
+	// freshly collapsed list), it can resolve to an entry that is not
+	// currently rendered at all, no row highlighted anywhere on screen. A
+	// no-op guard here matters more than it looks: without it, deselecting
+	// something, then filtering to a typo with no matches and pressing
+	// space out of habit silently re-selects the very entry the user just
+	// excluded, with nothing on screen to suggest it happened.
+	if ci >= len(m.VisibleCount) || fi >= m.VisibleCount[ci] {
+		return
+	}
+	f := &cat.AllFiles[fi]
+	if f.Protected {
+		return
+	}
+	f.Selected = !f.Selected
+}
+
+// OpenFilter begins editing a text filter scoped to the Selectable category
+// currently under the cursor. Reopening on the same category resumes
+// editing whatever query already narrows it; opening on a different
+// category resets to an empty query, un-narrowing the previous one first.
+// A no-op on a non-Selectable category: filtering exists to help pick a
+// single item out of many, which an aggregate category has no use for.
+func (m *ReviewModel) OpenFilter() {
+	ci, _ := m.cursorCatFile()
+	if ci < 0 || ci >= len(m.Categories) || !m.Categories[ci].Selectable {
+		return
+	}
+	if ci != m.FilterCategory {
+		// Un-narrow whatever category was previously filtered before
+		// switching to a new one: applyFilter reads m.FilterCategory
+		// directly, so this must run while it still points at the old
+		// category -- reassigning it first (as this used to do) left that
+		// category's VisibleCount/order permanently pinned to its last
+		// query, with no overlay, "+N more" line, or way to scroll to the
+		// rows it was still hiding.
+		if m.FilterCategory >= 0 && m.FilterCategory < len(m.Categories) {
+			m.FilterQuery = ""
+			m.applyFilter()
+		}
+		m.FilterCategory = ci
+		m.FilterQuery = ""
+		m.applyFilter()
+	}
+	m.FilterActive = true
+}
+
+// AppendFilterRune appends r to the in-progress filter query and re-narrows
+// the filtered category.
+func (m *ReviewModel) AppendFilterRune(r rune) {
+	if !m.FilterActive {
+		return
+	}
+	m.FilterQuery += string(r)
+	m.applyFilter()
+}
+
+// BackspaceFilter removes the last rune of the in-progress filter query.
+func (m *ReviewModel) BackspaceFilter() {
+	if !m.FilterActive || m.FilterQuery == "" {
+		return
+	}
+	runes := []rune(m.FilterQuery)
+	m.FilterQuery = string(runes[:len(runes)-1])
+	m.applyFilter()
+}
+
+// CloseFilter ends filter editing. clear also resets the query (and
+// un-narrows the category) -- the card's "esc dentro do filtro o limpa".
+// Passing false (enter) instead leaves the query applied and just closes
+// the input overlay, so the narrowing persists while the user reviews the
+// filtered list.
+func (m *ReviewModel) CloseFilter(clear bool) {
+	if clear {
+		m.FilterQuery = ""
+		m.applyFilter()
+		m.FilterCategory = -1
+	}
+	m.FilterActive = false
+}
+
+// applyFilter re-narrows the filtered category (m.FilterCategory) for the
+// current m.FilterQuery. Matching entries are stably sorted to the front of
+// AllFiles -- preserving their relative (size-descending) order -- and
+// VisibleCount is capped to the match count. That single change is what
+// lets the cursor/scroll math below (built entirely around "index <
+// VisibleCount[ci] is shown") skip non-matching entries correctly with no
+// changes of its own: filtering never needs a separate "is this row hidden"
+// check anywhere else in the file. Clearing the query (FilterQuery == "")
+// instead restores the category's original size-descending order and the
+// ordinary top-10/show-all VisibleCount.
+func (m *ReviewModel) applyFilter() {
+	ci := m.FilterCategory
+	if ci < 0 || ci >= len(m.Categories) {
+		return
+	}
+	cat := &m.Categories[ci]
+
+	// Keep the cursor on the same entry across the reorder below, if it's
+	// still visible afterwards; otherwise it snaps to the first visible row.
+	curCi, curFi := m.cursorCatFile()
+	var focusedPath string
+	if curCi == ci && curFi >= 0 && curFi < len(cat.AllFiles) {
+		focusedPath = cat.AllFiles[curFi].Path
+	}
+
+	query := strings.ToLower(strings.TrimSpace(m.FilterQuery))
+	if query == "" {
+		sort.SliceStable(cat.AllFiles, func(i, j int) bool {
+			return cat.AllFiles[i].Size > cat.AllFiles[j].Size
+		})
+		limit := 10
+		if m.ShowAll || len(cat.AllFiles) < limit {
+			limit = len(cat.AllFiles)
+		}
+		m.VisibleCount[ci] = limit
+	} else {
+		matches := func(f fileSummary) bool { return fileMatchesFilter(cat.Name, f, query) }
+		sort.SliceStable(cat.AllFiles, func(i, j int) bool {
+			return matches(cat.AllFiles[i]) && !matches(cat.AllFiles[j])
+		})
+		matched := 0
+		for _, f := range cat.AllFiles {
+			if !matches(f) {
+				break
+			}
+			matched++
+		}
+		limit := matched
+		if !m.ShowAll && limit > 10 {
+			limit = 10
+		}
+		m.VisibleCount[ci] = limit
+	}
+
+	if curCi == ci {
+		newFi := 0
+		for i := 0; i < m.VisibleCount[ci]; i++ {
+			if cat.AllFiles[i].Path == focusedPath {
+				newFi = i
+				break
+			}
+		}
+		m.Cursor = m.globalFileIndexFor(ci, newFi)
+	}
+}
+
+// categoryMatchCount reports how many of category ci's entries are visible
+// under the currently active filter -- every entry when ci isn't the
+// filtered category (or the query is empty), otherwise how many match.
+func (m ReviewModel) categoryMatchCount(ci int) int {
+	if ci < 0 || ci >= len(m.Categories) {
+		return 0
+	}
+	cat := m.Categories[ci]
+	query := strings.ToLower(strings.TrimSpace(m.FilterQuery))
+	if ci != m.FilterCategory || query == "" {
+		return len(cat.AllFiles)
+	}
+	n := 0
+	for _, f := range cat.AllFiles {
+		if fileMatchesFilter(cat.Name, f, query) {
+			n++
+		}
+	}
+	return n
+}
+
+// fileMatchesFilter reports whether f's full path or friendly display name
+// contains queryLower (already lowercased), case-insensitively -- the
+// card's "busca no nome amigável e no caminho completo".
+func fileMatchesFilter(categoryName string, f fileSummary, queryLower string) bool {
+	if strings.Contains(strings.ToLower(f.Path), queryLower) {
+		return true
+	}
+	friendly := displayPath(categoryName, f, false)
+	return strings.Contains(strings.ToLower(friendly), queryLower)
 }
 
 // SetSize updates dimensions.
@@ -425,8 +806,10 @@ func (m ReviewModel) headerLineIndexForCategory(i int) int {
 			shown = len(m.Categories[c].AllFiles)
 		}
 		line += shown
-		// more line if hidden remain and not ShowAll
-		remaining := len(m.Categories[c].AllFiles) - shown
+		// more line if hidden remain and not ShowAll. Mirrors View()'s own
+		// remaining computation -- categoryMatchCount rather than a raw
+		// AllFiles length, so a "/" filter's narrowed list still lines up.
+		remaining := m.categoryMatchCount(c) - shown
 		if !m.ShowAll && remaining > 0 {
 			line++
 		}
@@ -471,6 +854,9 @@ func (m ReviewModel) View() string {
 	title := fmt.Sprintf("Review: %s across %d files", utils.FormatBytes(m.TotalSize), m.TotalFiles)
 	if m.UnknownCount > 0 {
 		title = fmt.Sprintf("%s + %d unknown-size categor%s", title, m.UnknownCount, pluralSuffix(m.UnknownCount, "y", "ies"))
+	}
+	if excluded := m.excludedByUserCount(); excluded > 0 {
+		title = fmt.Sprintf("%s (%d excluded from this run)", title, excluded)
 	}
 	b.WriteString(modeTag + " " + styles.Title.Render(title))
 
@@ -532,6 +918,13 @@ func (m ReviewModel) View() string {
 		b.WriteString("\n\n")
 	}
 
+	if m.FilterActive && m.FilterCategory >= 0 && m.FilterCategory < len(m.Categories) {
+		filterCat := m.Categories[m.FilterCategory].Name
+		b.WriteString(fmt.Sprintf("  filter (%s): %s_\n", filterCat, m.FilterQuery))
+		b.WriteString(styles.Help.Render("  type to filter  |  enter: apply  |  esc: clear"))
+		b.WriteString("\n\n")
+	}
+
 	lines := []string{}
 	type section struct {
 		headerStr string
@@ -546,7 +939,11 @@ func (m ReviewModel) View() string {
 		if !cat.SizeKnown {
 			sizeLabel = "unknown size"
 		}
-		hdr := styles.CategoryHeader.Render(fmt.Sprintf("  %s (%s, %d files)", cat.Name, sizeLabel, cat.Files))
+		hdrText := fmt.Sprintf("  %s (%s, %d files)", cat.Name, sizeLabel, cat.Files)
+		if cat.Selectable {
+			hdrText = fmt.Sprintf("  %s (%s, %d/%d selected)", cat.Name, sizeLabel, cat.selectedCount(), cat.Files)
+		}
+		hdr := styles.CategoryHeader.Render(hdrText)
 
 		sections = append(sections, section{
 			headerStr: hdr,
@@ -567,6 +964,13 @@ func (m ReviewModel) View() string {
 			shown = len(cat.AllFiles)
 		}
 
+		matchCount := m.categoryMatchCount(ci)
+		filtering := ci == m.FilterCategory && strings.TrimSpace(m.FilterQuery) != ""
+
+		if filtering && matchCount == 0 {
+			lines = append(lines, styles.Dim.Render(fmt.Sprintf("    (no items match %q)", m.FilterQuery)))
+		}
+
 		for fi := 0; fi < shown; fi++ {
 			f := cat.AllFiles[fi]
 			short := displayPath(cat.Name, f, m.ShowFull)
@@ -575,12 +979,18 @@ func (m ReviewModel) View() string {
 				sizeText = "unknown"
 			}
 			lockedTag := ""
+			checkbox := ""
 			if f.Protected {
 				lockedTag = styles.SafetyBadgeDoNotTouch.Render("LOCKED") + " "
+			} else if cat.Selectable {
+				checkbox = "[ ] "
+				if f.Selected {
+					checkbox = "[x] "
+				}
 			}
-			line := fmt.Sprintf("    %s%s (%s)", lockedTag, styles.Dim.Render(short), sizeText)
+			line := fmt.Sprintf("    %s%s%s (%s)", lockedTag, checkbox, styles.Dim.Render(short), sizeText)
 			if globalFileIdx == m.Cursor {
-				line = fmt.Sprintf("  > %s%s (%s)", lockedTag, styles.Highlight.Render(short), sizeText)
+				line = fmt.Sprintf("  > %s%s%s (%s)", lockedTag, checkbox, styles.Highlight.Render(short), sizeText)
 			}
 			lines = append(lines, line)
 			globalFileIdx++
@@ -589,7 +999,10 @@ func (m ReviewModel) View() string {
 		// which is always based on AllFiles counts (not VisibleCount).
 		globalFileIdx += len(cat.AllFiles) - shown
 
-		remaining := len(cat.AllFiles) - shown
+		// remaining counts only entries the active filter (if any) still
+		// matches -- a filtered-out entry beyond shown must never be
+		// advertised as reachable via "a: to show all".
+		remaining := matchCount - shown
 		if !m.ShowAll && remaining > 0 {
 			lines = append(lines, styles.More.Render(fmt.Sprintf("    + %d more files [a: to show all]", remaining)))
 		}
@@ -693,6 +1106,9 @@ func (m ReviewModel) View() string {
 	}
 
 	switch {
+	case m.FilterActive:
+		b.WriteString(styles.Help.Render("  type to filter  |  enter: apply  |  esc: clear filter"))
+
 	case m.Revalidating:
 		b.WriteString(styles.Help.Render("  Revalidating the plan against disk... please wait"))
 

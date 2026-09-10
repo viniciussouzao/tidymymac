@@ -118,6 +118,14 @@ type App struct {
 	// without the user reviewing it again.
 	reviewScanResults map[cleaner.Category]*cleaner.ScanResult
 
+	// reviewBreakdown is captured from a.reviewScr.Breakdown() at the same
+	// moment reviewScanResults is narrowed to the selected plan (see
+	// updateReview's Confirm case) -- before per-item selection state is
+	// lost to that filtering. Threaded into screens.NewSummary so the
+	// summary screen can show, per category, how many entries were
+	// protected or excluded by the user versus actually cleaned.
+	reviewBreakdown map[cleaner.Category]screens.ReviewBreakdown
+
 	registry       *cleaner.Registry
 	scanResults    map[cleaner.Category]*cleaner.ScanResult
 	spinner        spinner.Model
@@ -286,7 +294,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		if key.Matches(msg, keys.Quit) {
+		// The global Quit binding ("q"/ctrl+c) must not fire while the
+		// review screen's "/" filter is capturing keystrokes as text --
+		// otherwise typing a query that happens to contain "q" (a Docker
+		// tag, "Sequoia.dmg", ...) quits the whole app and discards the
+		// scan/review state mid-type. updateReview's own FilterActive
+		// intercept is what actually handles every key in that mode,
+		// ctrl+c included (falls through its switch as a no-op there).
+		filtering := a.currentScreen == screenReview && a.reviewScr.FilterActive
+		if !filtering && key.Matches(msg, keys.Quit) {
 			a.cancel() // cancel any ongoing scans or cleans
 			return a, tea.Quit
 		}
@@ -912,6 +928,27 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	if a.reviewScr.FilterActive {
+		// Every key while typing a filter query is text input, not a
+		// review-screen action: up/down/space/tab must not scroll, toggle
+		// selection, or switch category out from under the user mid-type.
+		switch msg.Type {
+		case tea.KeyRunes:
+			for _, r := range msg.Runes {
+				a.reviewScr.AppendFilterRune(r)
+			}
+		case tea.KeySpace:
+			a.reviewScr.AppendFilterRune(' ')
+		case tea.KeyBackspace:
+			a.reviewScr.BackspaceFilter()
+		case tea.KeyEnter:
+			a.reviewScr.CloseFilter(false)
+		case tea.KeyEsc:
+			a.reviewScr.CloseFilter(true)
+		}
+		return a, nil
+	}
+
 	switch {
 	case key.Matches(msg, keys.Confirm):
 		if a.reviewScr.TotalFiles == 0 {
@@ -947,10 +984,11 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// right before it reaches cleaning: a.reviewScanResults may be
 		// however long the user sat on the review screen out of date, and
 		// nothing before this point has ever re-verified it. Still
-		// deliberately a.reviewScanResults, not a fresh a.scanningScr.Results()
-		// call -- revalidation only ever narrows what was already approved,
-		// it never lets a background re-scan introduce something new. See
-		// revalidatePlan's own doc comment.
+		// deliberately derived from a.reviewScanResults (see `selected`
+		// below), not a fresh a.scanningScr.Results() call -- revalidation
+		// only ever narrows what was already approved, it never lets a
+		// background re-scan introduce something new. See revalidatePlan's
+		// own doc comment.
 		//
 		// Dispatched as a Cmd rather than called inline: it os.Stats every
 		// approved entry and, for Docker/Time Machine, shells out to their
@@ -958,6 +996,50 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// the event loop for however long that takes -- see revalidateCmd's
 		// own doc comment, which is the exact reasoning startElevation
 		// already documents for why directCleanCmd exists.
+		//
+		// Compile per-item selection into the plan right here, the one
+		// moment the user has actually committed to proceeding -- not on
+		// every keystroke while reviewing. reviewBreakdown is captured from
+		// the full (pre-filter) model first, since SelectedResults' own
+		// filtering is exactly what the breakdown needs to describe.
+		selected := a.reviewScr.SelectedResults(a.reviewScanResults)
+		var selectedFiles int
+		for _, r := range selected {
+			if r != nil {
+				selectedFiles += r.TotalFiles
+			}
+		}
+		if selectedFiles == 0 {
+			// Every entry across every category was deselected. Unlike a
+			// category merely losing some of its entries (dropped from the
+			// map by SelectedResults, the rest of the plan proceeds
+			// normally), a plan with nothing left in it would make
+			// revalidatePlan's own "nothing to revalidate" short-circuit
+			// return a non-material, empty delta -- bypassing
+			// handleRevalidateComplete's TotalFiles == 0 guard entirely and
+			// reaching screens.NewCleaningModel with zero categories, which
+			// never marks itself Done. Treat it the same as the
+			// already-empty guard at the top of this case instead: there is
+			// nothing to confirm, so do nothing (ConfirmState was already
+			// reset to ConfirmNone above).
+			return a, nil
+		}
+		a.reviewBreakdown = a.reviewScr.Breakdown()
+
+		// revalidateCmd is handed the filtered snapshot directly rather
+		// than through a.reviewScanResults -- which deliberately stays
+		// untouched until handleRevalidateComplete's own
+		// `a.reviewScanResults = msg.results` commits it. If the user backs
+		// out with esc while this is in flight (the a.revalidating guard at
+		// the top of this function), nothing here has mutated app state:
+		// a.reviewScanResults still matches exactly what a.reviewScr (never
+		// rebuilt on that path either) already shows. Committing the
+		// narrowed plan eagerly used to leave a.reviewScanResults missing
+		// an entry the user could still see checked and re-toggle back on
+		// in the (stale, reused) review screen after backing out --
+		// selecting it there again would silently do nothing, since
+		// SelectedResults can only narrow a.reviewScanResults, never
+		// reintroduce something already dropped from it.
 		//
 		// revalidateSeq is stamped into the dispatched message and compared
 		// back in handleRevalidateComplete; the a.revalidating guard at the
@@ -970,7 +1052,7 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.revalidateSeq++
 		ctx, cancel := context.WithCancel(a.ctx)
 		a.revalidateCancel = cancel
-		return a, revalidateCmd(ctx, a.revalidateSeq, a.registry, a.cfg, a.reviewScanResults)
+		return a, revalidateCmd(ctx, a.revalidateSeq, a.registry, a.cfg, selected)
 
 	case key.Matches(msg, keys.Back):
 		// a.revalidating is never true here: the top-of-function guard
@@ -1016,6 +1098,17 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.reviewScr.ToggleFullPath()
 	case key.Matches(msg, keys.NextList):
 		a.reviewScr.NextCategory()
+	case key.Matches(msg, keys.Select):
+		// A no-op behind any confirm dialog: the file list underneath isn't
+		// what's on screen, so toggling an item there would mutate state the
+		// user cannot see (same reasoning as the a.revalidating guard above).
+		if a.reviewScr.ConfirmState == screens.ConfirmNone {
+			a.reviewScr.ToggleSelected()
+		}
+	case key.Matches(msg, keys.Filter):
+		if a.reviewScr.ConfirmState == screens.ConfirmNone {
+			a.reviewScr.OpenFilter()
+		}
 	}
 
 	return a, nil
@@ -1151,7 +1244,7 @@ func (a App) updateCleaning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.cleaningScr.Done {
 		if key.Matches(msg, keys.Confirm) {
 			results := a.cleaningScr.Results()
-			a.summaryScr = screens.NewSummary(results, !a.executeMode)
+			a.summaryScr = screens.NewSummary(results, !a.executeMode, a.reviewBreakdown)
 			a.summaryScr.SetSize(a.width, a.height)
 			a.currentScreen = screenSummary
 			return a, nil

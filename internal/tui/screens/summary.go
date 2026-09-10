@@ -2,6 +2,7 @@ package screens
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -26,13 +27,23 @@ type SummaryModel struct {
 	// full per-item list (path: reason) already carried on CleanResult.Errors
 	// -- toggled by the user, never computed here.
 	ShowErrors bool
+
+	// Breakdown carries, per category, how many entries were Protected or
+	// excluded by the user on the review screen before this run's plan was
+	// even built -- see ReviewBreakdown and App.reviewBreakdown. A category
+	// with a zero-value (or absent) entry shows no suffix; the existing
+	// Skipped/SkipReason rendering (the sudo-skip "not selected" case)
+	// already covers the rest of the card's "separa itens limpos, excluídos
+	// pelo usuário, protegidos e não selecionados" requirement on its own.
+	Breakdown map[cleaner.Category]ReviewBreakdown
 }
 
 // NewSummary creates a summary from clean results.
-func NewSummary(results []*cleaner.CleanResult, dryRun bool) SummaryModel {
+func NewSummary(results []*cleaner.CleanResult, dryRun bool, breakdown map[cleaner.Category]ReviewBreakdown) SummaryModel {
 	m := SummaryModel{
-		Results: results,
-		DryRun:  dryRun,
+		Results:   results,
+		DryRun:    dryRun,
+		Breakdown: breakdown,
 	}
 
 	for _, r := range results {
@@ -122,6 +133,17 @@ func (m SummaryModel) View() string {
 		)
 		b.WriteString(styles.Plain.Render(line))
 
+		if bd, ok := m.Breakdown[r.Category]; ok && (bd.ExcludedByUser > 0 || bd.Protected > 0) {
+			var parts []string
+			if bd.ExcludedByUser > 0 {
+				parts = append(parts, fmt.Sprintf("%d excluded", bd.ExcludedByUser))
+			}
+			if bd.Protected > 0 {
+				parts = append(parts, fmt.Sprintf("%d protected", bd.Protected))
+			}
+			b.WriteString(styles.Dim.Render(" (" + strings.Join(parts, ", ") + ")"))
+		}
+
 		if len(r.Errors) > 0 && !m.ShowErrors {
 			if len(r.Errors) == 1 {
 				b.WriteString(styles.Error.Render(" (" + r.Errors[0].Error() + ")"))
@@ -137,6 +159,34 @@ func (m SummaryModel) View() string {
 				b.WriteString("\n")
 			}
 		}
+	}
+
+	// A category the user deselected down to zero entries never reaches
+	// Clean at all -- App.SelectedResults drops it from the plan before
+	// cleaning starts, so it has no CleanResult and would otherwise vanish
+	// from this screen entirely, silently. Breakdown still knows about it
+	// (captured before that filtering ran), so render it explicitly rather
+	// than let "I deselected everything in a category" look identical to
+	// "this category was never scanned".
+	rendered := make(map[cleaner.Category]bool, len(m.Results))
+	for _, r := range m.Results {
+		if r != nil {
+			rendered[r.Category] = true
+		}
+	}
+	var nothingSelected []cleaner.Category
+	for cat, bd := range m.Breakdown {
+		if rendered[cat] || bd.ExcludedByUser == 0 {
+			continue
+		}
+		nothingSelected = append(nothingSelected, cat)
+	}
+	sort.Slice(nothingSelected, func(i, j int) bool { return nothingSelected[i] < nothingSelected[j] })
+	for _, cat := range nothingSelected {
+		line := fmt.Sprintf("  %-22s %12s %10s", cat.DisplayName(), "—", "—")
+		b.WriteString(styles.Dim.Render(line))
+		b.WriteString(styles.Warning.Render(" (nothing selected)"))
+		b.WriteString("\n")
 	}
 
 	b.WriteString(styles.Dim.Render("  " + strings.Repeat("─", 46)))

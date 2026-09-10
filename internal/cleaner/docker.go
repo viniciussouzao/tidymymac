@@ -55,6 +55,10 @@ func (c *DockerCleaner) Description() string      { return "Unused Docker images
 func (c *DockerCleaner) RequiresSudo() bool       { return false }
 func (c *DockerCleaner) DeletesWholeDomain() bool { return false }
 
+// SupportsItemSelection implements cleaner.ItemSelectable: each entry is an
+// individually removable image, container, or volume.
+func (c *DockerCleaner) SupportsItemSelection() bool { return true }
+
 func (c *DockerCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	start := time.Now()
 	result := &ScanResult{Category: CategoryDocker}

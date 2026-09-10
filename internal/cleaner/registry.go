@@ -46,6 +46,19 @@ type EntryRevalidator interface {
 	RevalidateEntries(ctx context.Context, entries []FileEntry) (revalidated []FileEntry, missing int, typeChanged int, err error)
 }
 
+// ItemSelectable is an optional interface for a cleaner whose entries each
+// represent an individually removable resource, few enough in number that a
+// user can meaningfully decide, per item, to leave one out of just this
+// cleanup run (see the TUI review screen's per-item selection). A cleaner
+// that does not implement it (or returns false) keeps the aggregate,
+// category-level review -- the correct default for thousands-of-files
+// categories like Caches/Temp/Logs, where per-item review would add noise
+// without adding safety, and for any cleaner whose Clean cannot honor a
+// filtered subset at all (DeletesWholeDomain() == true).
+type ItemSelectable interface {
+	SupportsItemSelection() bool
+}
+
 // PrivilegeSplitter is an optional interface for a RequiresSudo cleaner whose
 // domain spans locations at different privilege levels. Not every entry a
 // RequiresSudo cleaner scans actually needs root to delete -- some of it may

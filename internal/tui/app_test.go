@@ -57,6 +57,13 @@ type plainMockCleaner struct{ wholeDomainMockCleaner }
 
 func (m *plainMockCleaner) DeletesWholeDomain() bool { return false }
 
+// selectableItemMockCleaner additionally opts into cleaner.ItemSelectable,
+// standing in for Downloads/Docker/iOS Backups/Time Machine in review-screen
+// per-item selection tests (see the "Melhorar tela de review" card).
+type selectableItemMockCleaner struct{ plainMockCleaner }
+
+func (m *selectableItemMockCleaner) SupportsItemSelection() bool { return true }
+
 // wholeDomainMockCleaner is a test double for a Cleaner that cannot honor a
 // filtered entry list (e.g. it shells out to a command that clears its
 // entire domain), used to verify startNextClean skips it when protected
@@ -411,6 +418,271 @@ func confirmAndRevalidate(t *testing.T, app App) (App, tea.Cmd) {
 	}
 	model, next := app.Update(msg)
 	return model.(App), next
+}
+
+// newSelectableTestApp builds a review screen for one Selectable category
+// (via selectableItemMockCleaner) with the given real-file entries, plus a
+// second, non-Selectable category with one entry of its own -- so a test
+// can assert the filtered plan touches only the Selectable category.
+func newSelectableTestApp(t *testing.T, entries []cleaner.FileEntry) App {
+	t.Helper()
+
+	const selCat = cleaner.Category("mock_selectable")
+	const otherCat = cleaner.Category("mock_other")
+	registry := cleaner.NewRegistry()
+	registry.Register(&selectableItemMockCleaner{plainMockCleaner{wholeDomainMockCleaner{category: selCat}}})
+	registry.Register(&wholeDomainMockCleaner{category: otherCat})
+
+	otherPath := writeRevalidatableFile(t, 64)
+
+	var totalSize int64
+	for i := range entries {
+		entries[i].Category = selCat
+		totalSize += entries[i].Size
+	}
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		selCat: {
+			Category:   selCat,
+			TotalFiles: len(entries),
+			TotalSize:  totalSize,
+			Entries:    entries,
+		},
+		otherCat: {
+			Category:   otherCat,
+			TotalFiles: 1,
+			TotalSize:  64,
+			Entries:    []cleaner.FileEntry{{Path: otherPath, Size: 64, Category: otherCat}},
+		},
+	}
+	scanning := screens.NewScanning([]string{string(selCat), string(otherCat)}, registry)
+	scanning.UpdateScanResult(selCat, results[selCat], nil)
+	scanning.UpdateScanResult(otherCat, results[otherCat], nil)
+
+	return App{
+		currentScreen:     screenReview,
+		executeMode:       true,
+		registry:          registry,
+		scanningScr:       scanning,
+		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
+		reviewScanResults: scanning.Results(),
+		ctx:               context.Background(),
+		cfg:               &config.Config{},
+	}
+}
+
+// selectableCategoryIndex returns the index of mock_selectable within
+// app.reviewScr.Categories.
+func selectableCategoryIndex(app App) int {
+	for i, c := range app.reviewScr.Categories {
+		if c.Category == cleaner.Category("mock_selectable") {
+			return i
+		}
+	}
+	return -1
+}
+
+// globalCursorIndex mirrors ReviewModel's own unexported globalFileIndexFor:
+// Cursor addresses a position in the flattened AllFiles sequence across
+// every category, and that indexing helper isn't exported for a test in
+// another package to call directly.
+func globalCursorIndex(m screens.ReviewModel, ci, fi int) int {
+	idx := 0
+	for j := 0; j < ci; j++ {
+		idx += len(m.Categories[j].AllFiles)
+	}
+	return idx + fi
+}
+
+func TestUpdateReview_ConfirmFiltersOutDeselectedEntry(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	excluded := writeFile(t, dir, "exclude", 128)
+
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: excluded, Size: 128},
+	})
+
+	ci := selectableCategoryIndex(app)
+	// The larger file (kept, 512) sorts first; deselect the second one.
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 1)
+	app.reviewScr.ToggleSelected()
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	app, _ = confirmAndRevalidate(t, app)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning", app.currentScreen)
+	}
+
+	var selCategory *screens.CleaningCategory
+	for i := range app.cleaningScr.Categories {
+		if app.cleaningScr.Categories[i].Category == cleaner.Category("mock_selectable") {
+			selCategory = &app.cleaningScr.Categories[i]
+		}
+	}
+	if selCategory == nil {
+		t.Fatal("mock_selectable category missing from the cleaning plan")
+	}
+	if len(selCategory.Entries) != 1 || selCategory.Entries[0].Path != kept {
+		t.Fatalf("cleaning plan entries = %+v, want only %q", selCategory.Entries, kept)
+	}
+
+	bd := app.reviewBreakdown[cleaner.Category("mock_selectable")]
+	if bd.ExcludedByUser != 1 {
+		t.Fatalf("reviewBreakdown ExcludedByUser = %d, want 1", bd.ExcludedByUser)
+	}
+}
+
+func TestUpdateReview_DeselectingWholeCategoryDropsItFromPlan(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "solo", 256)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{{Path: path, Size: 256}})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+	app.reviewScr.ToggleSelected()
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	app, _ = confirmAndRevalidate(t, app)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning (the other category still has entries)", app.currentScreen)
+	}
+	for _, c := range app.cleaningScr.Categories {
+		if c.Category == cleaner.Category("mock_selectable") {
+			t.Fatalf("mock_selectable should have been dropped from the plan entirely, got %+v", c)
+		}
+	}
+	if len(app.cleaningScr.Categories) != 1 {
+		t.Fatalf("cleaningScr.Categories = %+v, want only mock_other", app.cleaningScr.Categories)
+	}
+}
+
+// TestUpdateReview_QuitKeyIsTextInputWhileFiltering pins a BRANCH-REVIEW
+// follow-up finding: Update's top-level "q"/ctrl+c Quit binding used to be
+// matched before dispatching to updateReview at all, so it fired even while
+// the review screen's "/" filter was capturing keystrokes as text --
+// typing any query containing "q" (a Docker tag, "Sequoia.dmg", ...) would
+// cancel the context and quit the whole app mid-type, discarding the
+// scan/review state.
+func TestUpdateReview_QuitKeyIsTextInputWhileFiltering(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "solo", 256)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{{Path: path, Size: 256}})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+	app.reviewScr.OpenFilter()
+	if !app.reviewScr.FilterActive {
+		t.Fatal("test setup: OpenFilter() did not activate filtering")
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	app = model.(App)
+
+	if cmd != nil {
+		t.Fatal("pressing \"q\" while filtering must not dispatch tea.Quit")
+	}
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview (must not have quit)", app.currentScreen)
+	}
+	if !app.reviewScr.FilterActive {
+		t.Fatal("must still be in filter mode")
+	}
+	if app.reviewScr.FilterQuery != "q" {
+		t.Fatalf("FilterQuery = %q, want %q (the %q must be typed into the query, not treated as Quit)", app.reviewScr.FilterQuery, "q", "q")
+	}
+}
+
+// TestUpdateReview_EscDuringRevalidationLeavesScanResultsUnfiltered pins a
+// BRANCH-REVIEW follow-up finding: the Confirm case used to commit the
+// selection-filtered plan into a.reviewScanResults before dispatching
+// revalidateCmd. Backing out with esc while that dispatch was still in
+// flight left a.reviewScanResults permanently narrowed even though nothing
+// was ever actually confirmed -- re-entering review reused the same
+// a.reviewScr (reviewBuilt untouched), which still showed the deselected
+// entry as deselected and let the user toggle it back on, but
+// SelectedResults can only narrow a.reviewScanResults, never reintroduce an
+// entry already dropped from it, so re-selecting it there would silently do
+// nothing on a later confirm.
+func TestUpdateReview_EscDuringRevalidationLeavesScanResultsUnfiltered(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	excluded := writeFile(t, dir, "exclude", 128)
+
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: excluded, Size: 128},
+	})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 1)
+	app.reviewScr.ToggleSelected() // deselect "exclude"
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // dispatch revalidateCmd
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected the second enter to dispatch revalidateCmd")
+	}
+	if !app.revalidating {
+		t.Fatal("expected a.revalidating = true while the dispatched Cmd hasn't run yet")
+	}
+
+	// Back out before the in-flight revalidateCmd (never invoked here) has
+	// a chance to run.
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.revalidating {
+		t.Fatal("esc must clear a.revalidating")
+	}
+	if app.currentScreen != screenScanning {
+		t.Fatalf("currentScreen = %v, want screenScanning", app.currentScreen)
+	}
+
+	got := app.reviewScanResults[cleaner.Category("mock_selectable")]
+	if got == nil || got.TotalFiles != 2 {
+		t.Fatalf("reviewScanResults[mock_selectable] = %+v, want the original 2 entries -- backing out must not leave the plan narrowed", got)
+	}
+	var sawExcluded bool
+	for _, e := range got.Entries {
+		if e.Path == excluded {
+			sawExcluded = true
+		}
+	}
+	if !sawExcluded {
+		t.Fatal("the deselected-but-never-committed entry must still be present in reviewScanResults after backing out")
+	}
+}
+
+func TestUpdateReview_ConfirmWithNothingSelectedIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "a", 128)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{{Path: path, Size: 128}})
+	// Also empty out the non-Selectable category so the whole filtered plan
+	// is empty, not just the Selectable one.
+	app.reviewScanResults[cleaner.Category("mock_other")] = &cleaner.ScanResult{}
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+	app.reviewScr.ToggleSelected()
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmExecute -> attempted dispatch
+	app = model.(App)
+	if cmd != nil {
+		t.Fatal("expected no revalidateCmd dispatch when the filtered plan is entirely empty")
+	}
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview", app.currentScreen)
+	}
+	if app.revalidating {
+		t.Fatal("must not have entered the revalidating state")
+	}
 }
 
 // TestUpdateReview_RevalidationBlocksOnMissingFile is the core case the

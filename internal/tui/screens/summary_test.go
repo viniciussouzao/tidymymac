@@ -12,7 +12,7 @@ func TestNewSummaryShowsOneCelebrationForSuccessfulCleanup(t *testing.T) {
 	summary := NewSummary([]*cleaner.CleanResult{
 		{Category: cleaner.CategoryTemp, BytesFreed: 50 << 20, FilesDeleted: 2},
 		{Category: cleaner.CategoryDocker, BytesFreed: 2 << 30, FilesDeleted: 1},
-	}, false)
+	}, false, nil)
 
 	if summary.Celebration == "" {
 		t.Fatal("Celebration is empty after reclaiming space")
@@ -53,7 +53,7 @@ func TestNewSummaryOmitsCelebrationForDryRunZeroSpaceAndFailures(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			summary := NewSummary(tt.results, tt.dryRun)
+			summary := NewSummary(tt.results, tt.dryRun, nil)
 			if summary.Celebration != "" {
 				t.Errorf("Celebration = %q, want empty", summary.Celebration)
 			}
@@ -65,7 +65,7 @@ func TestNewSummaryCelebratesOnlySuccessfulCategoriesInPartialCleanup(t *testing
 	summary := NewSummary([]*cleaner.CleanResult{
 		{Category: cleaner.CategoryDocker, BytesFreed: 8 << 30, Errors: []error{errors.New("permission denied")}},
 		{Category: cleaner.CategoryLogs, BytesFreed: 200 << 20},
-	}, false)
+	}, false, nil)
 
 	if !strings.Contains(summary.Celebration, cleaner.CategoryLogs.DisplayName()) {
 		t.Errorf("Celebration = %q, want successful category %q", summary.Celebration, cleaner.CategoryLogs.DisplayName())
@@ -84,7 +84,7 @@ func TestSummaryShowErrorsExpandsPerItemDetail(t *testing.T) {
 				errors.New("/private/tmp/gone: no such file or directory"),
 			},
 		},
-	}, false)
+	}, false, nil)
 
 	collapsed := summary.View()
 	if !strings.Contains(collapsed, "(2 errors)") {
@@ -119,7 +119,7 @@ func TestSummaryShowErrorsExpandsPerItemDetail(t *testing.T) {
 func TestSummaryNoErrorsOmitsToggleHint(t *testing.T) {
 	summary := NewSummary([]*cleaner.CleanResult{
 		{Category: cleaner.CategoryTemp, BytesFreed: 10, FilesDeleted: 1},
-	}, false)
+	}, false, nil)
 
 	view := summary.View()
 	if strings.Contains(view, "show error details") || strings.Contains(view, "hide error details") {
@@ -131,12 +131,54 @@ func TestNewSummaryIgnoresNilResults(t *testing.T) {
 	summary := NewSummary([]*cleaner.CleanResult{
 		nil,
 		{Category: cleaner.CategoryLogs, BytesFreed: 200 << 20, FilesDeleted: 3},
-	}, false)
+	}, false, nil)
 
 	if summary.TotalFreed != 200<<20 || summary.TotalFiles != 3 {
 		t.Errorf("totals = %d bytes / %d files, want only the non-nil result", summary.TotalFreed, summary.TotalFiles)
 	}
 	if !strings.Contains(summary.Celebration, cleaner.CategoryLogs.DisplayName()) {
 		t.Errorf("Celebration = %q, want it to use the non-nil category", summary.Celebration)
+	}
+}
+
+func TestSummary_RendersExcludedAndProtectedBreakdown(t *testing.T) {
+	summary := NewSummary([]*cleaner.CleanResult{
+		{Category: cleaner.CategoryDownloads, BytesFreed: 10, FilesDeleted: 1},
+	}, false, map[cleaner.Category]ReviewBreakdown{
+		cleaner.CategoryDownloads: {ExcludedByUser: 2, Protected: 1},
+	})
+
+	view := summary.View()
+	if !strings.Contains(view, "(2 excluded, 1 protected)") {
+		t.Errorf("View() missing the excluded/protected breakdown:\n%s", view)
+	}
+}
+
+func TestSummary_OmitsBreakdownSuffixWhenZero(t *testing.T) {
+	summary := NewSummary([]*cleaner.CleanResult{
+		{Category: cleaner.CategoryDownloads, BytesFreed: 10, FilesDeleted: 1},
+	}, false, map[cleaner.Category]ReviewBreakdown{
+		cleaner.CategoryDownloads: {},
+	})
+
+	view := summary.View()
+	if strings.Contains(view, "excluded") || strings.Contains(view, "protected") {
+		t.Errorf("View() must not render a breakdown suffix when both counts are zero:\n%s", view)
+	}
+}
+
+func TestSummary_SkippedRenderingUnaffectedByBreakdown(t *testing.T) {
+	summary := NewSummary([]*cleaner.CleanResult{
+		{Category: cleaner.CategoryTimeMachineSnapshots, Skipped: true, SkipReason: "requires sudo; skipped"},
+	}, false, map[cleaner.Category]ReviewBreakdown{
+		cleaner.CategoryTimeMachineSnapshots: {ExcludedByUser: 1},
+	})
+
+	view := summary.View()
+	if !strings.Contains(view, "requires sudo; skipped") {
+		t.Errorf("View() missing the existing Skipped rendering:\n%s", view)
+	}
+	if strings.Contains(view, "excluded") {
+		t.Errorf("Skipped category must not also render the excluded breakdown suffix:\n%s", view)
 	}
 }

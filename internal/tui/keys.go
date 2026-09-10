@@ -16,6 +16,7 @@ type keyMap struct {
 	NextList       key.Binding
 	ToggleShowAll  key.Binding
 	ShowErrors     key.Binding
+	Filter         key.Binding
 }
 
 var keys = keyMap{
@@ -32,4 +33,5 @@ var keys = keyMap{
 	NextList:       key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next list")),
 	ToggleShowAll:  key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "show all")),
 	ShowErrors:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "show errors")),
+	Filter:         key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 }

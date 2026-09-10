@@ -35,6 +35,10 @@ func (c *IOSBackupsCleaner) RequiresSudo() bool { return false }
 
 func (c *IOSBackupsCleaner) DeletesWholeDomain() bool { return false }
 
+// SupportsItemSelection implements cleaner.ItemSelectable: each entry is an
+// individually removable backup.
+func (c *IOSBackupsCleaner) SupportsItemSelection() bool { return true }
+
 // Scan identifies top-level iOS backup directories, calculating each one's total size.
 // Each backup is represented as a single FileEntry with IsDir=true so that Clean
 // can remove the entire directory at once instead of individual files.

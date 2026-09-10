@@ -154,6 +154,7 @@ func TestRevalidationDelta_Material(t *testing.T) {
 		{"missing files", RevalidationDelta{MissingFiles: 1}, true},
 		{"type changed", RevalidationDelta{TypeChangedFiles: 1}, true},
 		{"newly protected", RevalidationDelta{NewlyProtected: 1}, true},
+		{"identity changed", RevalidationDelta{IdentityChanged: 1}, true},
 		{"size changed only", RevalidationDelta{SizeChanged: true}, false},
 	}
 	for _, tc := range cases {
@@ -181,6 +182,7 @@ func TestReviewModel_ViewRendersRevalidationDelta(t *testing.T) {
 	m.RevalidationDelta = &RevalidationDelta{
 		MissingFiles:     2,
 		TypeChangedFiles: 1,
+		IdentityChanged:  3,
 		TotalSize:        5,
 		TotalFiles:       1,
 	}
@@ -192,6 +194,9 @@ func TestReviewModel_ViewRendersRevalidationDelta(t *testing.T) {
 	if !strings.Contains(view, "1 item(s) changed type") {
 		t.Errorf("View() missing the type-changed line:\n%s", view)
 	}
+	if !strings.Contains(view, "3 item(s) changed on disk") {
+		t.Errorf("View() missing the identity-changed line:\n%s", view)
+	}
 	if !strings.Contains(view, "confirm updated plan") {
 		t.Errorf("View() missing the execute-mode re-confirm hint:\n%s", view)
 	}
@@ -200,5 +205,27 @@ func TestReviewModel_ViewRendersRevalidationDelta(t *testing.T) {
 	view = m.View()
 	if !strings.Contains(view, "nothing will be deleted") {
 		t.Errorf("View() missing the dry-run wording:\n%s", view)
+	}
+}
+
+// TestReviewModel_ViewRendersEmptiedPlanIdentityChanged pins NEW-3 from the
+// BRANCH-REVIEW.md follow-up: TotalFiles == 0's own delta summary (shown
+// when revalidation emptied the whole plan, as opposed to the
+// ConfirmRevalidated summary above for a plan that merely shrank) must also
+// render IdentityChanged -- it was the one delta field with no render
+// coverage in this package at all.
+func TestReviewModel_ViewRendersEmptiedPlanIdentityChanged(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewTempCleaner())
+
+	m := NewReview(map[cleaner.Category]*cleaner.ScanResult{}, true, registry, false)
+	m.RevalidationDelta = &RevalidationDelta{IdentityChanged: 1}
+
+	view := m.View()
+	if !strings.Contains(view, "now empty") {
+		t.Errorf("View() missing the emptied-plan message:\n%s", view)
+	}
+	if !strings.Contains(view, "1 item(s) changed on disk") {
+		t.Errorf("View() missing the identity-changed line:\n%s", view)
 	}
 }

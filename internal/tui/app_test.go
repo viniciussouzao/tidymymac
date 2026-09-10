@@ -790,6 +790,40 @@ func TestUpdateReview_EmptyAfterRevalidationResetsScanCache(t *testing.T) {
 	}
 }
 
+// TestUpdateReview_EmptyAfterRevalidationBackGoesToDashboard pins a
+// follow-up to the F5 fix: routing esc from an emptied-by-revalidation plan
+// through screenScanning would be a dead end even with the scan-cache reset
+// above -- a.scanningScr itself still holds the stale pre-revalidation
+// results (that reset only touches a.scanResults and a.reviewBuilt), and
+// its own Confirm handler only rebuilds the review when !reviewBuilt, so it
+// would hand back the exact plan revalidation just proved empty. esc must
+// go straight to the dashboard instead, matching the "esc: back to
+// dashboard" hint the empty-plan View() already shows, so re-selecting the
+// category actually triggers a re-scan.
+func TestUpdateReview_EmptyAfterRevalidationBackGoesToDashboard(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // the one entry vanished -> plan is empty
+	if app.reviewScr.TotalFiles != 0 {
+		t.Fatalf("reviewScr.TotalFiles = %d, want 0", app.reviewScr.TotalFiles)
+	}
+
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.currentScreen != screenDashboard {
+		t.Fatalf("currentScreen after esc from an emptied plan = %v, want screenDashboard", app.currentScreen)
+	}
+}
+
 // TestUpdateReview_RevalidationRebuildPreservesTerminalSize pins a display
 // fix: rebuilding reviewScr from the revalidated snapshot (see
 // handleRevalidateComplete) must carry over the terminal size the original

@@ -980,6 +980,21 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.reviewScr.ConfirmState = screens.ConfirmNone
 			return a, nil
 		}
+		if a.reviewScr.TotalFiles == 0 && a.reviewScr.RevalidationDelta != nil {
+			// Revalidation is what emptied this plan (see
+			// handleRevalidateComplete's TotalFiles == 0 branch, which
+			// already reset reviewBuilt and evicted these categories from
+			// a.scanResults). Routing through screenScanning here would be
+			// a dead end: a.scanningScr still holds the pre-revalidation
+			// results, untouched by that reset, so its own Confirm handler
+			// (which only rebuilds when !reviewBuilt) would hand back the
+			// exact stale plan revalidation just proved empty. Go straight
+			// to the dashboard instead, matching the "esc: back to
+			// dashboard" hint this state's own View() already shows, so
+			// re-selecting the category actually re-scans.
+			a.currentScreen = screenDashboard
+			return a, nil
+		}
 		a.currentScreen = screenScanning
 		return a, nil
 

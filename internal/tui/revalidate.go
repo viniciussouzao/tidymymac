@@ -269,8 +269,20 @@ func prepareRevalidationInput(results map[cleaner.Category]*cleaner.ScanResult) 
 // revalidatePlan's own doc comment), and this is the second, independent
 // guard against a misbehaving one inventing a path the user never reviewed.
 //
+// A Protected entry is exempt from the identity-mismatch drop: it is never
+// actually deleted (config.StripProtected removes it from the plan right
+// before Clean is called), and it exists here purely as the signal a
+// whole-domain cleaner's skip check depends on -- see
+// config.CountProtected's callers and DeletesWholeDomain. Dropping it for an
+// identity change it will never act on would remove that signal, letting
+// the skip fail to fire while the protected file is still on disk (e.g. a
+// protected_paths entry inside Trash/Homebrew/Development Artifacts whose
+// inode happens to change between scan and confirm) -- the opposite of what
+// this revalidation pass exists to guard against.
+//
 // Returns the filtered entries and how many were dropped for an identity
-// mismatch (as opposed to for not being in originalByKey at all).
+// mismatch (as opposed to for not being in originalByKey at all, or being
+// exempt as Protected).
 func attachFreshIdentity(entries []cleaner.FileEntry, category cleaner.Category, originalByKey map[entryKey]cleaner.FileEntry, skipIdentity bool) ([]cleaner.FileEntry, int) {
 	out := make([]cleaner.FileEntry, 0, len(entries))
 	var changed int
@@ -284,7 +296,7 @@ func attachFreshIdentity(entries []cleaner.FileEntry, category cleaner.Category,
 			continue
 		}
 		e.Dev, e.Ino = orig.Dev, orig.Ino
-		if orig.Ino != 0 {
+		if !e.Protected && orig.Ino != 0 {
 			if info, err := os.Lstat(e.Path); err == nil {
 				if dev, ino, ok := fileIdentity(info); ok && (dev != orig.Dev || ino != orig.Ino) {
 					changed++

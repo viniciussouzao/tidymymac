@@ -465,6 +465,73 @@ func TestRevalidatePlan_DropsEntryWithChangedIdentity(t *testing.T) {
 	}
 }
 
+// TestRevalidatePlan_ProtectedEntrySurvivesIdentityChange pins a follow-up
+// security fix on top of F1 (found reviewing F1 itself): a Protected entry
+// exists in the plan purely as the signal a whole-domain cleaner's skip
+// check (config.CountProtected, checked against DeletesWholeDomain before
+// Clean runs) depends on -- config.StripProtected removes it from the plan
+// separately, right before deletion, so it is never actually acted on here.
+// Dropping it for an identity mismatch, the same as an ordinary entry, would
+// destroy that signal: a protected_paths entry inside e.g. Trash whose inode
+// happens to change between scan and confirm (a new file dragged in under
+// the same name, an app rewriting it) would vanish from the plan, and the
+// whole-domain skip would then fail to fire over the *rest* of that
+// category -- silently deleting something protected_paths was configured to
+// keep, which is exactly the outcome F1's own fix exists to prevent for
+// ordinary entries.
+func TestRevalidatePlan_ProtectedEntrySurvivesIdentityChange(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "keepme.log", 10)
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("Lstat fixture: %v", err)
+	}
+	scanDev, scanIno, ok := fileIdentity(info)
+	if !ok {
+		t.Skip("platform does not expose Dev/Ino via syscall.Stat_t")
+	}
+
+	// Replace the file at the same path -- a new inode, exactly the
+	// TestRevalidatePlan_DropsEntryWithChangedIdentity scenario, but this
+	// entry is protected.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing fixture for replacement: %v", err)
+	}
+	writeFile(t, dir, "keepme.log", 20)
+
+	registry := cleaner.NewRegistry()
+	registry.Register(&wholeDomainMockCleaner{category: cleaner.CategoryTemp})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cleaner.CategoryTemp: {
+			Category:   cleaner.CategoryTemp,
+			TotalFiles: 1,
+			TotalSize:  10,
+			Entries: []cleaner.FileEntry{
+				{Path: path, Size: 10, Category: cleaner.CategoryTemp, Dev: scanDev, Ino: scanIno},
+			},
+		},
+	}
+
+	cfg, err := config.New([]string{dir}, nil) // protects everything under dir
+	if err != nil {
+		t.Fatalf("config.New: %v", err)
+	}
+
+	revalidated, delta, _, err := revalidatePlan(context.Background(), registry, cfg, results)
+	if err != nil {
+		t.Fatalf("revalidatePlan() error = %v", err)
+	}
+	entries := revalidated[cleaner.CategoryTemp].Entries
+	if len(entries) != 1 || !entries[0].Protected {
+		t.Fatalf("revalidated entries = %+v, want one Protected entry preserved despite the identity change", entries)
+	}
+	if delta.IdentityChanged != 0 {
+		t.Errorf("delta.IdentityChanged = %d, want 0 (a protected entry's identity change must not be counted or dropped)", delta.IdentityChanged)
+	}
+}
+
 // TestRevalidatePlan_EntryRevalidatorSkipsIdentityLstat pins F6: a category
 // whose cleaner implements cleaner.EntryRevalidator (Docker, Time Machine)
 // has entries that are not filesystem paths at all, so attachFreshIdentity

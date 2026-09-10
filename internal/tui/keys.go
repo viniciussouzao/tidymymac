@@ -3,20 +3,21 @@ package tui
 import "github.com/charmbracelet/bubbles/key"
 
 type keyMap struct {
-	Up             key.Binding
-	Down           key.Binding
-	Select         key.Binding
-	Confirm        key.Binding
-	Back           key.Binding
-	Quit           key.Binding
-	SelectAll      key.Binding
-	ReRun          key.Binding
-	GenerateScript key.Binding
-	FullPath       key.Binding
-	NextList       key.Binding
-	ToggleShowAll  key.Binding
-	ShowErrors     key.Binding
-	Filter         key.Binding
+	Up                key.Binding
+	Down              key.Binding
+	Select            key.Binding
+	Confirm           key.Binding
+	Back              key.Binding
+	Quit              key.Binding
+	SelectAll         key.Binding
+	ReRun             key.Binding
+	GenerateScript    key.Binding
+	FullPath          key.Binding
+	NextList          key.Binding
+	ToggleShowAll     key.Binding
+	ShowErrors        key.Binding
+	Filter            key.Binding
+	ToggleAllSelected key.Binding
 }
 
 var keys = keyMap{
@@ -34,4 +35,9 @@ var keys = keyMap{
 	ToggleShowAll:  key.NewBinding(key.WithKeys("v"), key.WithHelp("v", "show all")),
 	ShowErrors:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "show errors")),
 	Filter:         key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+	// "A" (shift+a), not "a": lowercase is already SelectAll/ToggleShowAll
+	// above. Mirrors the master "select all" checkbox convention -- one key
+	// that flips between fully selected and fully deselected, rather than
+	// two separate bindings to remember.
+	ToggleAllSelected: key.NewBinding(key.WithKeys("A"), key.WithHelp("A", "select/deselect all")),
 }

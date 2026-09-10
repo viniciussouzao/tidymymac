@@ -1115,6 +1115,10 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.reviewScr.ConfirmState == screens.ConfirmNone {
 			a.reviewScr.OpenFilter()
 		}
+	case key.Matches(msg, keys.ToggleAllSelected):
+		if a.reviewScr.ConfirmState == screens.ConfirmNone {
+			a.reviewScr.ToggleSelectAll()
+		}
 	}
 
 	return a, nil

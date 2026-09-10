@@ -383,6 +383,94 @@ func TestToggleSelected_NoopOnProtectedEntry(t *testing.T) {
 	}
 }
 
+func TestToggleSelectAll_TogglesBetweenAllAndNoneSelected(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	// Every non-Protected entry starts Selected (movie.mp4, installer.dmg);
+	// locked.zip is Protected and must never be touched by either call.
+	m.ToggleSelectAll()
+	for _, f := range m.Categories[ci].AllFiles {
+		if f.Protected {
+			continue
+		}
+		if f.Selected {
+			t.Errorf("ToggleSelectAll() (1st call) left %q Selected, want all deselected", f.Path)
+		}
+	}
+
+	m.ToggleSelectAll()
+	for _, f := range m.Categories[ci].AllFiles {
+		if f.Protected {
+			continue
+		}
+		if !f.Selected {
+			t.Errorf("ToggleSelectAll() (2nd call) left %q deselected, want all re-selected", f.Path)
+		}
+	}
+
+	var lockedSelected bool
+	for _, f := range m.Categories[ci].AllFiles {
+		if f.Protected {
+			lockedSelected = f.Selected
+		}
+	}
+	if !lockedSelected {
+		t.Error("ToggleSelectAll() must never change a Protected entry's Selected field")
+	}
+}
+
+func TestToggleSelectAll_NoopOnNonSelectableCategory(t *testing.T) {
+	m := downloadsReview(t)
+	var tempIdx int
+	for i, c := range m.Categories {
+		if c.Category == cleaner.CategoryTemp {
+			tempIdx = i
+		}
+	}
+	m.Cursor = m.globalFileIndexFor(tempIdx, 0)
+
+	m.ToggleSelectAll()
+	if !m.Categories[tempIdx].AllFiles[0].Selected {
+		t.Error("ToggleSelectAll() must be a no-op on a non-Selectable category")
+	}
+}
+
+// TestToggleSelectAll_ScopedToVisibleFilterMatches mirrors ToggleSelected's
+// own filter-scoping guard: "select/deselect all" must only act on what the
+// active "/" filter currently shows, the same way a single space-toggle
+// already does -- otherwise it would silently sweep up rows the user
+// can't see.
+func TestToggleSelectAll_ScopedToVisibleFilterMatches(t *testing.T) {
+	m := downloadsReview(t)
+	ci := downloadsCategoryIndex(m)
+	m.Cursor = m.globalFileIndexFor(ci, 0)
+
+	m.OpenFilter()
+	for _, r := range "installer" {
+		m.AppendFilterRune(r)
+	}
+	if got := m.categoryMatchCount(ci); got != 1 {
+		t.Fatalf("test setup: categoryMatchCount() = %d, want 1", got)
+	}
+
+	m.ToggleSelectAll()
+
+	for _, f := range m.Categories[ci].AllFiles {
+		switch f.Path {
+		case "/Users/vini/Downloads/installer.dmg":
+			if f.Selected {
+				t.Error("the filtered-in entry should have been deselected")
+			}
+		case "/Users/vini/Downloads/movie.mp4":
+			if !f.Selected {
+				t.Error("a filtered-out entry must be untouched by ToggleSelectAll()")
+			}
+		}
+	}
+}
+
 func TestActionableTotals_ExcludesDeselectedEntries(t *testing.T) {
 	m := downloadsReview(t)
 	ci := downloadsCategoryIndex(m)
@@ -439,6 +527,34 @@ func TestReviewModel_ViewRendersSelectionHeaderAndCheckboxes(t *testing.T) {
 	}
 	if !strings.Contains(view, "Temp (") && strings.Contains(view, "1/1 selected") {
 		t.Errorf("Temp (non-Selectable) must keep the plain header format:\n%s", view)
+	}
+}
+
+// TestReviewModel_ViewRendersSelectionHintsOnlyOnSelectableCategory pins the
+// help-line fix that came with ToggleSelectAll: the review screen used to
+// never advertise "/" (or space/A) as a review-screen action anywhere in
+// its own help text. The hint should appear while the cursor is on a
+// Selectable category and disappear once it moves to an aggregate one.
+func TestReviewModel_ViewRendersSelectionHintsOnlyOnSelectableCategory(t *testing.T) {
+	m := downloadsReview(t)
+	downloadsIdx := downloadsCategoryIndex(m)
+	var tempIdx int
+	for i, c := range m.Categories {
+		if c.Category == cleaner.CategoryTemp {
+			tempIdx = i
+		}
+	}
+
+	m.Cursor = m.globalFileIndexFor(downloadsIdx, 0)
+	view := m.View()
+	if !strings.Contains(view, "space: toggle") || !strings.Contains(view, "A: select/deselect all") || !strings.Contains(view, "/: filter") {
+		t.Errorf("View() missing the selection hints while on a Selectable category:\n%s", view)
+	}
+
+	m.Cursor = m.globalFileIndexFor(tempIdx, 0)
+	view = m.View()
+	if strings.Contains(view, "select/deselect all") {
+		t.Errorf("View() must not advertise selection hints on a non-Selectable category:\n%s", view)
 	}
 }
 

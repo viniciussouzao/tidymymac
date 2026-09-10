@@ -494,6 +494,45 @@ func globalCursorIndex(m screens.ReviewModel, ci, fi int) int {
 	return idx + fi
 }
 
+// TestUpdateReview_ToggleAllSelectedKeyIsWired confirms keys.ToggleAllSelected
+// ("A") reaches screens.ReviewModel.ToggleSelectAll from the review screen,
+// and is ignored behind a confirm dialog the same way keys.Select and
+// keys.Filter already are.
+func TestUpdateReview_ToggleAllSelectedKeyIsWired(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	other := writeFile(t, dir, "other", 128)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: other, Size: 128},
+	})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	app = model.(App)
+	for _, f := range app.reviewScr.Categories[ci].AllFiles {
+		if f.Selected {
+			t.Errorf("expected every entry deselected after \"A\", %q is still Selected", f.Path)
+		}
+	}
+
+	// Behind a confirm dialog it must be inert, mirroring keys.Select.
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	if app.reviewScr.ConfirmState != screens.ConfirmExecute {
+		t.Fatalf("test setup: ConfirmState = %v, want ConfirmExecute", app.reviewScr.ConfirmState)
+	}
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	app = model.(App)
+	for _, f := range app.reviewScr.Categories[ci].AllFiles {
+		if f.Selected {
+			t.Errorf("\"A\" behind a confirm dialog must stay a no-op, but %q became Selected", f.Path)
+		}
+	}
+}
+
 func TestUpdateReview_ConfirmFiltersOutDeselectedEntry(t *testing.T) {
 	dir := t.TempDir()
 	kept := writeFile(t, dir, "keep", 512)

@@ -585,6 +585,53 @@ func (m *ReviewModel) ToggleSelected() {
 	f.Selected = !f.Selected
 }
 
+// ToggleSelectAll flips every eligible entry of the Selectable category
+// under the cursor between fully selected and fully deselected -- the
+// master "select all" checkbox convention: if everything eligible is
+// already selected, this deselects all of it; otherwise it selects
+// everything eligible. A no-op on a non-Selectable category.
+//
+// "Eligible" mirrors ToggleSelected's own two guards: a Protected entry is
+// never touched (it can't be toggled individually either, and is never
+// actually part of what gets cleaned regardless of Selected), and only
+// entries within VisibleCount[ci] are considered -- scoped to the active
+// "/" filter exactly the way a single ToggleSelected already is, so this
+// never silently sweeps up a row the user can't currently see.
+func (m *ReviewModel) ToggleSelectAll() {
+	ci, _ := m.cursorCatFile()
+	if ci < 0 || ci >= len(m.Categories) || !m.Categories[ci].Selectable {
+		return
+	}
+	cat := &m.Categories[ci]
+	shown := 0
+	if ci < len(m.VisibleCount) {
+		shown = m.VisibleCount[ci]
+	}
+	if shown > len(cat.AllFiles) {
+		shown = len(cat.AllFiles)
+	}
+
+	allSelected := true
+	for i := 0; i < shown; i++ {
+		f := cat.AllFiles[i]
+		if f.Protected {
+			continue
+		}
+		if !f.Selected {
+			allSelected = false
+			break
+		}
+	}
+
+	target := !allSelected
+	for i := 0; i < shown; i++ {
+		if cat.AllFiles[i].Protected {
+			continue
+		}
+		cat.AllFiles[i].Selected = target
+	}
+}
+
 // OpenFilter begins editing a text filter scoped to the Selectable category
 // currently under the cursor. Reopening on the same category resumes
 // editing whatever query already narrows it; opening on a different
@@ -1116,6 +1163,14 @@ func (m ReviewModel) View() string {
 
 	// Position indicator: show current category and visible/total file count.
 	curCi, _ := m.cursorCatFile()
+	// Per-item selection only exists for a Selectable category, so its
+	// keys (space, "/", "A") are only worth advertising while the cursor
+	// is actually on one -- an aggregate category has nothing for them to
+	// act on.
+	var selectionHintTxt string
+	if curCi >= 0 && curCi < len(m.Categories) && m.Categories[curCi].Selectable {
+		selectionHintTxt = "space: toggle  |  A: select/deselect all  |  /: filter"
+	}
 	if curCi >= 0 && curCi < len(m.Categories) {
 		curCat := m.Categories[curCi]
 		curShown := 0
@@ -1217,18 +1272,26 @@ func (m ReviewModel) View() string {
 			b.WriteString(styles.Help.Render("  enter: continue (dry run, nothing will be deleted)  |  esc: back to review"))
 		}
 
-	case m.ExecuteMode:
-		if switchListHintTxt != "" {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
-		} else {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: DELETE files |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt)))
-		}
 	default:
-		if switchListHintTxt != "" {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt, switchListHintTxt)))
-		} else {
-			b.WriteString(styles.Help.Render(fmt.Sprintf("  enter: SIMULATE (dry run) |  %s  |  %s  | esc: back to dashboard | j/k: scroll", showAllHintTxt, fullHintTxt)))
+		// Built as parts joined by " | " rather than a hand-formatted
+		// string per combination: selectionHintTxt and switchListHintTxt
+		// are each independently present or absent, and formatting every
+		// combination out (as this used to, for just switchListHintTxt)
+		// doubles for each new conditional segment added.
+		confirmHint := "enter: SIMULATE (dry run)"
+		if m.ExecuteMode {
+			confirmHint = "enter: DELETE files"
 		}
+		parts := []string{confirmHint}
+		if selectionHintTxt != "" {
+			parts = append(parts, selectionHintTxt)
+		}
+		parts = append(parts, showAllHintTxt, fullHintTxt)
+		if switchListHintTxt != "" {
+			parts = append(parts, switchListHintTxt)
+		}
+		parts = append(parts, "esc: back to dashboard", "j/k: scroll")
+		b.WriteString(styles.Help.Render("  " + strings.Join(parts, "  |  ")))
 	}
 
 	return b.String()

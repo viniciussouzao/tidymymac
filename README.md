@@ -12,6 +12,7 @@
 ## Features
 
 - Interactive TUI to browse and select what to clean
+- Per-item selection in the review screen — deselect a single Download, Docker image/container/volume, iOS backup, or Time Machine snapshot for just that run, plus a `/` filter and select/deselect-all
 - Dry-run by default — nothing is deleted without your explicit confirmation
 - Protected paths that no cleaner can ever touch, whatever flags you pass
 - Modular cleaners for different categories of junk

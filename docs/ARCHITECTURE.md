@@ -12,6 +12,7 @@ This document describes the internal architecture of TidyMyMac: how the packages
 - [Directory Structure](#directory-structure)
 - [Core Abstractions](#core-abstractions)
   - [The Cleaner Interface](#the-cleaner-interface)
+  - [Optional Interfaces](#optional-interfaces)
   - [The Registry](#the-registry)
   - [Results and Progress Types](#results-and-progress-types)
 - [Package Breakdown](#package-breakdown)
@@ -30,6 +31,7 @@ This document describes the internal architecture of TidyMyMac: how the packages
 - [TUI Flow](#tui-flow)
   - [Screen State Machine](#screen-state-machine)
   - [Scan Lifecycle](#scan-lifecycle)
+  - [Review Screen: Per-Item Selection](#review-screen-per-item-selection)
   - [Clean Lifecycle](#clean-lifecycle)
 - [Data Flow Diagram](#data-flow-diagram)
 - [Concurrency Model](#concurrency-model)
@@ -209,6 +211,16 @@ type PrivilegeSplitter interface {
 ```
 
 It lets a cleaner whose domain spans locations at different privilege levels — Temp's `/tmp`/`/var/tmp` versus the user's own `$TMPDIR` — have only the entries that genuinely need root sent to the elevated helper, with the rest cleaned directly by the unprivileged process. See [Privilege split](#privilege-split-not-everything-a-sudo-category-scans-needs-root) for the full mechanism and the two invariants an implementation must uphold. A cleaner that does not implement it keeps `RequiresSudo()`'s all-or-nothing behavior.
+
+`ItemSelectable` (also in `registry.go`) is an **optional** interface a cleaner may additionally implement:
+
+```go
+type ItemSelectable interface {
+    SupportsItemSelection() bool
+}
+```
+
+It opts a category into the TUI review screen's per-item selection (see [Review Screen: Per-Item Selection](#review-screen-per-item-selection)) — checkboxes, a `/` filter, and select/deselect-all, scoped to that one category. Today `DownloadsCleaner`, `DockerCleaner`, `IOSBackupsCleaner`, and `TimeMachineCleaner` implement it; every other category keeps the aggregate, category-level review. It is deliberately for categories whose entries are individually meaningful and few — a Caches or Temp category with thousands of files would turn per-item review into noise without adding safety, and `NewReview` additionally refuses the flag outright for any cleaner that also reports `DeletesWholeDomain()`, since such a cleaner ignores whatever entry list it's given and clears its entire domain regardless — per-item selection on one would be a lie.
 
 ### The Registry
 
@@ -481,6 +493,24 @@ sequenceDiagram
 ```
 
 If the user navigates to the Scanning screen and a result is already cached from the background scan, it's reused immediately — no duplicate work.
+
+### Review Screen: Per-Item Selection
+
+For a category whose cleaner implements `ItemSelectable` (Downloads, Docker, iOS Backups, Time Machine — see [Optional Interfaces](#optional-interfaces)), the review screen (`internal/tui/screens/review.go`) offers per-item controls the aggregate, category-level review does not:
+
+| Key | Action |
+|---|---|
+| `space` / `x` | Toggle the entry under the cursor between selected and excluded for this run |
+| `A` | Select/deselect-all — the master-checkbox convention, scoped to whatever the active filter currently shows |
+| `/` | Open a text filter scoped to the category under the cursor; matches path and friendly display name, case-insensitively |
+| `esc` (while filtering) | Clear the filter query and un-narrow the category |
+| `enter` (while filtering) | Keep the filter query applied, close the filter overlay |
+
+Deselecting an entry does not touch `protected_paths` — it excludes the file from *this* run only, and it stays visible on screen (unchecked), not hidden. Permanent protection remains a separate, deliberate action via `tidymymac protect`. A `Protected` entry can never be toggled (it renders `LOCKED` instead of a checkbox) and is never counted as selected.
+
+Selection state lives on the `ReviewModel` (`fileSummary.Selected`), not on the underlying `cleaner.FileEntry` — nothing is filtered out of `App.reviewScanResults` until the user actually confirms. At that point, `ReviewModel.SelectedResults` builds a filtered copy: for each `ItemSelectable` category, only `Selected` (or `Protected`) entries survive; every other category passes through unchanged. A category emptied entirely by deselection is dropped from the plan the same way an empty scan result already is. `Protected` entries are always kept in this filtered copy regardless of `Selected` — they are never actually cleaned (`config.StripProtected` still removes them immediately before `Clean`), but a whole-domain cleaner's protected-path skip check (`config.CountProtected` against `DeletesWholeDomain()`) depends on seeing them to fire correctly.
+
+Everything downstream — `revalidatePlan`, `screens.NewCleaningModel` — already consumes `App.reviewScanResults` as its input, so filtering it once at confirm time is enough to keep a deselected entry out of both revalidation and cleaning with no further plumbing. `ReviewModel.Breakdown()` captures, per category, how many entries were `Protected` versus excluded by the user at that same moment; `App.reviewBreakdown` threads it into the summary screen, which renders it as a compact `(N excluded, M protected)` suffix — merged additively across confirm/revalidate rounds (see `mergeReviewBreakdown`) so a round that rebuilds the review screen from a narrower, already-filtered snapshot doesn't silently lose an earlier round's exclusion count.
 
 ### Clean Lifecycle
 

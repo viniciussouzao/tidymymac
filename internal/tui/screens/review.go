@@ -999,7 +999,7 @@ func (m ReviewModel) View() string {
 		// so a control character can't inject rows or escape sequences into
 		// the screen -- FilterQuery is typed by the same user but must not
 		// be an exception just because it never touches disk.
-		b.WriteString(fmt.Sprintf("  filter (%s): %s_\n", filterCat, utils.SanitizeForTerminal(m.FilterQuery)))
+		fmt.Fprintf(&b, "  filter (%s): %s_\n", filterCat, utils.SanitizeForTerminal(m.FilterQuery))
 		b.WriteString(styles.Help.Render("  type to filter  |  enter: apply  |  esc: clear"))
 		b.WriteString("\n\n")
 	}

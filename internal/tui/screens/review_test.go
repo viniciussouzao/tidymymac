@@ -14,7 +14,7 @@ import (
 // of the four real cleaners that implement ItemSelectable today do.
 type wholeDomainSelectableMockCleaner struct{}
 
-func (wholeDomainSelectableMockCleaner) Category() cleaner.Category { return "mock_whole_selectable" }
+func (wholeDomainSelectableMockCleaner) Category() cleaner.Category  { return "mock_whole_selectable" }
 func (wholeDomainSelectableMockCleaner) Name() string                { return "mock" }
 func (wholeDomainSelectableMockCleaner) Description() string         { return "mock" }
 func (wholeDomainSelectableMockCleaner) RequiresSudo() bool          { return false }

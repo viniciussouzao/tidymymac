@@ -172,3 +172,27 @@ func TestPrivilegeSplittersAreSudoAndNotWholeDomain(t *testing.T) {
 		}
 	}
 }
+
+// TestItemSelectableCleaners pins which cleaners opt into the review
+// screen's per-item selection (see the "Melhorar tela de review" card) and
+// guards the interface's own invariant: a whole-domain cleaner cannot honor
+// a filtered entry list, so it must never also claim per-item selection.
+func TestItemSelectableCleaners(t *testing.T) {
+	want := map[Category]bool{
+		CategoryDownloads:            true,
+		CategoryDocker:               true,
+		CategoryIOSBackups:           true,
+		CategoryTimeMachineSnapshots: true,
+	}
+
+	for _, c := range DefaultRegistry().All() {
+		selectable, ok := c.(ItemSelectable)
+		gotSupports := ok && selectable.SupportsItemSelection()
+		if gotSupports != want[c.Category()] {
+			t.Errorf("cleaner %q: SupportsItemSelection() = %v, want %v", c.Category(), gotSupports, want[c.Category()])
+		}
+		if gotSupports && c.DeletesWholeDomain() {
+			t.Errorf("cleaner %q supports item selection but also DeletesWholeDomain; it cannot honor a filtered entry list", c.Category())
+		}
+	}
+}

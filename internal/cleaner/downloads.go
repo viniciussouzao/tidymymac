@@ -37,6 +37,10 @@ func (c *DownloadsCleaner) RequiresSudo() bool { return false }
 
 func (c *DownloadsCleaner) DeletesWholeDomain() bool { return false }
 
+// SupportsItemSelection implements cleaner.ItemSelectable: each entry is an
+// individually removable file, few enough for per-item review.
+func (c *DownloadsCleaner) SupportsItemSelection() bool { return true }
+
 func (c *DownloadsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if c.homeDir == "" {
 		return &ScanResult{Category: CategoryDownloads}, nil

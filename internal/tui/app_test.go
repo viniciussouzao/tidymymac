@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -33,11 +34,35 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// writeRevalidatableFile creates a real file of the given size under a fresh
+// t.TempDir(), for tests that drive updateReview through a full enter
+// sequence: revalidatePlan now os.Stats every entry before cleaning starts,
+// so a fixture path that doesn't exist on disk (the previous convention in
+// this file, e.g. "/private/var/tmp/foo") is reported missing and the test
+// never reaches screenCleaning -- these tests are about the confirmation
+// state machine, not revalidation itself (see revalidate_test.go for that),
+// so they need a path revalidation actually finds unchanged.
+func writeRevalidatableFile(t *testing.T, size int64) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "foo")
+	if err := os.WriteFile(path, make([]byte, size), 0o644); err != nil {
+		t.Fatalf("writing fixture file: %v", err)
+	}
+	return path
+}
+
 // plainMockCleaner is an ordinary non-sudo cleaner that honors a filtered
 // entry list, for runs that mix an elevated category with a normal one.
 type plainMockCleaner struct{ wholeDomainMockCleaner }
 
 func (m *plainMockCleaner) DeletesWholeDomain() bool { return false }
+
+// selectableItemMockCleaner additionally opts into cleaner.ItemSelectable,
+// standing in for Downloads/Docker/iOS Backups/Time Machine in review-screen
+// per-item selection tests (see the "Melhorar tela de review" card).
+type selectableItemMockCleaner struct{ plainMockCleaner }
+
+func (m *selectableItemMockCleaner) SupportsItemSelection() bool { return true }
 
 // wholeDomainMockCleaner is a test double for a Cleaner that cannot honor a
 // filtered entry list (e.g. it shells out to a command that clears its
@@ -108,7 +133,7 @@ func TestUpdateReviewRequiresSudoAndExecuteConfirmationsInSequence(t *testing.T)
 		TotalFiles: 1,
 		TotalSize:  1024,
 		Entries: []cleaner.FileEntry{
-			{Path: "/private/var/tmp/foo", Size: 1024, Category: cleaner.CategoryTemp},
+			{Path: writeRevalidatableFile(t, 1024), Size: 1024, Category: cleaner.CategoryTemp},
 		},
 	}
 
@@ -123,6 +148,8 @@ func TestUpdateReviewRequiresSudoAndExecuteConfirmationsInSequence(t *testing.T)
 		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
 		reviewScanResults: scanning.Results(),
 		isElevated:        false,
+		cfg:               &config.Config{},
+		ctx:               context.Background(),
 	}
 
 	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter})
@@ -143,8 +170,7 @@ func TestUpdateReviewRequiresSudoAndExecuteConfirmationsInSequence(t *testing.T)
 		t.Fatalf("second enter currentScreen = %v, want screenReview", app.currentScreen)
 	}
 
-	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEnter})
-	app = model.(App)
+	app, _ = confirmAndRevalidate(t, app)
 	if app.reviewScr.ConfirmState != screens.ConfirmNone {
 		t.Fatalf("third enter ConfirmState = %v, want %v", app.reviewScr.ConfirmState, screens.ConfirmNone)
 	}
@@ -214,7 +240,7 @@ func TestUpdateReview_DefaultChoiceNeverTriggersElevation(t *testing.T) {
 		Category:   cleaner.CategoryTemp,
 		TotalFiles: 1,
 		TotalSize:  1024,
-		Entries:    []cleaner.FileEntry{{Path: "/private/var/tmp/foo", Size: 1024, Category: cleaner.CategoryTemp}},
+		Entries:    []cleaner.FileEntry{{Path: writeRevalidatableFile(t, 1024), Size: 1024, Category: cleaner.CategoryTemp}},
 	}
 	scanning := screens.NewScanning([]string{string(cleaner.CategoryTemp)}, registry)
 	scanning.UpdateScanResult(cleaner.CategoryTemp, scanResult, nil)
@@ -227,6 +253,7 @@ func TestUpdateReview_DefaultChoiceNeverTriggersElevation(t *testing.T) {
 		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
 		reviewScanResults: scanning.Results(),
 		ctx:               context.Background(),
+		cfg:               &config.Config{},
 	}
 
 	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmSudo
@@ -240,8 +267,7 @@ func TestUpdateReview_DefaultChoiceNeverTriggersElevation(t *testing.T) {
 		t.Fatalf("ConfirmState = %v, want ConfirmExecute", app.reviewScr.ConfirmState)
 	}
 
-	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmExecute -> cleaning
-	app = model.(App)
+	app, cmd := confirmAndRevalidate(t, app) // ConfirmExecute -> revalidate -> cleaning
 	if cmd != nil {
 		t.Fatal("expected no elevation command to be dispatched without an explicit opt-in")
 	}
@@ -264,7 +290,7 @@ func TestUpdateReview_ExplicitAuthenticateChoiceTriggersElevation(t *testing.T) 
 		Category:   cleaner.CategoryTemp,
 		TotalFiles: 1,
 		TotalSize:  1024,
-		Entries:    []cleaner.FileEntry{{Path: "/private/var/tmp/foo", Size: 1024, Category: cleaner.CategoryTemp}},
+		Entries:    []cleaner.FileEntry{{Path: writeRevalidatableFile(t, 1024), Size: 1024, Category: cleaner.CategoryTemp}},
 	}
 	scanning := screens.NewScanning([]string{string(cleaner.CategoryTemp)}, registry)
 	scanning.UpdateScanResult(cleaner.CategoryTemp, scanResult, nil)
@@ -277,6 +303,7 @@ func TestUpdateReview_ExplicitAuthenticateChoiceTriggersElevation(t *testing.T) 
 		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
 		reviewScanResults: scanning.Results(),
 		ctx:               context.Background(),
+		cfg:               &config.Config{},
 	}
 
 	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmSudo
@@ -288,14 +315,1013 @@ func TestUpdateReview_ExplicitAuthenticateChoiceTriggersElevation(t *testing.T) 
 	}
 	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmSudo -> ConfirmExecute
 	app = model.(App)
-	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmExecute -> cleaning
-	app = model.(App)
+	app, cmd := confirmAndRevalidate(t, app) // ConfirmExecute -> revalidate -> cleaning
 
 	if cmd == nil {
 		t.Fatal("expected an elevation command to be dispatched after explicitly choosing to authenticate")
 	}
 	if app.cleaningScr.Categories[0].Status != "cleaning" {
 		t.Fatalf("Status = %q, want cleaning (elevation in flight)", app.cleaningScr.Categories[0].Status)
+	}
+}
+
+// newRevalidationTestApp builds a non-sudo, execute-mode App on the review
+// screen around a single mock category with one file entry at path, sized
+// size -- the minimal fixture for driving updateReview's post-confirm
+// revalidation step without the sudo dialog also being in play.
+func newRevalidationTestApp(t *testing.T, path string, size int64) App {
+	t.Helper()
+
+	const cat = cleaner.Category("mock_cat")
+	registry := cleaner.NewRegistry()
+	registry.Register(&wholeDomainMockCleaner{category: cat})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cat: {
+			Category:   cat,
+			TotalFiles: 1,
+			TotalSize:  size,
+			Entries:    []cleaner.FileEntry{{Path: path, Size: size, Category: cat}},
+		},
+	}
+	scanning := screens.NewScanning([]string{string(cat)}, registry)
+	scanning.UpdateScanResult(cat, results[cat], nil)
+
+	return App{
+		currentScreen:     screenReview,
+		executeMode:       true,
+		registry:          registry,
+		scanningScr:       scanning,
+		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
+		reviewScanResults: scanning.Results(),
+		ctx:               context.Background(),
+		cfg:               &config.Config{},
+	}
+}
+
+// newRevalidationTestAppWithEntries is newRevalidationTestApp's
+// multi-entry counterpart, for cases where only some of a category's
+// entries change: with a single entry, the one that vanishes leaves the
+// category (and so the whole review) at 0 files, which itself blocks any
+// further confirm -- a real, separately-covered behavior (see
+// screens.ReviewModel's own TotalFiles == 0 guard), but not what these
+// tests are about.
+func newRevalidationTestAppWithEntries(t *testing.T, entries []cleaner.FileEntry) App {
+	t.Helper()
+
+	const cat = cleaner.Category("mock_cat")
+	registry := cleaner.NewRegistry()
+	registry.Register(&wholeDomainMockCleaner{category: cat})
+
+	var totalSize int64
+	for _, e := range entries {
+		totalSize += e.Size
+	}
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		cat: {
+			Category:   cat,
+			TotalFiles: len(entries),
+			TotalSize:  totalSize,
+			Entries:    entries,
+		},
+	}
+	scanning := screens.NewScanning([]string{string(cat)}, registry)
+	scanning.UpdateScanResult(cat, results[cat], nil)
+
+	return App{
+		currentScreen:     screenReview,
+		executeMode:       true,
+		registry:          registry,
+		scanningScr:       scanning,
+		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
+		reviewScanResults: scanning.Results(),
+		ctx:               context.Background(),
+		cfg:               &config.Config{},
+	}
+}
+
+// confirmAndRevalidate drives updateReview's final confirm key, which now
+// dispatches revalidation as a Cmd (see revalidateCmd) rather than deciding
+// everything inline -- so a test has to actually run that Cmd and feed its
+// message back through Update, exactly as the real bubbletea loop would,
+// to observe the outcome.
+func confirmAndRevalidate(t *testing.T, app App) (App, tea.Cmd) {
+	t.Helper()
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected updateReview's final confirm to dispatch revalidateCmd")
+	}
+	msg := cmd()
+	if _, ok := msg.(revalidateCompleteMsg); !ok {
+		t.Fatalf("cmd() = %T, want revalidateCompleteMsg", msg)
+	}
+	model, next := app.Update(msg)
+	return model.(App), next
+}
+
+// newSelectableTestApp builds a review screen for one Selectable category
+// (via selectableItemMockCleaner) with the given real-file entries, plus a
+// second, non-Selectable category with one entry of its own -- so a test
+// can assert the filtered plan touches only the Selectable category.
+func newSelectableTestApp(t *testing.T, entries []cleaner.FileEntry) App {
+	t.Helper()
+
+	const selCat = cleaner.Category("mock_selectable")
+	const otherCat = cleaner.Category("mock_other")
+	registry := cleaner.NewRegistry()
+	registry.Register(&selectableItemMockCleaner{plainMockCleaner{wholeDomainMockCleaner{category: selCat}}})
+	registry.Register(&wholeDomainMockCleaner{category: otherCat})
+
+	otherPath := writeRevalidatableFile(t, 64)
+
+	var totalSize int64
+	for i := range entries {
+		entries[i].Category = selCat
+		totalSize += entries[i].Size
+	}
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		selCat: {
+			Category:   selCat,
+			TotalFiles: len(entries),
+			TotalSize:  totalSize,
+			Entries:    entries,
+		},
+		otherCat: {
+			Category:   otherCat,
+			TotalFiles: 1,
+			TotalSize:  64,
+			Entries:    []cleaner.FileEntry{{Path: otherPath, Size: 64, Category: otherCat}},
+		},
+	}
+	scanning := screens.NewScanning([]string{string(selCat), string(otherCat)}, registry)
+	scanning.UpdateScanResult(selCat, results[selCat], nil)
+	scanning.UpdateScanResult(otherCat, results[otherCat], nil)
+
+	return App{
+		currentScreen:     screenReview,
+		executeMode:       true,
+		registry:          registry,
+		scanningScr:       scanning,
+		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
+		reviewScanResults: scanning.Results(),
+		ctx:               context.Background(),
+		cfg:               &config.Config{},
+	}
+}
+
+// selectableCategoryIndex returns the index of mock_selectable within
+// app.reviewScr.Categories.
+func selectableCategoryIndex(app App) int {
+	for i, c := range app.reviewScr.Categories {
+		if c.Category == cleaner.Category("mock_selectable") {
+			return i
+		}
+	}
+	return -1
+}
+
+// globalCursorIndex mirrors ReviewModel's own unexported globalFileIndexFor:
+// Cursor addresses a position in the flattened AllFiles sequence across
+// every category, and that indexing helper isn't exported for a test in
+// another package to call directly.
+func globalCursorIndex(m screens.ReviewModel, ci, fi int) int {
+	idx := 0
+	for j := 0; j < ci; j++ {
+		idx += len(m.Categories[j].AllFiles)
+	}
+	return idx + fi
+}
+
+// TestUpdateReview_ToggleAllSelectedKeyIsWired confirms keys.ToggleAllSelected
+// ("A") reaches screens.ReviewModel.ToggleSelectAll from the review screen,
+// and is ignored behind a confirm dialog the same way keys.Select and
+// keys.Filter already are.
+func TestUpdateReview_ToggleAllSelectedKeyIsWired(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	other := writeFile(t, dir, "other", 128)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: other, Size: 128},
+	})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	app = model.(App)
+	for _, f := range app.reviewScr.Categories[ci].AllFiles {
+		if f.Selected {
+			t.Errorf("expected every entry deselected after \"A\", %q is still Selected", f.Path)
+		}
+	}
+
+	// Behind a confirm dialog it must be inert, mirroring keys.Select.
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	if app.reviewScr.ConfirmState != screens.ConfirmExecute {
+		t.Fatalf("test setup: ConfirmState = %v, want ConfirmExecute", app.reviewScr.ConfirmState)
+	}
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("A")})
+	app = model.(App)
+	for _, f := range app.reviewScr.Categories[ci].AllFiles {
+		if f.Selected {
+			t.Errorf("\"A\" behind a confirm dialog must stay a no-op, but %q became Selected", f.Path)
+		}
+	}
+}
+
+func TestUpdateReview_ConfirmFiltersOutDeselectedEntry(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	excluded := writeFile(t, dir, "exclude", 128)
+
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: excluded, Size: 128},
+	})
+
+	ci := selectableCategoryIndex(app)
+	// The larger file (kept, 512) sorts first; deselect the second one.
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 1)
+	app.reviewScr.ToggleSelected()
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	app, _ = confirmAndRevalidate(t, app)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning", app.currentScreen)
+	}
+
+	var selCategory *screens.CleaningCategory
+	for i := range app.cleaningScr.Categories {
+		if app.cleaningScr.Categories[i].Category == cleaner.Category("mock_selectable") {
+			selCategory = &app.cleaningScr.Categories[i]
+		}
+	}
+	if selCategory == nil {
+		t.Fatal("mock_selectable category missing from the cleaning plan")
+	}
+	if len(selCategory.Entries) != 1 || selCategory.Entries[0].Path != kept {
+		t.Fatalf("cleaning plan entries = %+v, want only %q", selCategory.Entries, kept)
+	}
+
+	bd := app.reviewBreakdown[cleaner.Category("mock_selectable")]
+	if bd.ExcludedByUser != 1 {
+		t.Fatalf("reviewBreakdown ExcludedByUser = %d, want 1", bd.ExcludedByUser)
+	}
+}
+
+// TestUpdateReview_BreakdownSurvivesRevalidationReconfirm pins a
+// BRANCH-REVIEW follow-up finding: a material revalidation delta rebuilds
+// a.reviewScr from a.reviewScanResults (via screens.NewReview), which by
+// then has already had every deselected entry stripped out entirely -- so
+// the rebuilt model's own Breakdown() can never again report an earlier
+// round's exclusion; the entry simply isn't there for it to see. Before
+// mergeReviewBreakdown, re-confirming after such a delta silently replaced
+// a.reviewBreakdown with that (empty) result, so the eventual summary's
+// "(N excluded)" line for a category the user genuinely excluded something
+// from would vanish.
+func TestUpdateReview_BreakdownSurvivesRevalidationReconfirm(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	excluded := writeFile(t, dir, "exclude", 128)
+	vanishing := writeFile(t, dir, "vanish", 64)
+
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: excluded, Size: 128},
+		{Path: vanishing, Size: 64},
+	})
+
+	ci := selectableCategoryIndex(app)
+	// Sorted desc by size: kept(512), excluded(128), vanishing(64).
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 1)
+	app.reviewScr.ToggleSelected() // deselect "excluded"
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+
+	// Force a material revalidation delta on the first confirm round, so
+	// the review screen gets rebuilt from scratch (screens.NewReview always
+	// starts every entry Selected -- the rebuilt model has no memory of the
+	// original deselection).
+	if err := os.Remove(vanishing); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+	app, _ = confirmAndRevalidate(t, app)
+	if app.reviewScr.ConfirmState != screens.ConfirmRevalidated {
+		t.Fatalf("ConfirmState = %v, want ConfirmRevalidated", app.reviewScr.ConfirmState)
+	}
+	if bd := app.reviewBreakdown[cleaner.Category("mock_selectable")]; bd.ExcludedByUser != 1 {
+		t.Fatalf("reviewBreakdown ExcludedByUser after the first (material) round = %d, want 1", bd.ExcludedByUser)
+	}
+
+	// Re-confirm the corrected plan -- nothing further changes, so this
+	// round proceeds straight to cleaning.
+	app, _ = confirmAndRevalidate(t, app)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning after re-confirming", app.currentScreen)
+	}
+	if bd := app.reviewBreakdown[cleaner.Category("mock_selectable")]; bd.ExcludedByUser != 1 {
+		t.Fatalf("reviewBreakdown ExcludedByUser after re-confirming = %d, want 1 (must survive the rebuild)", bd.ExcludedByUser)
+	}
+}
+
+func TestUpdateReview_DeselectingWholeCategoryDropsItFromPlan(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "solo", 256)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{{Path: path, Size: 256}})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+	app.reviewScr.ToggleSelected()
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	app, _ = confirmAndRevalidate(t, app)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning (the other category still has entries)", app.currentScreen)
+	}
+	for _, c := range app.cleaningScr.Categories {
+		if c.Category == cleaner.Category("mock_selectable") {
+			t.Fatalf("mock_selectable should have been dropped from the plan entirely, got %+v", c)
+		}
+	}
+	if len(app.cleaningScr.Categories) != 1 {
+		t.Fatalf("cleaningScr.Categories = %+v, want only mock_other", app.cleaningScr.Categories)
+	}
+}
+
+// TestUpdateReview_QuitKeyIsTextInputWhileFiltering pins a BRANCH-REVIEW
+// follow-up finding: Update's top-level "q"/ctrl+c Quit binding used to be
+// matched before dispatching to updateReview at all, so it fired even while
+// the review screen's "/" filter was capturing keystrokes as text --
+// typing any query containing "q" (a Docker tag, "Sequoia.dmg", ...) would
+// cancel the context and quit the whole app mid-type, discarding the
+// scan/review state.
+func TestUpdateReview_QuitKeyIsTextInputWhileFiltering(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "solo", 256)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{{Path: path, Size: 256}})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+	app.reviewScr.OpenFilter()
+	if !app.reviewScr.FilterActive {
+		t.Fatal("test setup: OpenFilter() did not activate filtering")
+	}
+
+	model, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	app = model.(App)
+
+	if cmd != nil {
+		t.Fatal("pressing \"q\" while filtering must not dispatch tea.Quit")
+	}
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview (must not have quit)", app.currentScreen)
+	}
+	if !app.reviewScr.FilterActive {
+		t.Fatal("must still be in filter mode")
+	}
+	if app.reviewScr.FilterQuery != "q" {
+		t.Fatalf("FilterQuery = %q, want %q (the %q must be typed into the query, not treated as Quit)", app.reviewScr.FilterQuery, "q", "q")
+	}
+}
+
+// TestUpdateReview_EscDuringRevalidationLeavesScanResultsUnfiltered pins a
+// BRANCH-REVIEW follow-up finding: the Confirm case used to commit the
+// selection-filtered plan into a.reviewScanResults before dispatching
+// revalidateCmd. Backing out with esc while that dispatch was still in
+// flight left a.reviewScanResults permanently narrowed even though nothing
+// was ever actually confirmed -- re-entering review reused the same
+// a.reviewScr (reviewBuilt untouched), which still showed the deselected
+// entry as deselected and let the user toggle it back on, but
+// SelectedResults can only narrow a.reviewScanResults, never reintroduce an
+// entry already dropped from it, so re-selecting it there would silently do
+// nothing on a later confirm.
+func TestUpdateReview_EscDuringRevalidationLeavesScanResultsUnfiltered(t *testing.T) {
+	dir := t.TempDir()
+	kept := writeFile(t, dir, "keep", 512)
+	excluded := writeFile(t, dir, "exclude", 128)
+
+	app := newSelectableTestApp(t, []cleaner.FileEntry{
+		{Path: kept, Size: 512},
+		{Path: excluded, Size: 128},
+	})
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 1)
+	app.reviewScr.ToggleSelected() // deselect "exclude"
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // dispatch revalidateCmd
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected the second enter to dispatch revalidateCmd")
+	}
+	if !app.revalidating {
+		t.Fatal("expected a.revalidating = true while the dispatched Cmd hasn't run yet")
+	}
+
+	// Back out before the in-flight revalidateCmd (never invoked here) has
+	// a chance to run.
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.revalidating {
+		t.Fatal("esc must clear a.revalidating")
+	}
+	if app.currentScreen != screenScanning {
+		t.Fatalf("currentScreen = %v, want screenScanning", app.currentScreen)
+	}
+
+	got := app.reviewScanResults[cleaner.Category("mock_selectable")]
+	if got == nil || got.TotalFiles != 2 {
+		t.Fatalf("reviewScanResults[mock_selectable] = %+v, want the original 2 entries -- backing out must not leave the plan narrowed", got)
+	}
+	var sawExcluded bool
+	for _, e := range got.Entries {
+		if e.Path == excluded {
+			sawExcluded = true
+		}
+	}
+	if !sawExcluded {
+		t.Fatal("the deselected-but-never-committed entry must still be present in reviewScanResults after backing out")
+	}
+}
+
+func TestUpdateReview_ConfirmWithNothingSelectedIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "a", 128)
+	app := newSelectableTestApp(t, []cleaner.FileEntry{{Path: path, Size: 128}})
+	// Also empty out the non-Selectable category so the whole filtered plan
+	// is empty, not just the Selectable one.
+	app.reviewScanResults[cleaner.Category("mock_other")] = &cleaner.ScanResult{}
+
+	ci := selectableCategoryIndex(app)
+	app.reviewScr.Cursor = globalCursorIndex(app.reviewScr, ci, 0)
+	app.reviewScr.ToggleSelected()
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmExecute -> attempted dispatch
+	app = model.(App)
+	if cmd != nil {
+		t.Fatal("expected no revalidateCmd dispatch when the filtered plan is entirely empty")
+	}
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview", app.currentScreen)
+	}
+	if app.revalidating {
+		t.Fatal("must not have entered the revalidating state")
+	}
+}
+
+// TestUpdateReview_RevalidationBlocksOnMissingFile is the core case the
+// Notion card "Revalidar plano antes da limpeza na TUI" describes: a file
+// vanishes during however long the user sat on the review screen, and
+// confirming must not silently clean the (now stale) approved snapshot.
+func TestUpdateReview_RevalidationBlocksOnMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	vanishing := writeFile(t, dir, "foo", 1024)
+	surviving := writeFile(t, dir, "bar", 512)
+	const cat = cleaner.Category("mock_cat")
+	app := newRevalidationTestAppWithEntries(t, []cleaner.FileEntry{
+		{Path: vanishing, Size: 1024, Category: cat},
+		{Path: surviving, Size: 512, Category: cat},
+	})
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	if app.reviewScr.ConfirmState != screens.ConfirmExecute {
+		t.Fatalf("first enter ConfirmState = %v, want ConfirmExecute", app.reviewScr.ConfirmState)
+	}
+
+	if err := os.Remove(vanishing); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // ConfirmExecute -> revalidate -> material
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview (must not have proceeded to cleaning)", app.currentScreen)
+	}
+	if app.reviewScr.ConfirmState != screens.ConfirmRevalidated {
+		t.Fatalf("ConfirmState = %v, want ConfirmRevalidated", app.reviewScr.ConfirmState)
+	}
+	if app.reviewScr.RevalidationDelta == nil || app.reviewScr.RevalidationDelta.MissingFiles != 1 {
+		t.Fatalf("RevalidationDelta = %+v, want MissingFiles = 1", app.reviewScr.RevalidationDelta)
+	}
+	if len(app.cleaningScr.Categories) != 0 {
+		t.Fatalf("cleaningScr already built with %d categories before the user re-confirmed", len(app.cleaningScr.Categories))
+	}
+
+	// Second enter: re-confirm the corrected plan. The vanished file was
+	// already dropped from a.reviewScanResults by the first pass, so this
+	// revalidation finds nothing new material and proceeds with the one
+	// surviving entry.
+	app, _ = confirmAndRevalidate(t, app)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning after re-confirming", app.currentScreen)
+	}
+	if len(app.cleaningScr.Categories) != 1 || app.cleaningScr.Categories[0].FilesTotal != 1 {
+		t.Fatalf("cleaningScr.Categories = %+v, want exactly the one surviving entry", app.cleaningScr.Categories)
+	}
+	if app.cleaningScr.Categories[0].Entries[0].Path != surviving {
+		t.Fatalf("cleaningScr entry = %q, want %q", app.cleaningScr.Categories[0].Entries[0].Path, surviving)
+	}
+}
+
+// TestUpdateReview_NoChangeSkipsExtraConfirmation pins the no-op case: when
+// nothing changed, confirming behaves exactly as it did before revalidation
+// existed -- straight through to cleaning, no extra step.
+func TestUpdateReview_NoChangeSkipsExtraConfirmation(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	app, _ = confirmAndRevalidate(t, app) // ConfirmExecute -> revalidate -> unchanged -> cleaning
+
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning", app.currentScreen)
+	}
+	if app.reviewScr.ConfirmState != screens.ConfirmNone {
+		t.Fatalf("ConfirmState = %v, want ConfirmNone", app.reviewScr.ConfirmState)
+	}
+	if app.reviewScr.RevalidationDelta != nil {
+		t.Fatalf("RevalidationDelta = %+v, want nil (nothing changed)", app.reviewScr.RevalidationDelta)
+	}
+	if len(app.cleaningScr.Categories) != 1 || app.cleaningScr.Categories[0].FilesTotal != 1 {
+		t.Fatalf("cleaningScr.Categories = %+v, want the one untouched entry", app.cleaningScr.Categories)
+	}
+}
+
+// TestUpdateReview_StaleRevalidationAfterBackOutIsDiscarded pins a security
+// review finding: a revalidateCmd dispatched from the review screen must not
+// be allowed to start cleaning if the user has since backed out with esc.
+// Without the seq/currentScreen guard in handleRevalidateComplete, the
+// in-flight result landing after esc would silently resume the aborted
+// confirm and start deleting.
+func TestUpdateReview_StaleRevalidationAfterBackOutIsDiscarded(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmExecute -> dispatch revalidateCmd
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected revalidateCmd to be dispatched")
+	}
+	if !app.revalidating {
+		t.Fatal("expected a.revalidating = true while the command is in flight")
+	}
+	if app.revalidateCancel == nil {
+		t.Fatal("expected a.revalidateCancel to be set for the in-flight dispatch")
+	}
+
+	// The user changes their mind before the revalidation result arrives.
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.currentScreen != screenScanning {
+		t.Fatalf("currentScreen after esc = %v, want screenScanning", app.currentScreen)
+	}
+	if app.revalidateCancel != nil {
+		t.Fatal("expected esc to clear a.revalidateCancel after calling it")
+	}
+
+	// The in-flight result lands anyway.
+	msg := cmd()
+	model, next := app.Update(msg)
+	app = model.(App)
+
+	if app.currentScreen != screenScanning {
+		t.Fatalf("currentScreen after a stale revalidateCompleteMsg = %v, want screenScanning (must not resume the aborted confirm)", app.currentScreen)
+	}
+	if len(app.cleaningScr.Categories) != 0 {
+		t.Fatalf("cleaningScr.Categories = %+v, want none -- a stale result must never build the cleaning screen", app.cleaningScr.Categories)
+	}
+	if next != nil {
+		t.Fatal("expected no follow-up command from a discarded stale result")
+	}
+}
+
+// TestUpdateReview_SecondEnterWhileRevalidatingIsIgnored pins the other half
+// of the same finding: mashing enter while a revalidation is in flight must
+// not dispatch a second one. Without the a.revalidating guard, two
+// overlapping revalidateCompleteMsgs could each build (or rebuild)
+// a.cleaningScr and dispatch their own clean pipeline over the same plan.
+func TestUpdateReview_SecondEnterWhileRevalidatingIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // dispatch #1
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected the first revalidateCmd to be dispatched")
+	}
+
+	// Mash enter again before the first result arrives.
+	model, cmd2 := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if cmd2 != nil {
+		t.Fatal("expected no second revalidateCmd while one is already in flight")
+	}
+
+	// Deliver the one dispatched result and confirm it still resolves
+	// normally, exactly once.
+	msg := cmd()
+	model, _ = app.Update(msg)
+	app = model.(App)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning", app.currentScreen)
+	}
+	if len(app.cleaningScr.Categories) != 1 {
+		t.Fatalf("cleaningScr.Categories = %+v, want exactly one", app.cleaningScr.Categories)
+	}
+}
+
+// TestUpdateReview_StaleRevalidationAfterReenteringReviewIsDiscarded is a
+// second variant of the same finding as
+// TestUpdateReview_StaleRevalidationAfterBackOutIsDiscarded: esc alone
+// leaving screenReview is not what actually protects against a stale
+// result -- back must invalidate the in-flight dispatch (bump
+// revalidateSeq), because currentScreen on its own is not a stable
+// property. Without that, backing out and then navigating straight back
+// into the review screen (a completely ordinary thing to do) recreates
+// currentScreen == screenReview, and a result the user already abandoned
+// would be accepted as if it were the one currently awaited.
+func TestUpdateReview_StaleRevalidationAfterReenteringReviewIsDiscarded(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+	app.reviewBuilt = true
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // dispatch
+	app = model.(App)
+	if cmd == nil {
+		t.Fatal("expected revalidateCmd to be dispatched")
+	}
+	seqAtDispatch := app.revalidateSeq
+
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEsc}) // back out
+	app = model.(App)
+	if app.currentScreen != screenScanning {
+		t.Fatalf("currentScreen after esc = %v, want screenScanning", app.currentScreen)
+	}
+	if app.revalidateSeq == seqAtDispatch {
+		t.Fatal("expected esc to bump revalidateSeq, invalidating the in-flight dispatch")
+	}
+
+	// Navigate straight back into the review screen -- reviewBuilt is still
+	// true, so this reuses the existing reviewScr exactly like a user
+	// idly pressing enter then esc then enter again would.
+	model, _ = app.updateScanning(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen after re-entering = %v, want screenReview", app.currentScreen)
+	}
+
+	// The stale, already-abandoned result lands now.
+	msg := cmd()
+	model, next := app.Update(msg)
+	app = model.(App)
+
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen after the stale result = %v, want screenReview (must not resume the abandoned confirm)", app.currentScreen)
+	}
+	if len(app.cleaningScr.Categories) != 0 {
+		t.Fatalf("cleaningScr.Categories = %+v, want none", app.cleaningScr.Categories)
+	}
+	if next != nil {
+		t.Fatal("expected no follow-up command from a discarded stale result")
+	}
+}
+
+// TestUpdateReview_KeysIgnoredWhileRevalidatingExceptBack pins the fix for
+// a related finding: only guarding the dispatch (the Confirm case) left
+// every OTHER key still live while a revalidation is in flight -- most
+// importantly up/down, which toggle AuthenticateSudo on the ConfirmSudo
+// dialog. Since View() renders nothing but "Revalidating..." while
+// a.revalidating is true, that toggle was invisible, and the flipped value
+// would still be read by handleRevalidateComplete once the result landed.
+func TestUpdateReview_KeysIgnoredWhileRevalidatingExceptBack(t *testing.T) {
+	dir := t.TempDir()
+	sudoPath := writeFile(t, dir, "sudo-entry", 10)
+	survivingPath := writeFile(t, dir, "surviving-entry", 5)
+
+	const sudoCat = cleaner.Category("mock_sudo_cat")
+	registry := cleaner.NewRegistry()
+	registry.Register(&splitPrivilegeCleaner{category: sudoCat})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		sudoCat: {
+			Category:   sudoCat,
+			TotalFiles: 2,
+			TotalSize:  15,
+			Entries: []cleaner.FileEntry{
+				{Path: sudoPath, Size: 10, Category: sudoCat},
+				{Path: survivingPath, Size: 5, Category: sudoCat},
+			},
+		},
+	}
+	scanning := screens.NewScanning([]string{string(sudoCat)}, registry)
+	scanning.UpdateScanResult(sudoCat, results[sudoCat], nil)
+
+	app := App{
+		currentScreen:     screenReview,
+		executeMode:       true,
+		registry:          registry,
+		scanningScr:       scanning,
+		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
+		reviewScanResults: scanning.Results(),
+		ctx:               context.Background(),
+		cfg:               &config.Config{},
+	}
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmSudo
+	app = model.(App)
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmSudo -> ConfirmExecute
+	app = model.(App)
+	model, cmd := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // dispatch
+	app = model.(App)
+	if cmd == nil || !app.revalidating {
+		t.Fatal("expected a revalidateCmd to be in flight")
+	}
+	authBefore := app.reviewScr.AuthenticateSudo
+
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyUp})
+	app = model.(App)
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyDown})
+	app = model.(App)
+	if app.reviewScr.AuthenticateSudo != authBefore {
+		t.Fatalf("AuthenticateSudo changed from %v to %v via up/down while a revalidation was in flight", authBefore, app.reviewScr.AuthenticateSudo)
+	}
+
+	model, cmd2 := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // must not dispatch a second one
+	app = model.(App)
+	if cmd2 != nil {
+		t.Fatal("expected no second revalidateCmd while one is already in flight")
+	}
+
+	msg := cmd()
+	model, _ = app.Update(msg)
+	app = model.(App)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning", app.currentScreen)
+	}
+}
+
+// TestUpdateReview_EmptyAfterRevalidationSkipsConfirmScreen pins a UX
+// correctness fix: when revalidation drops every entry a category (and the
+// whole reviewed snapshot) had, the rebuilt review screen must not enter
+// ConfirmRevalidated -- its "enter: confirm updated plan" hint would be a
+// lie, since updateReview's own TotalFiles == 0 guard makes enter a silent
+// no-op there. ReviewModel's existing "No files to clean!" screen is the
+// honest state to land on instead.
+func TestUpdateReview_EmptyAfterRevalidationSkipsConfirmScreen(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // ConfirmExecute -> revalidate -> the one entry vanished
+	if app.reviewScr.ConfirmState != screens.ConfirmNone {
+		t.Fatalf("ConfirmState = %v, want ConfirmNone (not ConfirmRevalidated -- nothing survived to re-confirm)", app.reviewScr.ConfirmState)
+	}
+	if app.reviewScr.TotalFiles != 0 {
+		t.Fatalf("reviewScr.TotalFiles = %d, want 0", app.reviewScr.TotalFiles)
+	}
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview", app.currentScreen)
+	}
+	// RevalidationDelta is kept even though ConfirmRevalidated was never
+	// entered, so View()'s empty-plan message can explain why the plan is
+	// empty instead of reusing the generic "already tidy" wording a scan
+	// that genuinely found nothing would show.
+	if app.reviewScr.RevalidationDelta == nil || app.reviewScr.RevalidationDelta.MissingFiles != 1 {
+		t.Fatalf("RevalidationDelta = %+v, want MissingFiles = 1", app.reviewScr.RevalidationDelta)
+	}
+	if view := app.reviewScr.View(); !strings.Contains(view, "now empty") {
+		t.Errorf("View() does not explain the plan emptied via revalidation:\n%s", view)
+	}
+}
+
+// TestUpdateReview_EmptyAfterRevalidationResetsScanCache pins the F5 fix: an
+// emptied-by-revalidation plan must not leave a.scanResults holding the same
+// stale entries that just revalidated to nothing, or re-selecting the
+// category from the dashboard (updateScanning's a.scanResults[id] reuse
+// path) would rebuild and revalidate to empty again -- a dead end short of
+// quitting or backing out twice.
+func TestUpdateReview_EmptyAfterRevalidationResetsScanCache(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+	app.reviewBuilt = true
+	app.scanResults = map[cleaner.Category]*cleaner.ScanResult{
+		"mock_cat": app.reviewScanResults["mock_cat"],
+	}
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // the one entry vanished -> plan is empty
+	if app.reviewScr.TotalFiles != 0 {
+		t.Fatalf("reviewScr.TotalFiles = %d, want 0", app.reviewScr.TotalFiles)
+	}
+	if app.reviewBuilt {
+		t.Fatal("expected reviewBuilt = false after revalidation emptied the plan, to force a re-scan")
+	}
+	if _, exists := app.scanResults["mock_cat"]; exists {
+		t.Fatal("expected the emptied category to be removed from a.scanResults, not left stale")
+	}
+}
+
+// TestUpdateReview_EmptyAfterRevalidationBackGoesToDashboard pins a
+// follow-up to the F5 fix: routing esc from an emptied-by-revalidation plan
+// through screenScanning would be a dead end even with the scan-cache reset
+// above -- a.scanningScr itself still holds the stale pre-revalidation
+// results (that reset only touches a.scanResults and a.reviewBuilt), and
+// its own Confirm handler only rebuilds the review when !reviewBuilt, so it
+// would hand back the exact plan revalidation just proved empty. esc must
+// go straight to the dashboard instead, matching the "esc: back to
+// dashboard" hint the empty-plan View() already shows, so re-selecting the
+// category actually triggers a re-scan.
+func TestUpdateReview_EmptyAfterRevalidationBackGoesToDashboard(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "foo", 1024)
+	app := newRevalidationTestApp(t, path, 1024)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // the one entry vanished -> plan is empty
+	if app.reviewScr.TotalFiles != 0 {
+		t.Fatalf("reviewScr.TotalFiles = %d, want 0", app.reviewScr.TotalFiles)
+	}
+
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEsc})
+	app = model.(App)
+	if app.currentScreen != screenDashboard {
+		t.Fatalf("currentScreen after esc from an emptied plan = %v, want screenDashboard", app.currentScreen)
+	}
+}
+
+// TestUpdateReview_RevalidationRebuildPreservesTerminalSize pins a display
+// fix: rebuilding reviewScr from the revalidated snapshot (see
+// handleRevalidateComplete) must carry over the terminal size the original
+// reviewScr had, or the rebuilt screen falls back to View()'s minimum
+// viewport height until the next resize event.
+func TestUpdateReview_RevalidationRebuildPreservesTerminalSize(t *testing.T) {
+	dir := t.TempDir()
+	vanishing := writeFile(t, dir, "foo", 1024)
+	surviving := writeFile(t, dir, "bar", 512)
+	const cat = cleaner.Category("mock_cat")
+	app := newRevalidationTestAppWithEntries(t, []cleaner.FileEntry{
+		{Path: vanishing, Size: 1024, Category: cat},
+		{Path: surviving, Size: 512, Category: cat},
+	})
+	app.width, app.height = 120, 40
+	app.reviewScr.SetSize(app.width, app.height)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmExecute
+	app = model.(App)
+	if err := os.Remove(vanishing); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+	app, _ = confirmAndRevalidate(t, app) // ConfirmExecute -> revalidate -> material -> rebuild
+
+	if app.reviewScr.ConfirmState != screens.ConfirmRevalidated {
+		t.Fatalf("ConfirmState = %v, want ConfirmRevalidated", app.reviewScr.ConfirmState)
+	}
+	if app.reviewScr.Width != app.width || app.reviewScr.Height != app.height {
+		t.Fatalf("rebuilt reviewScr size = %dx%d, want %dx%d", app.reviewScr.Width, app.reviewScr.Height, app.width, app.height)
+	}
+}
+
+// TestUpdateReview_DryRunAlsoRevalidatesAndRequiresReconfirm pins the dry-run
+// half of the acceptance criteria ("dry-run informs the delta"): dry run
+// skips the sudo/execute confirmation dialogs, but still revalidates and
+// still surfaces a material change (via the same ConfirmRevalidated screen,
+// worded for dry run) before entering the (non-destructive) cleaning screen.
+func TestUpdateReview_DryRunAlsoRevalidatesAndRequiresReconfirm(t *testing.T) {
+	dir := t.TempDir()
+	vanishing := writeFile(t, dir, "foo", 1024)
+	surviving := writeFile(t, dir, "bar", 512)
+	const cat = cleaner.Category("mock_cat")
+	app := newRevalidationTestAppWithEntries(t, []cleaner.FileEntry{
+		{Path: vanishing, Size: 1024, Category: cat},
+		{Path: surviving, Size: 512, Category: cat},
+	})
+	app.executeMode = false
+	app.reviewScr.ExecuteMode = false
+
+	if err := os.Remove(vanishing); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // ConfirmNone -> revalidate -> material
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview", app.currentScreen)
+	}
+	if app.reviewScr.ConfirmState != screens.ConfirmRevalidated {
+		t.Fatalf("ConfirmState = %v, want ConfirmRevalidated", app.reviewScr.ConfirmState)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // re-confirm -> cleaning (dry run)
+	if app.currentScreen != screenCleaning {
+		t.Fatalf("currentScreen = %v, want screenCleaning", app.currentScreen)
+	}
+	if !app.cleaningScr.DryRun {
+		t.Fatal("cleaningScr.DryRun = false, want true")
+	}
+}
+
+// TestUpdateReview_RevalidationPreservesAuthenticateSudoChoice pins the fix
+// for a review finding: rebuilding reviewScr from the revalidated snapshot
+// (so the underlying file list/totals stop showing stale data once
+// ConfirmRevalidated is entered) must not silently reset the user's sudo
+// authentication choice back to its "skip" default.
+func TestUpdateReview_RevalidationPreservesAuthenticateSudoChoice(t *testing.T) {
+	dir := t.TempDir()
+	sudoPath := writeFile(t, dir, "sudo-entry", 10)
+	survivingPath := writeFile(t, dir, "surviving-entry", 5)
+
+	const sudoCat = cleaner.Category("mock_sudo_cat")
+	registry := cleaner.NewRegistry()
+	registry.Register(&splitPrivilegeCleaner{category: sudoCat})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		sudoCat: {
+			Category:   sudoCat,
+			TotalFiles: 2,
+			TotalSize:  15,
+			Entries: []cleaner.FileEntry{
+				{Path: sudoPath, Size: 10, Category: sudoCat},
+				{Path: survivingPath, Size: 5, Category: sudoCat},
+			},
+		},
+	}
+	scanning := screens.NewScanning([]string{string(sudoCat)}, registry)
+	scanning.UpdateScanResult(sudoCat, results[sudoCat], nil)
+
+	app := App{
+		currentScreen:     screenReview,
+		executeMode:       true,
+		registry:          registry,
+		scanningScr:       scanning,
+		reviewScr:         screens.NewReview(scanning.Results(), true, registry, false),
+		reviewScanResults: scanning.Results(),
+		ctx:               context.Background(),
+		cfg:               &config.Config{},
+	}
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmNone -> ConfirmSudo
+	app = model.(App)
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyDown}) // toggle to Authenticate
+	app = model.(App)
+	if !app.reviewScr.AuthenticateSudo {
+		t.Fatal("expected Authenticate to be selected after toggling")
+	}
+	model, _ = app.updateReview(tea.KeyMsg{Type: tea.KeyEnter}) // ConfirmSudo -> ConfirmExecute
+	app = model.(App)
+
+	// The one approved entry vanishes between review and confirm -- this is
+	// what forces ConfirmRevalidated below.
+	if err := os.Remove(sudoPath); err != nil {
+		t.Fatalf("removing fixture file: %v", err)
+	}
+
+	app, _ = confirmAndRevalidate(t, app) // ConfirmExecute -> revalidate -> material
+	if app.reviewScr.ConfirmState != screens.ConfirmRevalidated {
+		t.Fatalf("ConfirmState = %v, want ConfirmRevalidated", app.reviewScr.ConfirmState)
+	}
+	if !app.reviewScr.AuthenticateSudo {
+		t.Fatal("AuthenticateSudo was reset to false across the ConfirmRevalidated rebuild; the user's explicit choice must survive it")
 	}
 }
 

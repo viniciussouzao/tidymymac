@@ -29,6 +29,10 @@ func (c *TimeMachineCleaner) Description() string {
 
 func (c *TimeMachineCleaner) RequiresSudo() bool { return true }
 
+// SupportsItemSelection implements cleaner.ItemSelectable: each entry is an
+// individually removable snapshot.
+func (c *TimeMachineCleaner) SupportsItemSelection() bool { return true }
+
 func (c *TimeMachineCleaner) DeletesWholeDomain() bool { return false }
 
 func (c *TimeMachineCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {

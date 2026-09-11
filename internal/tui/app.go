@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -117,6 +118,14 @@ type App struct {
 	// without the user reviewing it again.
 	reviewScanResults map[cleaner.Category]*cleaner.ScanResult
 
+	// reviewBreakdown is captured from a.reviewScr.Breakdown() at the same
+	// moment reviewScanResults is narrowed to the selected plan (see
+	// updateReview's Confirm case) -- before per-item selection state is
+	// lost to that filtering. Threaded into screens.NewSummary so the
+	// summary screen can show, per category, how many entries were
+	// protected or excluded by the user versus actually cleaned.
+	reviewBreakdown map[cleaner.Category]screens.ReviewBreakdown
+
 	registry       *cleaner.Registry
 	scanResults    map[cleaner.Category]*cleaner.ScanResult
 	spinner        spinner.Model
@@ -143,6 +152,27 @@ type App struct {
 	// pendingElevation is non-nil while an elevation attempt's direct legs
 	// are still cleaning asynchronously. See pendingElevationState.
 	pendingElevation *pendingElevationState
+
+	// revalidating is true while a revalidateCmd dispatched from updateReview
+	// is in flight, so a second enter press can't dispatch another one
+	// racing it. revalidateSeq is stamped into each dispatch's
+	// revalidateCompleteMsg; handleRevalidateComplete discards any message
+	// whose seq doesn't match the current one (superseded by a later
+	// dispatch) or that arrives after currentScreen has left screenReview
+	// (the user backed out with esc while it was still running). See
+	// updateReview's Confirm and Back cases.
+	revalidating  bool
+	revalidateSeq int
+
+	// revalidateCancel cancels the context passed to the in-flight
+	// revalidateCmd, if any. Bumping revalidateSeq (see above) stops its
+	// result from being acted on, but does not by itself stop the goroutine
+	// -- it would otherwise keep Lstat-ing every approved entry, and for
+	// Docker/Time Machine keep shelling out, to completion even after the
+	// user has backed out. Set on dispatch (updateReview's Confirm case),
+	// cleared (after calling it) on esc-while-in-flight and once a result is
+	// accepted in handleRevalidateComplete.
+	revalidateCancel context.CancelFunc
 
 	// scriptMessage will support the generate-script-only flow.
 }
@@ -253,6 +283,9 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case directCleanCompleteMsg:
 		return a.handleDirectCleanComplete(msg)
 
+	case revalidateCompleteMsg:
+		return a.handleRevalidateComplete(msg)
+
 	case cleanProgressMsg:
 		a.cleaningScr.UpdateCleanProgress(msg.progress)
 		if a.cleanMsgCh != nil {
@@ -261,7 +294,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		if key.Matches(msg, keys.Quit) {
+		// The global Quit binding ("q"/ctrl+c) must not fire while the
+		// review screen's "/" filter is capturing keystrokes as text --
+		// otherwise typing a query that happens to contain "q" (a Docker
+		// tag, "Sequoia.dmg", ...) quits the whole app and discards the
+		// scan/review state mid-type. updateReview's own FilterActive
+		// intercept is what actually handles every key in that mode,
+		// ctrl+c included (falls through its switch as a no-op there).
+		filtering := a.currentScreen == screenReview && a.reviewScr.FilterActive
+		if !filtering && key.Matches(msg, keys.Quit) {
 			a.cancel() // cancel any ongoing scans or cleans
 			return a, tea.Quit
 		}
@@ -832,6 +873,12 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.reviewScr = screens.NewReview(results, a.executeMode, a.registry, a.isElevated)
 				a.reviewScanResults = results
 				a.reviewBuilt = true
+				// A fresh review session: any breakdown captured by a
+				// previous confirm attempt on a now-discarded scan belongs
+				// to that session, not this one. See mergeReviewBreakdown's
+				// own doc comment for why a.reviewBreakdown otherwise
+				// accumulates across rounds within the same session.
+				a.reviewBreakdown = nil
 			}
 			a.reviewScr.SetSize(a.width, a.height)
 			a.currentScreen = screenReview
@@ -848,6 +895,66 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.revalidating {
+		// A revalidation is in flight (dispatched from the Confirm case
+		// below). ReviewModel.View()'s Revalidating branch takes priority
+		// over every other render while this is true, so the sudo dialog,
+		// the file list, none of it is actually on screen -- any other key
+		// here would mutate state (most importantly AuthenticateSudo via
+		// up/down, see keys.Up/Down below) that the user cannot see the
+		// effect of, and that mutated state would then feed whatever the
+		// in-flight result eventually does. Every key except back is
+		// ignored until it resolves.
+		if key.Matches(msg, keys.Back) {
+			// Actually invalidates the dispatch rather than merely hoping
+			// currentScreen changes enough to reject it later:
+			// revalidateSeq is bumped here so the in-flight
+			// revalidateCompleteMsg's stamped seq can never match again,
+			// even if the user later navigates back into screenReview and
+			// currentScreen would otherwise read the same as it did at
+			// dispatch time. revalidateCancel is called for the same
+			// reason on the goroutine's own side: a discarded result must
+			// not mean an abandoned goroutine still running to completion.
+			a.revalidating = false
+			a.reviewScr.Revalidating = false
+			a.reviewScr.RevalidationErr = nil
+			a.revalidateSeq++
+			if a.revalidateCancel != nil {
+				a.revalidateCancel()
+				a.revalidateCancel = nil
+			}
+			// ConfirmState is always ConfirmNone here: the Confirm case
+			// below resets it to ConfirmNone before ever dispatching
+			// revalidateCmd, and nothing else can set it while
+			// a.revalidating is true (this guard ignores every key but
+			// back until it resolves).
+			a.currentScreen = screenScanning
+			return a, nil
+		}
+		return a, nil
+	}
+
+	if a.reviewScr.FilterActive {
+		// Every key while typing a filter query is text input, not a
+		// review-screen action: up/down/space/tab must not scroll, toggle
+		// selection, or switch category out from under the user mid-type.
+		switch msg.Type {
+		case tea.KeyRunes:
+			for _, r := range msg.Runes {
+				a.reviewScr.AppendFilterRune(r)
+			}
+		case tea.KeySpace:
+			a.reviewScr.AppendFilterRune(' ')
+		case tea.KeyBackspace:
+			a.reviewScr.BackspaceFilter()
+		case tea.KeyEnter:
+			a.reviewScr.CloseFilter(false)
+		case tea.KeyEsc:
+			a.reviewScr.CloseFilter(true)
+		}
+		return a, nil
+	}
+
 	switch {
 	case key.Matches(msg, keys.Confirm):
 		if a.reviewScr.TotalFiles == 0 {
@@ -870,26 +977,110 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// path straight to the final delete confirmation.
 			a.reviewScr.ConfirmState = screens.ConfirmExecute
 			return a, nil
-		case screens.ConfirmExecute:
+		case screens.ConfirmExecute, screens.ConfirmRevalidated:
+			// Both land here the same way: ConfirmExecute's own "delete?"
+			// question was already answered, and ConfirmRevalidated's second
+			// enter is the user re-confirming the corrected plan revalidation
+			// found below. Either way there is nothing left to ask before
+			// revalidating (or re-revalidating) one more time.
 			a.reviewScr.ConfirmState = screens.ConfirmNone
 		}
-		// Deliberately a.reviewScanResults, not a fresh a.scanningScr.Results()
-		// call: what gets cleaned (and, for sudo categories, what gets sent
-		// to the elevated helper) must be exactly what the review screen
-		// showed, even if a background re-scan mutated scanningScr since.
-		a.cleaningScr = screens.NewCleaningModel(a.reviewScanResults, !a.executeMode)
-		a.cleaningScr.SetSize(a.width, a.height)
-		a.currentScreen = screenCleaning
-		a.cleanStartTime = time.Now()
 
-		if a.reviewScr.ShouldWarnAboutSudo() && a.reviewScr.AuthenticateSudo {
-			return a.startElevation()
+		// Re-check the approved snapshot against disk and the current config
+		// right before it reaches cleaning: a.reviewScanResults may be
+		// however long the user sat on the review screen out of date, and
+		// nothing before this point has ever re-verified it. Still
+		// deliberately derived from a.reviewScanResults (see `selected`
+		// below), not a fresh a.scanningScr.Results() call -- revalidation
+		// only ever narrows what was already approved, it never lets a
+		// background re-scan introduce something new. See revalidatePlan's
+		// own doc comment.
+		//
+		// Dispatched as a Cmd rather than called inline: it os.Stats every
+		// approved entry and, for Docker/Time Machine, shells out to their
+		// EntryRevalidator, so running it synchronously here would freeze
+		// the event loop for however long that takes -- see revalidateCmd's
+		// own doc comment, which is the exact reasoning startElevation
+		// already documents for why directCleanCmd exists.
+		//
+		// Compile per-item selection into the plan right here, the one
+		// moment the user has actually committed to proceeding -- not on
+		// every keystroke while reviewing. reviewBreakdown is captured from
+		// the full (pre-filter) model first, since SelectedResults' own
+		// filtering is exactly what the breakdown needs to describe.
+		selected := a.reviewScr.SelectedResults(a.reviewScanResults)
+		var selectedFiles int
+		for _, r := range selected {
+			if r != nil {
+				selectedFiles += r.TotalFiles
+			}
 		}
-		return a.startNextClean()
+		if selectedFiles == 0 {
+			// Every entry across every category was deselected. Unlike a
+			// category merely losing some of its entries (dropped from the
+			// map by SelectedResults, the rest of the plan proceeds
+			// normally), a plan with nothing left in it would make
+			// revalidatePlan's own "nothing to revalidate" short-circuit
+			// return a non-material, empty delta -- bypassing
+			// handleRevalidateComplete's TotalFiles == 0 guard entirely and
+			// reaching screens.NewCleaningModel with zero categories, which
+			// never marks itself Done. Treat it the same as the
+			// already-empty guard at the top of this case instead: there is
+			// nothing to confirm, so do nothing (ConfirmState was already
+			// reset to ConfirmNone above).
+			return a, nil
+		}
+		a.reviewBreakdown = mergeReviewBreakdown(a.reviewBreakdown, a.reviewScr.Breakdown())
+
+		// revalidateCmd is handed the filtered snapshot directly rather
+		// than through a.reviewScanResults -- which deliberately stays
+		// untouched until handleRevalidateComplete's own
+		// `a.reviewScanResults = msg.results` commits it. If the user backs
+		// out with esc while this is in flight (the a.revalidating guard at
+		// the top of this function), nothing here has mutated app state:
+		// a.reviewScanResults still matches exactly what a.reviewScr (never
+		// rebuilt on that path either) already shows. Committing the
+		// narrowed plan eagerly used to leave a.reviewScanResults missing
+		// an entry the user could still see checked and re-toggle back on
+		// in the (stale, reused) review screen after backing out --
+		// selecting it there again would silently do nothing, since
+		// SelectedResults can only narrow a.reviewScanResults, never
+		// reintroduce something already dropped from it.
+		//
+		// revalidateSeq is stamped into the dispatched message and compared
+		// back in handleRevalidateComplete; the a.revalidating guard at the
+		// top of this function is what actually keeps a second enter from
+		// reaching here and dispatching a second revalidateCmd, and is also
+		// what routes esc, while this is in flight, to bump revalidateSeq
+		// instead of falling through to the ordinary Back case below.
+		a.revalidating = true
+		a.reviewScr.Revalidating = true
+		a.revalidateSeq++
+		ctx, cancel := context.WithCancel(a.ctx)
+		a.revalidateCancel = cancel
+		return a, revalidateCmd(ctx, a.revalidateSeq, a.registry, a.cfg, selected)
 
 	case key.Matches(msg, keys.Back):
+		// a.revalidating is never true here: the top-of-function guard
+		// above handles back on its own while one is in flight.
+		a.reviewScr.RevalidationErr = nil
 		if a.reviewScr.ConfirmState != screens.ConfirmNone {
 			a.reviewScr.ConfirmState = screens.ConfirmNone
+			return a, nil
+		}
+		if a.reviewScr.TotalFiles == 0 && a.reviewScr.RevalidationDelta != nil {
+			// Revalidation is what emptied this plan (see
+			// handleRevalidateComplete's TotalFiles == 0 branch, which
+			// already reset reviewBuilt and evicted these categories from
+			// a.scanResults). Routing through screenScanning here would be
+			// a dead end: a.scanningScr still holds the pre-revalidation
+			// results, untouched by that reset, so its own Confirm handler
+			// (which only rebuilds when !reviewBuilt) would hand back the
+			// exact stale plan revalidation just proved empty. Go straight
+			// to the dashboard instead, matching the "esc: back to
+			// dashboard" hint this state's own View() already shows, so
+			// re-selecting the category actually re-scans.
+			a.currentScreen = screenDashboard
 			return a, nil
 		}
 		a.currentScreen = screenScanning
@@ -913,16 +1104,195 @@ func (a App) updateReview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.reviewScr.ToggleFullPath()
 	case key.Matches(msg, keys.NextList):
 		a.reviewScr.NextCategory()
+	case key.Matches(msg, keys.Select):
+		// A no-op behind any confirm dialog: the file list underneath isn't
+		// what's on screen, so toggling an item there would mutate state the
+		// user cannot see (same reasoning as the a.revalidating guard above).
+		if a.reviewScr.ConfirmState == screens.ConfirmNone {
+			a.reviewScr.ToggleSelected()
+		}
+	case key.Matches(msg, keys.Filter):
+		if a.reviewScr.ConfirmState == screens.ConfirmNone {
+			a.reviewScr.OpenFilter()
+		}
+	case key.Matches(msg, keys.ToggleAllSelected):
+		if a.reviewScr.ConfirmState == screens.ConfirmNone {
+			a.reviewScr.ToggleSelectAll()
+		}
 	}
 
 	return a, nil
+}
+
+// handleRevalidateComplete applies the outcome of revalidateCmd, dispatched
+// from updateReview's final confirm step. See revalidatePlan's own doc
+// comment for what it checks; this is purely the TUI-state decision built on
+// top of that result.
+func (a App) handleRevalidateComplete(msg revalidateCompleteMsg) (tea.Model, tea.Cmd) {
+	// A stale result. msg.seq != a.revalidateSeq is the real defense here:
+	// updateReview's top-of-function a.revalidating guard bumps
+	// revalidateSeq the instant the user presses back while this is in
+	// flight, so a dispatch the user has abandoned can never match again --
+	// not even if they later navigate back into screenReview and
+	// currentScreen happens to read the same as it did at dispatch time.
+	// currentScreen != screenReview is kept as a second, independent check
+	// (e.g. against some future path that changes screens without going
+	// through updateReview's Back handling). Acting on a stale result
+	// regardless of where the app is now is exactly how an aborted confirm
+	// could still start deleting, or how two overlapping enter presses
+	// could each dispatch their own clean pipeline over the same plan.
+	if msg.seq != a.revalidateSeq || a.currentScreen != screenReview {
+		return a, nil
+	}
+	a.revalidating = false
+	a.reviewScr.Revalidating = false
+	if a.revalidateCancel != nil {
+		a.revalidateCancel()
+		a.revalidateCancel = nil
+	}
+
+	err := msg.err
+	if err == nil && len(msg.categoryErrs) > 0 {
+		// A category's own revalidation failing (e.g. Docker unreachable at
+		// confirm time) is data, not a structural error, but it must still
+		// block rather than silently vanish: NewCleaningModel below skips
+		// any category with 0 files with no trace of why. Surfacing it the
+		// same way a structural error is surfaced -- stop here, let the user
+		// retry with enter or back out with esc -- keeps every failure
+		// visible without teaching NewCleaningModel a new shape of "empty
+		// but not actually done" category. Deliberately NOT the same check
+		// as "does this category carry any ScanResult.Errors": those may be
+		// pre-existing, non-fatal scan-time issues (see revalidatePlan's doc
+		// comment) that must never permanently block confirming.
+		err = joinCategoryErrs(msg.categoryErrs)
+	}
+	if err != nil {
+		a.reviewScr.RevalidationErr = err
+		return a, nil
+	}
+	a.reviewScr.RevalidationErr = nil
+	a.reviewScanResults = msg.results
+
+	if msg.delta.Material() {
+		// Rebuild reviewScr from the revalidated snapshot rather than only
+		// swapping reviewScanResults: the review screen's own file list and
+		// totals otherwise keep showing the pre-revalidation state (a file
+		// already known gone, a total that no longer matches) underneath
+		// the very screen telling the user something changed. AuthenticateSudo
+		// is the one piece of user intent NewReview would otherwise reset to
+		// its default (skip) -- explicitly carried over so re-confirming a
+		// revalidated plan can never silently discard that choice.
+		authenticateSudo := a.reviewScr.AuthenticateSudo
+		delta := msg.delta
+		a.reviewScr = screens.NewReview(a.reviewScanResults, a.executeMode, a.registry, a.isElevated)
+		a.reviewScr.SetSize(a.width, a.height)
+		a.reviewScr.AuthenticateSudo = authenticateSudo
+		// Kept even when nothing survived (TotalFiles == 0 below), so
+		// View()'s empty-plan message can say why the plan is empty instead
+		// of reusing the same "already tidy" wording a scan that genuinely
+		// found nothing would show.
+		a.reviewScr.RevalidationDelta = &delta
+		if a.reviewScr.TotalFiles > 0 {
+			a.reviewScr.ConfirmState = screens.ConfirmRevalidated
+		} else {
+			// Nothing survived revalidation. ReviewModel.View()'s own
+			// TotalFiles == 0 branch renders an empty-plan message instead --
+			// entering ConfirmRevalidated here would show a "confirm updated
+			// plan" prompt whose enter key is a silent no-op (updateReview's
+			// own TotalFiles == 0 guard, at the very top of its Confirm case).
+			//
+			// a.scanResults' cached entries for every category in this plan
+			// are now known-stale (that is exactly what emptied it), and
+			// updateScanning's dashboard-reuse path (a.scanResults[id])
+			// would otherwise rebuild the same review from the same stale
+			// results and revalidate it to empty again -- a dead end short
+			// of quitting or backing all the way out twice. Clearing
+			// reviewBuilt and the affected cache entries forces a real
+			// re-scan the next time these categories are selected.
+			a.reviewBuilt = false
+			for category := range a.reviewScanResults {
+				delete(a.scanResults, category)
+			}
+		}
+		return a, nil
+	}
+	a.reviewScr.RevalidationDelta = nil
+
+	a.cleaningScr = screens.NewCleaningModel(a.reviewScanResults, !a.executeMode)
+	a.cleaningScr.SetSize(a.width, a.height)
+	a.currentScreen = screenCleaning
+	a.cleanStartTime = time.Now()
+
+	if a.reviewScr.ShouldWarnAboutSudo() && a.reviewScr.AuthenticateSudo {
+		return a.startElevation()
+	}
+	return a.startNextClean()
+}
+
+// joinCategoryErrs turns a set of per-category revalidation failures into
+// one deterministic error: map iteration order is not, so picking or
+// ordering by it would make the reported message (and, in a test, which
+// category "wins") vary run to run for the same input.
+func joinCategoryErrs(categoryErrs map[cleaner.Category]error) error {
+	names := make([]string, 0, len(categoryErrs))
+	byName := make(map[string]cleaner.Category, len(categoryErrs))
+	for cat := range categoryErrs {
+		names = append(names, string(cat))
+		byName[string(cat)] = cat
+	}
+	sort.Strings(names)
+
+	errs := make([]error, 0, len(names))
+	for _, name := range names {
+		cat := byName[name]
+		errs = append(errs, fmt.Errorf("%s: %w", cat.DisplayName(), categoryErrs[cat]))
+	}
+	return errors.Join(errs...)
+}
+
+// mergeReviewBreakdown folds a freshly computed per-confirm breakdown
+// (next) into whatever a previous round of the same review session already
+// captured (prev) -- see updateReview's Confirm case, which calls this on
+// every confirm, and updateScanning's Confirm handler, which resets
+// a.reviewBreakdown to nil at the start of a new session so nothing leaks
+// across an unrelated scan.
+//
+// A material revalidation delta rebuilds a.reviewScr from
+// a.reviewScanResults (see handleRevalidateComplete), which by then has
+// already had every deselected entry stripped out entirely -- so that
+// rebuilt model's own Breakdown() can never again report an exclusion from
+// an earlier round; the entry simply isn't there for it to see. Without
+// merging, a user who deselects something, confirms, and then re-confirms
+// after revalidation found something else material would see their
+// original exclusion count silently vanish from the eventual summary.
+// ExcludedByUser therefore accumulates across rounds: an entry excluded
+// once stays excluded for the rest of the session, so each round's count
+// is additional information, never a correction of the last. Protected is
+// instead taken as the latest snapshot (state, not a one-way event) --
+// summing it across rounds would double-count the same protected entries
+// every time the user re-confirms without anything having changed.
+func mergeReviewBreakdown(prev, next map[cleaner.Category]screens.ReviewBreakdown) map[cleaner.Category]screens.ReviewBreakdown {
+	if len(prev) == 0 {
+		return next
+	}
+	merged := make(map[cleaner.Category]screens.ReviewBreakdown, len(prev)+len(next))
+	for cat, bd := range prev {
+		merged[cat] = bd
+	}
+	for cat, bd := range next {
+		m := merged[cat]
+		m.ExcludedByUser += bd.ExcludedByUser
+		m.Protected = bd.Protected
+		merged[cat] = m
+	}
+	return merged
 }
 
 func (a App) updateCleaning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.cleaningScr.Done {
 		if key.Matches(msg, keys.Confirm) {
 			results := a.cleaningScr.Results()
-			a.summaryScr = screens.NewSummary(results, !a.executeMode)
+			a.summaryScr = screens.NewSummary(results, !a.executeMode, a.reviewBreakdown)
 			a.summaryScr.SetSize(a.width, a.height)
 			a.currentScreen = screenSummary
 			return a, nil
@@ -1060,7 +1430,7 @@ func (a App) View() string {
 
 	var banner string
 	if !a.executeMode {
-		banner = styles.DryRunBanner.Render("DRY RUN MODE - No files will be deleted. Start the app with --execute to clean.") + "\n"
+		banner = styles.DryRunBanner.Render("DRY RUN MODE - No files will be deleted. Run 'tidymymac execute' to clean.") + "\n"
 	}
 
 	var content string

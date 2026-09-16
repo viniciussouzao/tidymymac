@@ -176,6 +176,7 @@ func TestRevalidationDelta_Material(t *testing.T) {
 		{"newly protected", RevalidationDelta{NewlyProtected: 1}, true},
 		{"identity changed", RevalidationDelta{IdentityChanged: 1}, true},
 		{"size changed only", RevalidationDelta{SizeChanged: true}, false},
+		{"sensitive growth", RevalidationDelta{SensitiveGrowth: []CategorySizeGrowth{{Category: cleaner.CategoryDownloads, Bytes: 100 * 1024 * 1024}}}, true},
 	}
 	for _, tc := range cases {
 		if got := tc.delta.Material(); got != tc.want {
@@ -203,6 +204,7 @@ func TestReviewModel_ViewRendersRevalidationDelta(t *testing.T) {
 		MissingFiles:     2,
 		TypeChangedFiles: 1,
 		IdentityChanged:  3,
+		SensitiveGrowth:  []CategorySizeGrowth{{Category: cleaner.CategoryDownloads, Bytes: 150 * 1024 * 1024}},
 		TotalSize:        5,
 		TotalFiles:       1,
 	}
@@ -216,6 +218,9 @@ func TestReviewModel_ViewRendersRevalidationDelta(t *testing.T) {
 	}
 	if !strings.Contains(view, "3 item(s) changed on disk") {
 		t.Errorf("View() missing the identity-changed line:\n%s", view)
+	}
+	if !strings.Contains(view, "Downloads grew by 150.0 MB since review") {
+		t.Errorf("View() missing the sensitive-growth line:\n%s", view)
 	}
 	if !strings.Contains(view, "confirm updated plan") {
 		t.Errorf("View() missing the execute-mode re-confirm hint:\n%s", view)

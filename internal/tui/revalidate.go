@@ -4,6 +4,7 @@ import (
 	"context"
 	"io/fs"
 	"os"
+	"sort"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -95,13 +96,16 @@ func revalidatePlan(ctx context.Context, registry *cleaner.Registry, cfg *config
 	var beforeFiles, afterFiles int
 	var newlyProtected int
 	var identityChanged int
+	beforeByCategory := make(map[cleaner.Category]int64)
+	afterByCategory := make(map[cleaner.Category]int64)
 
-	for _, orig := range originalByKey {
+	for key, orig := range originalByKey {
 		if orig.Protected {
 			continue
 		}
 		beforeSize += orig.Size
 		beforeFiles++
+		beforeByCategory[key.Category] += orig.Size
 	}
 
 	for _, item := range prepared.Result.Categories {
@@ -153,8 +157,28 @@ func revalidatePlan(ctx context.Context, registry *cleaner.Registry, cfg *config
 			}
 			afterSize += e.Size
 			afterFiles++
+			afterByCategory[item.Category] += e.Size
 		}
 	}
+
+	var sensitiveGrowth []screens.CategorySizeGrowth
+	for category, after := range afterByCategory {
+		c, ok := registry.Get(category)
+		if !ok {
+			continue
+		}
+		guard, ok := c.(cleaner.SizeGrowthGuard)
+		if !ok {
+			continue
+		}
+		growth := after - beforeByCategory[category]
+		if growth >= guard.ReconfirmGrowthThreshold() {
+			sensitiveGrowth = append(sensitiveGrowth, screens.CategorySizeGrowth{Category: category, Bytes: growth})
+		}
+	}
+	sort.Slice(sensitiveGrowth, func(i, j int) bool {
+		return sensitiveGrowth[i].Category < sensitiveGrowth[j].Category
+	})
 
 	delta := screens.RevalidationDelta{
 		MissingFiles:     prepared.MissingFiles,
@@ -162,6 +186,7 @@ func revalidatePlan(ctx context.Context, registry *cleaner.Registry, cfg *config
 		NewlyProtected:   newlyProtected,
 		IdentityChanged:  identityChanged,
 		SizeChanged:      afterSize != beforeSize || afterFiles != beforeFiles,
+		SensitiveGrowth:  sensitiveGrowth,
 		TotalSize:        afterSize,
 		TotalFiles:       afterFiles,
 	}

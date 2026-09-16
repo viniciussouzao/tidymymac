@@ -153,6 +153,36 @@ func TestDownloadsCleanerScanContextCancellation(t *testing.T) {
 	}
 }
 
+func TestDownloadsCleanerRevalidateEntrySize(t *testing.T) {
+	dir := t.TempDir()
+	filePath := createSparseFile(t, dir, "Installer.dmg", 4096)
+	dirPath := filepath.Join(dir, "Archive")
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createAllocatedFile(t, dirPath, "payload.bin", 8192)
+
+	c := NewDownloadsCleaner()
+	fileSize, err := c.RevalidateEntrySize(t.Context(), FileEntry{Path: filePath})
+	if err != nil {
+		t.Fatalf("file RevalidateEntrySize() error: %v", err)
+	}
+	if fileSize != 4096 {
+		t.Errorf("file size = %d, want 4096", fileSize)
+	}
+
+	dirSize, err := c.RevalidateEntrySize(t.Context(), FileEntry{Path: dirPath, IsDir: true})
+	if err != nil {
+		t.Fatalf("directory RevalidateEntrySize() error: %v", err)
+	}
+	if dirSize < 8192 {
+		t.Errorf("directory size = %d, want at least 8192", dirSize)
+	}
+	if c.ReconfirmGrowthThreshold() != 100*1024*1024 {
+		t.Errorf("threshold = %d, want 100 MiB", c.ReconfirmGrowthThreshold())
+	}
+}
+
 func TestDownloadsCleanerCleanDryRun(t *testing.T) {
 	dir := t.TempDir()
 	filePath := createSparseFile(t, dir, "Installer.dmg", 1024)

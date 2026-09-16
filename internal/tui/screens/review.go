@@ -32,8 +32,16 @@ type RevalidationDelta struct {
 	NewlyProtected   int
 	IdentityChanged  int
 	SizeChanged      bool
+	SensitiveGrowth  []CategorySizeGrowth
 	TotalSize        int64
 	TotalFiles       int
+}
+
+// CategorySizeGrowth describes a category whose selected, actionable plan
+// grew enough to cross its cleaner-declared reconfirmation threshold.
+type CategorySizeGrowth struct {
+	Category cleaner.Category
+	Bytes    int64
 }
 
 // Material reports whether this delta is worth interrupting the user for --
@@ -54,8 +62,11 @@ type RevalidationDelta struct {
 // reflect any size drift) are shown whenever a summary IS displayed for one
 // of the other reasons, but a size-only drift with nothing else material
 // produces no summary at all and is accepted silently by design.
+// SensitiveGrowth is the narrow exception: those cleaners opt in to a
+// meaningful-growth policy because their entries are user data or backups
+// rather than volatile junk.
 func (d RevalidationDelta) Material() bool {
-	return d.MissingFiles > 0 || d.TypeChangedFiles > 0 || d.NewlyProtected > 0 || d.IdentityChanged > 0
+	return d.MissingFiles > 0 || d.TypeChangedFiles > 0 || d.NewlyProtected > 0 || d.IdentityChanged > 0 || len(d.SensitiveGrowth) > 0
 }
 
 // ReviewBreakdown summarizes, for one category, how the review screen's own
@@ -1263,6 +1274,9 @@ func (m ReviewModel) View() string {
 		}
 		if d.IdentityChanged > 0 {
 			fmt.Fprintf(&b, "    - %d item(s) changed on disk -- will be skipped\n", d.IdentityChanged)
+		}
+		for _, growth := range d.SensitiveGrowth {
+			fmt.Fprintf(&b, "    - %s grew by %s since review\n", growth.Category.DisplayName(), utils.FormatBytes(growth.Bytes))
 		}
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "  New plan: %s · %d files\n\n", utils.FormatBytes(d.TotalSize), d.TotalFiles)

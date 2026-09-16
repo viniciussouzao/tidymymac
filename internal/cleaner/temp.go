@@ -22,6 +22,12 @@ type TempCleaner struct {
 	// visited would be a hole in the elevated helper's second fence.
 	roots []string
 
+	// excludedRoots are system-managed subtrees that happen to live inside a
+	// temp root but are not disposable temp data. In particular, Gatekeeper's
+	// AppTranslocation is a read-only runtime mount: counting its app bundle as
+	// reclaimable space is misleading, and trying to remove it can only fail.
+	excludedRoots []string
+
 	// sudoRoots is the strict subset of roots that cannot be cleaned without
 	// root. /tmp and /var/tmp are shared and world-writable: they hold other
 	// users' files, so deleting there needs privileges the invoking user does
@@ -42,11 +48,36 @@ func NewTempCleaner() *TempCleaner {
 	if err != nil {
 		home = ""
 	}
+	tmpDir := os.TempDir()
+	euid := os.Geteuid()
 	return &TempCleaner{
-		homeDir:   home,
-		roots:     tempScanRoots(home, os.TempDir(), os.Geteuid()),
-		sudoRoots: tempSudoRoots(),
+		homeDir:       home,
+		roots:         tempScanRoots(home, tmpDir, euid),
+		excludedRoots: tempExcludedRoots(tmpDir, euid),
+		sudoRoots:     tempSudoRoots(),
 	}
+}
+
+// tempExcludedRoots returns macOS-managed trees below the invoking user's
+// TMPDIR that must never become cleanup candidates. Deriving these from the
+// same validated root used by tempScanRoots keeps an attacker-controlled
+// TMPDIR from creating exclusions elsewhere on disk.
+func tempExcludedRoots(tmpDir string, euid int) []string {
+	userTmp, ok := userTempRoot(tmpDir, euid)
+	if !ok {
+		return nil
+	}
+	return []string{filepath.Join(userTmp, "AppTranslocation")}
+}
+
+func (c *TempCleaner) isExcluded(path string) bool {
+	cleaned := filepath.Clean(path)
+	for _, root := range c.excludedRoots {
+		if cleaned == root || strings.HasPrefix(cleaned, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // tempSudoRoots is the shared, world-writable part of the Temp domain -- the
@@ -182,6 +213,13 @@ func (c *TempCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*S
 				return fs.SkipAll
 			}
 
+			// AppTranslocation is a read-only Gatekeeper runtime mount under
+			// $TMPDIR, not disposable user temp data. Prune it before walking
+			// thousands of app-bundle files that cannot be removed.
+			if d.IsDir() && c.isExcluded(path) {
+				return fs.SkipDir
+			}
+
 			// Only consider files, skip directories for now
 			if d.IsDir() {
 				return nil
@@ -252,6 +290,12 @@ func (c *TempCleaner) Clean(ctx context.Context, entries []FileEntry, dryRun boo
 
 		if entry.IsDir {
 			continue // skip directories for now
+		}
+
+		// Keep the exclusion at the destructive boundary too. This protects
+		// saved plans produced by an older version, not just fresh scans.
+		if c.isExcluded(entry.Path) {
+			continue
 		}
 
 		if !dryRun {

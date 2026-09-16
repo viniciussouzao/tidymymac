@@ -1,11 +1,14 @@
 package screens
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/viniciussouzao/tidymymac/internal/celebration"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
@@ -145,17 +148,13 @@ func (m SummaryModel) View() string {
 		}
 
 		if len(r.Errors) > 0 && !m.ShowErrors {
-			if len(r.Errors) == 1 {
-				b.WriteString(styles.Error.Render(" (" + r.Errors[0].Error() + ")"))
-			} else {
-				b.WriteString(styles.Error.Render(fmt.Sprintf(" (%d errors)", len(r.Errors))))
-			}
+			b.WriteString(styles.Error.Render(fmt.Sprintf(" (%d error%s)", len(r.Errors), pluralSuffix(len(r.Errors), "", "s"))))
 		}
 		b.WriteString("\n")
 
 		if m.ShowErrors {
 			for _, e := range r.Errors {
-				b.WriteString(styles.Error.Render("        " + e.Error()))
+				b.WriteString(m.errorDetail(e))
 				b.WriteString("\n")
 			}
 		}
@@ -226,4 +225,40 @@ func (m SummaryModel) View() string {
 	b.WriteString(styles.Help.Render(helpText))
 
 	return b.String()
+}
+
+// errorDetail keeps both the path and its cause visible inside the terminal.
+// Files under App Translocation and deeply nested caches commonly exceed the
+// viewport width; rendering the raw error on one line lets the terminal clip
+// the trailing ": reason", which is the most useful part of the message.
+func (m SummaryModel) errorDetail(err error) string {
+	const indent = "        "
+
+	detail := utils.SanitizeForTerminal(err.Error())
+	if m.Width <= len(indent)+1 {
+		return styles.Error.Render(indent + detail)
+	}
+
+	// os.Remove and friends return *fs.PathError. Keep these common per-item
+	// failures to one compact line: preserve the basename and the reason, and
+	// elide only the middle of the path. This avoids doubling the vertical
+	// space for dozens of failures while still making the cause readable.
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		path := utils.SanitizeForTerminal(pathErr.Path)
+		reason := utils.SanitizeForTerminal(pathErr.Err.Error())
+		available := m.Width - len(indent) - 2
+		pathWidth := available - ansi.StringWidth(": "+reason)
+		if pathWidth >= 12 {
+			line := indent + truncatePath(path, pathWidth) + ": " + reason
+			return styles.Error.Render(line)
+		}
+	}
+
+	wrapped := ansi.Hardwrap(detail, m.Width-len(indent)-2, false)
+	lines := strings.Split(wrapped, "\n")
+	for i := range lines {
+		lines[i] = styles.Error.Render(indent + lines[i])
+	}
+	return strings.Join(lines, "\n")
 }

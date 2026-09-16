@@ -54,6 +54,32 @@ func TestTempCleanerScanContextCancellation(t *testing.T) {
 	}
 }
 
+func TestTempCleanerScanPrunesAppTranslocation(t *testing.T) {
+	root := resolveScanRoot(t.TempDir())
+	appTranslocation := filepath.Join(root, "AppTranslocation")
+	ignored := createSparseFile(t, filepath.Join(appTranslocation, "ABC", "d", "Example.app", "Contents"), "Info.plist", 200)
+	included := createTempFile(t, root, "ordinary.tmp", 100)
+
+	c := &TempCleaner{
+		roots:         []string{root},
+		excludedRoots: []string{appTranslocation},
+	}
+	result, err := c.Scan(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	if result.TotalFiles != 1 || result.TotalSize != 100 {
+		t.Fatalf("Scan() totals = %d files/%d bytes, want 1 file/100 bytes", result.TotalFiles, result.TotalSize)
+	}
+	if len(result.Entries) != 1 || result.Entries[0].Path != included {
+		t.Fatalf("Scan() entries = %+v, want only %q", result.Entries, included)
+	}
+	if _, err := os.Stat(ignored); err != nil {
+		t.Fatalf("excluded file should remain untouched during scan: %v", err)
+	}
+}
+
 func TestTempCleanerCleanDryRun(t *testing.T) {
 	dir := resolveScanRoot(t.TempDir())
 	f := createTempFile(t, dir, "test.tmp", 512)
@@ -109,6 +135,39 @@ func TestTempCleanerCleanActualDeletion(t *testing.T) {
 		if _, err := os.Stat(f); !os.IsNotExist(err) {
 			t.Errorf("file %s should have been deleted", f)
 		}
+	}
+}
+
+func TestTempCleanerCleanSkipsAppTranslocationFromSavedPlan(t *testing.T) {
+	root := resolveScanRoot(t.TempDir())
+	appTranslocation := filepath.Join(root, "AppTranslocation")
+	excluded := createSparseFile(t, filepath.Join(appTranslocation, "ABC", "d", "Example.app", "Contents"), "Info.plist", 200)
+	ordinary := createTempFile(t, root, "ordinary.tmp", 100)
+
+	c := &TempCleaner{
+		roots:         []string{root},
+		excludedRoots: []string{appTranslocation},
+	}
+	entries := []FileEntry{
+		{Path: excluded, Size: 200, Category: CategoryTemp},
+		{Path: ordinary, Size: 100, Category: CategoryTemp},
+	}
+	result, err := c.Clean(t.Context(), entries, false, nil)
+	if err != nil {
+		t.Fatalf("Clean() error: %v", err)
+	}
+
+	if result.FilesDeleted != 1 || result.BytesFreed != 100 {
+		t.Fatalf("Clean() totals = %d files/%d bytes, want 1 file/100 bytes", result.FilesDeleted, result.BytesFreed)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("Clean() errors = %v, want none", result.Errors)
+	}
+	if _, err := os.Stat(excluded); err != nil {
+		t.Fatalf("excluded AppTranslocation file should remain: %v", err)
+	}
+	if _, err := os.Stat(ordinary); !os.IsNotExist(err) {
+		t.Fatalf("ordinary temp file should be deleted, stat error = %v", err)
 	}
 }
 
@@ -330,6 +389,34 @@ func TestUserTempRoot(t *testing.T) {
 				t.Fatalf("userTempRoot(%q, %d) = %q, want %q", tt.tmpDir, tt.euid, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestTempExcludedRoots(t *testing.T) {
+	const userTmp = "/var/folders/xy/abc123/T"
+
+	got := tempExcludedRoots(userTmp+"/", 501)
+	want := filepath.Join(userTmp, "AppTranslocation")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("tempExcludedRoots() = %v, want [%q]", got, want)
+	}
+	if got := tempExcludedRoots("/Users/someone/Documents", 501); len(got) != 0 {
+		t.Fatalf("tempExcludedRoots(invalid TMPDIR) = %v, want none", got)
+	}
+	if got := tempExcludedRoots(userTmp, 0); len(got) != 0 {
+		t.Fatalf("tempExcludedRoots(elevated) = %v, want none", got)
+	}
+}
+
+func TestTempCleanerAppTranslocationExclusionDoesNotMatchLookalikes(t *testing.T) {
+	root := "/var/folders/xy/abc123/T/AppTranslocation"
+	c := &TempCleaner{excludedRoots: []string{root}}
+
+	if !c.isExcluded(filepath.Join(root, "ABC", "d", "Example.app")) {
+		t.Fatal("real AppTranslocation descendant should be excluded")
+	}
+	if c.isExcluded(root + "-backup/file.tmp") {
+		t.Fatal("AppTranslocation prefix lookalike should not be excluded")
 	}
 }
 

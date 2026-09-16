@@ -860,6 +860,40 @@ func TestUpdateReview_NoChangeSkipsExtraConfirmation(t *testing.T) {
 	}
 }
 
+func TestUpdateReview_SensitiveGrowthRequiresReconfirmation(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "backup", 10)
+	const category cleaner.Category = "mock_cat"
+	const threshold int64 = 100 * 1024 * 1024
+
+	app := newRevalidationTestApp(t, path, 10)
+	registry := cleaner.NewRegistry()
+	registry.Register(&mockSizeGrowthCleaner{
+		wholeDomainMockCleaner: wholeDomainMockCleaner{category: category},
+		size:                   10 + threshold,
+		threshold:              threshold,
+	})
+	app.registry = registry
+	app.reviewScr = screens.NewReview(app.reviewScanResults, true, registry, false)
+
+	model, _ := app.updateReview(tea.KeyMsg{Type: tea.KeyEnter})
+	app = model.(App)
+	app, _ = confirmAndRevalidate(t, app)
+
+	if app.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview", app.currentScreen)
+	}
+	if app.reviewScr.ConfirmState != screens.ConfirmRevalidated {
+		t.Fatalf("ConfirmState = %v, want ConfirmRevalidated", app.reviewScr.ConfirmState)
+	}
+	if len(app.reviewScr.RevalidationDelta.SensitiveGrowth) != 1 {
+		t.Fatalf("SensitiveGrowth = %+v, want one entry", app.reviewScr.RevalidationDelta.SensitiveGrowth)
+	}
+	if len(app.cleaningScr.Categories) != 0 {
+		t.Fatal("cleaning started before the sensitive growth was re-confirmed")
+	}
+}
+
 // TestUpdateReview_StaleRevalidationAfterBackOutIsDiscarded pins a security
 // review finding: a revalidateCmd dispatched from the review screen must not
 // be allowed to start cleaning if the user has since backed out with esc.

@@ -105,6 +105,24 @@ func PrepareScanResultForClean(ctx context.Context, registry *cleaner.Registry, 
 		} else {
 			revalidated, missing, typeChanged = revalidateEntries(category.Files)
 		}
+		if guard, ok := c.(cleaner.SizeGrowthGuard); ok {
+			measurementFailed := false
+			for i := range revalidated {
+				size, sizeErr := guard.RevalidateEntrySize(ctx, revalidated[i])
+				if sizeErr != nil {
+					item.Err = fmt.Errorf("revalidate %s size for %s: %w", item.Name, revalidated[i].Path, sizeErr)
+					item.ErrMsg = item.Err.Error()
+					prepared.Result.HasErrors = true
+					prepared.Result.Categories = append(prepared.Result.Categories, item)
+					measurementFailed = true
+					break
+				}
+				revalidated[i].Size = size
+			}
+			if measurementFailed {
+				continue
+			}
+		}
 		for i := range revalidated {
 			revalidated[i].Category = item.Category
 		}

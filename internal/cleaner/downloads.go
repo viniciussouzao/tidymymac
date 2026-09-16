@@ -8,7 +8,9 @@ import (
 	"time"
 )
 
-const downloadsLargeItemThreshold int64 = 100 * 1024 * 1024
+// Downloads already treats 100 MiB as the boundary for a large item, so its
+// growth guard intentionally uses the same product threshold.
+const downloadsLargeItemThreshold int64 = sensitiveSizeGrowthThreshold
 
 // DownloadsCleaner scans and cleans installers and large items in the Downloads folder.
 type DownloadsCleaner struct {
@@ -40,6 +42,27 @@ func (c *DownloadsCleaner) DeletesWholeDomain() bool { return false }
 // SupportsItemSelection implements cleaner.ItemSelectable: each entry is an
 // individually removable file, few enough for per-item review.
 func (c *DownloadsCleaner) SupportsItemSelection() bool { return true }
+
+func (c *DownloadsCleaner) ReconfirmGrowthThreshold() int64 {
+	return sensitiveSizeGrowthThreshold
+}
+
+// RevalidateEntrySize mirrors Scan's measurement semantics: regular files use
+// their logical size, while directories use the same du-based recursive size
+// calculation used when the review was built.
+func (c *DownloadsCleaner) RevalidateEntrySize(ctx context.Context, entry FileEntry) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if entry.IsDir {
+		return getPathSize(ctx, entry.Path)
+	}
+	info, err := os.Lstat(entry.Path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
 
 func (c *DownloadsCleaner) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if c.homeDir == "" {

@@ -2,6 +2,8 @@ package cleaner
 
 import "context"
 
+const sensitiveSizeGrowthThreshold int64 = 100 * 1024 * 1024
+
 type Cleaner interface {
 	// Category returns the cleaner's category identifier.
 	Category() Category
@@ -44,6 +46,21 @@ type Cleaner interface {
 // are gone": callers must not treat it as an empty result.
 type EntryRevalidator interface {
 	RevalidateEntries(ctx context.Context, entries []FileEntry) (revalidated []FileEntry, missing int, typeChanged int, err error)
+}
+
+// SizeGrowthGuard is an optional interface for cleaners whose entries are
+// sensitive enough that a meaningful increase between review and cleanup
+// should be called out to the user. RevalidateEntrySize must measure an entry
+// with the same size semantics the cleaner's Scan uses (notably for directory
+// entries, whose Lstat size is only metadata). ReconfirmGrowthThreshold is the
+// minimum category-level increase that should require a fresh confirmation.
+//
+// The shared scan-input preparation path invokes RevalidateEntrySize, while
+// the TUI owns the confirmation decision. Keeping measurement here prevents
+// the TUI from duplicating cleaner-specific filesystem knowledge.
+type SizeGrowthGuard interface {
+	RevalidateEntrySize(ctx context.Context, entry FileEntry) (int64, error)
+	ReconfirmGrowthThreshold() int64
 }
 
 // ItemSelectable is an optional interface for a cleaner whose entries each

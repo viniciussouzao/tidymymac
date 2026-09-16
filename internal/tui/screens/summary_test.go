@@ -2,9 +2,11 @@ package screens
 
 import (
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 )
 
@@ -113,6 +115,63 @@ func TestSummaryShowErrorsExpandsPerItemDetail(t *testing.T) {
 	summary.ToggleShowErrors()
 	if summary.ShowErrors {
 		t.Fatal("ToggleShowErrors did not clear ShowErrors on a second call")
+	}
+}
+
+func TestSummaryShowErrorsWrapsLongPathsAndKeepsCauseVisible(t *testing.T) {
+	longPath := "/var/folders/example/AppTranslocation/Caffeine.app/Contents/Frameworks/Sparkle.framework/Versions/B/Resources/very/deep/file"
+	summary := NewSummary([]*cleaner.CleanResult{
+		{
+			Category: cleaner.CategoryApplicationCaches,
+			Errors:   []error{&fs.PathError{Op: "remove", Path: longPath, Err: errors.New("operation not permitted")}},
+		},
+	}, false, nil)
+	summary.SetSize(54, 30)
+
+	collapsed := summary.View()
+	if !strings.Contains(collapsed, "(1 error)") {
+		t.Errorf("collapsed view = %q, want the singular error summary", collapsed)
+	}
+	if strings.Contains(collapsed, longPath) {
+		t.Errorf("collapsed view must not append a long error to the category row:\n%s", collapsed)
+	}
+
+	summary.ToggleShowErrors()
+	expanded := summary.View()
+	var detail strings.Builder
+	var detailLines int
+	for _, line := range strings.Split(expanded, "\n") {
+		plain := ansi.Strip(line)
+		if !strings.HasPrefix(plain, "        ") || strings.TrimSpace(plain) == "" {
+			continue
+		}
+		detailLines++
+		detail.WriteString(strings.TrimSpace(plain))
+		if width := ansi.StringWidth(line); width > summary.Width {
+			t.Errorf("rendered line width = %d, terminal width = %d: %q", width, summary.Width, line)
+		}
+	}
+	if !strings.Contains(detail.String(), "operation not permitted") {
+		t.Errorf("expanded view clipped the error cause:\n%s", expanded)
+	}
+	if detailLines != 1 {
+		t.Errorf("path error rendered across %d detail lines, want one compact line:\n%s", detailLines, expanded)
+	}
+}
+
+func TestSummaryShowErrorsSanitizesControlCharacters(t *testing.T) {
+	summary := NewSummary([]*cleaner.CleanResult{{
+		Category: cleaner.CategoryApplicationCaches,
+		Errors:   []error{errors.New("/tmp/unsafe\x1b[31m: denied\nnext")},
+	}}, false, nil)
+	summary.ToggleShowErrors()
+
+	view := summary.View()
+	if strings.Contains(view, "unsafe\x1b[31m") || strings.Contains(view, "denied\nnext") {
+		t.Errorf("expanded error contains unsanitized control characters: %q", view)
+	}
+	if !strings.Contains(view, `unsafe\e[31m: denied\nnext`) {
+		t.Errorf("expanded error does not contain the sanitized detail: %q", view)
 	}
 }
 

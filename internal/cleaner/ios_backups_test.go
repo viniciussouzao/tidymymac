@@ -2,6 +2,7 @@ package cleaner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -181,6 +182,33 @@ func TestIOSBackupsCleanerScanProgress(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("progress calls = %d, want 2 (one per backup)", calls)
+	}
+}
+
+func TestIOSBackupsCleanerRevalidateEntrySize(t *testing.T) {
+	dir := t.TempDir()
+	backup := makeBackupDir(t, dir, "backup", map[string]int{"a": 1024, "b": 2048})
+
+	c := NewIOSBackupsCleaner()
+	size, err := c.RevalidateEntrySize(t.Context(), FileEntry{Path: backup, IsDir: true})
+	if err != nil {
+		t.Fatalf("RevalidateEntrySize() error: %v", err)
+	}
+	if size != 3072 {
+		t.Errorf("size = %d, want 3072", size)
+	}
+	if c.ReconfirmGrowthThreshold() != 100*1024*1024 {
+		t.Errorf("threshold = %d, want 100 MiB", c.ReconfirmGrowthThreshold())
+	}
+}
+
+func TestIOSBackupsCleanerRevalidateEntrySizeHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := NewIOSBackupsCleaner().RevalidateEntrySize(ctx, FileEntry{Path: t.TempDir(), IsDir: true})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }
 

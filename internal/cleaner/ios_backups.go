@@ -39,6 +39,39 @@ func (c *IOSBackupsCleaner) DeletesWholeDomain() bool { return false }
 // individually removable backup.
 func (c *IOSBackupsCleaner) SupportsItemSelection() bool { return true }
 
+func (c *IOSBackupsCleaner) ReconfirmGrowthThreshold() int64 {
+	return sensitiveSizeGrowthThreshold
+}
+
+// RevalidateEntrySize re-walks the selected backup directory because its
+// Lstat size only describes directory metadata. Unlike the initial best-effort
+// scan, this confirmation-time measurement fails closed: an incomplete size
+// must not let a sensitive category advance with an understated total.
+func (c *IOSBackupsCleaner) RevalidateEntrySize(ctx context.Context, entry FileEntry) (int64, error) {
+	var size int64
+	err := filepath.WalkDir(entry.Path, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		size += info.Size()
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return size, nil
+}
+
 // Scan identifies top-level iOS backup directories, calculating each one's total size.
 // Each backup is represented as a single FileEntry with IsDir=true so that Clean
 // can remove the entire directory at once instead of individual files.

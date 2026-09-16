@@ -20,6 +20,19 @@ type mockRevalCleaner struct {
 	revalFn func(ctx context.Context, entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, int, error)
 }
 
+type mockSizeGrowthCleaner struct {
+	wholeDomainMockCleaner
+	size      int64
+	threshold int64
+	err       error
+}
+
+func (m *mockSizeGrowthCleaner) RevalidateEntrySize(_ context.Context, _ cleaner.FileEntry) (int64, error) {
+	return m.size, m.err
+}
+
+func (m *mockSizeGrowthCleaner) ReconfirmGrowthThreshold() int64 { return m.threshold }
+
 func (m *mockRevalCleaner) RevalidateEntries(ctx context.Context, entries []cleaner.FileEntry) ([]cleaner.FileEntry, int, int, error) {
 	return m.revalFn(ctx, entries)
 }
@@ -186,12 +199,17 @@ func TestRevalidatePlan_NoChangeIsNotMaterial(t *testing.T) {
 // re-confirmation -- only missing/type-changed/newly-protected do.
 func TestRevalidatePlan_SizeDriftAloneIsNotMaterial(t *testing.T) {
 	dir := t.TempDir()
-	path := writeFile(t, dir, "growing.log", 100)
+	path := writeFile(t, dir, "growing.log", 1)
+	const currentSize int64 = 200 * 1024 * 1024
+	if err := os.Truncate(path, currentSize); err != nil {
+		t.Fatalf("growing fixture file: %v", err)
+	}
 
 	registry := cleaner.NewRegistry()
 	registry.Register(&wholeDomainMockCleaner{category: cleaner.CategoryTemp})
 
-	// The scan recorded 50 bytes; the file has since grown to 100.
+	// The scan recorded 50 bytes; the volatile file has since grown by much
+	// more than the sensitive-category threshold and must still not interrupt.
 	results := map[cleaner.Category]*cleaner.ScanResult{
 		cleaner.CategoryTemp: {
 			Category:   cleaner.CategoryTemp,
@@ -210,6 +228,89 @@ func TestRevalidatePlan_SizeDriftAloneIsNotMaterial(t *testing.T) {
 	}
 	if delta.Material() {
 		t.Errorf("Material() = true, want false: a size-only drift must not force re-confirmation: delta = %+v", delta)
+	}
+}
+
+func TestRevalidatePlan_SensitiveGrowthUsesCleanerThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "backup", 10)
+	const category cleaner.Category = "sensitive"
+	const threshold int64 = 100 * 1024 * 1024
+
+	tests := []struct {
+		name         string
+		currentSize  int64
+		wantMaterial bool
+		wantGrowth   int64
+	}{
+		{name: "below threshold", currentSize: threshold, wantMaterial: false},
+		{name: "at threshold", currentSize: threshold + 1, wantMaterial: true, wantGrowth: threshold},
+		{name: "decrease", currentSize: 0, wantMaterial: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			registry := cleaner.NewRegistry()
+			registry.Register(&mockSizeGrowthCleaner{
+				wholeDomainMockCleaner: wholeDomainMockCleaner{category: category},
+				size:                   tc.currentSize,
+				threshold:              threshold,
+			})
+			results := map[cleaner.Category]*cleaner.ScanResult{
+				category: {
+					Category:   category,
+					TotalFiles: 1,
+					TotalSize:  1,
+					Entries:    []cleaner.FileEntry{{Path: path, Size: 1, Category: category}},
+				},
+			}
+
+			revalidated, delta, categoryErrs, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
+			if err != nil {
+				t.Fatalf("revalidatePlan() error = %v", err)
+			}
+			if len(categoryErrs) != 0 {
+				t.Fatalf("categoryErrs = %v, want none", categoryErrs)
+			}
+			if delta.Material() != tc.wantMaterial {
+				t.Errorf("Material() = %v, want %v; delta = %+v", delta.Material(), tc.wantMaterial, delta)
+			}
+			if len(delta.SensitiveGrowth) == 0 {
+				if tc.wantGrowth != 0 {
+					t.Fatalf("SensitiveGrowth empty, want %d", tc.wantGrowth)
+				}
+			} else if delta.SensitiveGrowth[0].Bytes != tc.wantGrowth {
+				t.Errorf("growth = %d, want %d", delta.SensitiveGrowth[0].Bytes, tc.wantGrowth)
+			}
+			if got := revalidated[category].TotalSize; got != tc.currentSize {
+				t.Errorf("revalidated TotalSize = %d, want %d", got, tc.currentSize)
+			}
+		})
+	}
+}
+
+func TestRevalidatePlan_SensitiveSizeFailureBlocksCategory(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "backup", 10)
+	const category cleaner.Category = "sensitive"
+	wantErr := errors.New("size unavailable")
+
+	registry := cleaner.NewRegistry()
+	registry.Register(&mockSizeGrowthCleaner{
+		wholeDomainMockCleaner: wholeDomainMockCleaner{category: category},
+		threshold:              100,
+		err:                    wantErr,
+	})
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		category: {Category: category, TotalFiles: 1, TotalSize: 10, Entries: []cleaner.FileEntry{{Path: path, Size: 10, Category: category}}},
+	}
+
+	_, _, categoryErrs, err := revalidatePlan(context.Background(), registry, &config.Config{}, results)
+	if err != nil {
+		t.Fatalf("top-level error = %v, want nil", err)
+	}
+	if !errors.Is(categoryErrs[category], wantErr) {
+		t.Fatalf("category error = %v, want wrapped %v", categoryErrs[category], wantErr)
 	}
 }
 

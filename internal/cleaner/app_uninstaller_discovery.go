@@ -25,27 +25,6 @@ var appUninstallLibraryDirs = []string{
 	"Group Containers",
 }
 
-// Match sources produced by the discovery heuristics. The scoring weights that
-// go with them are defined by the confidence engine (phase 2).
-const (
-	matchSourceExactBundleID    = "exact_bundle_id"
-	matchSourceKnownAppPath     = "known_app_path"
-	matchSourceVendorIdentifier = "vendor_identifier"
-	matchSourceNameHeuristic    = "name_heuristic"
-)
-
-// MatchReason is a single piece of evidence tying a leftover path to the app
-// being uninstalled.
-//
-// NOTE: this is the minimal shape needed by discovery. The confidence engine
-// (phase 2) owns this type and will move it to confidence.go, where Weight is
-// filled in from the per-source scoring table; discovery leaves Weight at zero.
-type MatchReason struct {
-	Source string
-	Weight int
-	Detail string
-}
-
 // rawCandidate is a leftover path plus the evidence that linked it to the
 // target, before any scoring happens.
 type rawCandidate struct {
@@ -206,22 +185,22 @@ func (c *AppUninstaller) matchReasonFor(rel, name string) (MatchReason, bool) {
 	appName := c.target.Name
 
 	if bundleID != "" && base == bundleID {
-		return MatchReason{Source: matchSourceExactBundleID}, true
+		return newMatchReason(matchSourceExactBundleID), true
 	}
 
 	if appName != "" && base == appName {
-		return MatchReason{Source: matchSourceKnownAppPath}, true
+		return newMatchReason(matchSourceKnownAppPath), true
 	}
 
 	if bundleID != "" && isValidThirdPartyBundleID(base) &&
 		bundleVendor(base) != "" && bundleVendor(base) == bundleVendor(bundleID) {
-		return MatchReason{Source: matchSourceVendorIdentifier}, true
+		return newMatchReason(matchSourceVendorIdentifier), true
 	}
 
 	if appName != "" {
 		normalized := normalizeAppName(appName)
 		if normalized != "" && normalizeAppName(base) == normalized {
-			return MatchReason{Source: matchSourceNameHeuristic}, true
+			return newMatchReason(matchSourceNameHeuristic), true
 		}
 	}
 

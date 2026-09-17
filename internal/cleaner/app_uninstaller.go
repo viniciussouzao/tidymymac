@@ -26,10 +26,14 @@ type AppUninstaller struct {
 	bundleIDReader  func(context.Context, string) (string, error)
 	pathSizeFetcher func(context.Context, string) (int64, error)
 
-	// Reserved for later phases of the Smart Uninstall feature:
-	//   confidenceIndex map[string]Confidence -- per-entry evidence scoring.
-	//   processChecker  safety.ProcessChecker -- refuse to delete a running app.
-	// Neither is implemented yet; discovery must not depend on them.
+	// confidenceIndex holds the per-entry evidence scoring produced by the
+	// last Scan, keyed by FileEntry.Path, and is what ExplainCandidate reads.
+	// It is only ever written by Scan.
+	confidenceIndex map[string]Confidence
+
+	// Reserved for a later phase of the Smart Uninstall feature:
+	//   processChecker safety.ProcessChecker -- refuse to delete a running app.
+	// Not implemented yet; discovery must not depend on it.
 }
 
 // NewAppUninstaller builds an uninstaller for a single resolved application.
@@ -88,6 +92,9 @@ func (c *AppUninstaller) Scan(ctx context.Context, progress func(ScanProgress)) 
 
 	start := time.Now()
 	result := &ScanResult{Category: CategoryAppUninstall}
+	// A fresh index per Scan: stale scores from a previous run must never
+	// outlive the entries they described.
+	c.confidenceIndex = map[string]Confidence{}
 
 	if c.homeDir == "" || (c.target.BundleID == "" && c.target.Name == "") {
 		result.Duration = time.Since(start)
@@ -102,6 +109,12 @@ func (c *AppUninstaller) Scan(ctx context.Context, progress func(ScanProgress)) 
 	}
 
 	for _, candidate := range candidates {
+		// Discovery keeps the single strongest reason per candidate, so the
+		// scored evidence is that one reason.
+		c.confidenceIndex[candidate.entry.Path] = scoreCandidate(
+			[]MatchReason{candidate.reason}, candidate.shared,
+		)
+
 		result.Entries = append(result.Entries, candidate.entry)
 		result.TotalSize += candidate.entry.Size
 		result.TotalFiles++

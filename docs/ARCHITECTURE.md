@@ -296,7 +296,19 @@ Adding a new cleaner is purely additive — implement the interface, add a categ
 
 One category is deliberately **not** in `DefaultRegistry()`: `CategoryAppUninstall` (`app-uninstall`, display name "Uninstall App"). `AppUninstaller` (`app_uninstaller.go`, discovery in `app_uninstaller_discovery.go`) targets one specific application chosen by the user — `AppTarget{BundlePath, BundleID, Name}` — so it is built on demand with `NewAppUninstaller(target)` and registered into a throwaway `NewRegistry()`, then orchestrated by the same `commands.PrepareScanResultForClean` / `commands.RunCleanWithPreparedScanResult` pair as any other cleaner. It would make no sense in a whole-system scan, which is why it stays out of the default registry.
 
-Its `Scan` is read-only like every other cleaner: `findLeftoverCandidates` walks `appUninstallLibraryDirs` (the `app-orphans` roots plus the user's `LaunchAgents` and `Group Containers`) under `~/Library` and links each item to the target through exactly one evidence source — `exact_bundle_id`, `known_app_path`, `vendor_identifier` or `name_heuristic`, strongest first. Items under `Group Containers` are additionally flagged as shared, because that data may belong to more than one app. `DiscoverInstalledApps` lists the third-party bundles available as targets. Evidence scoring, confidence bands and running-process safety are separate, later concerns and are not part of discovery.
+Its `Scan` is read-only like every other cleaner: `findLeftoverCandidates` walks `appUninstallLibraryDirs` (the `app-orphans` roots plus the user's `LaunchAgents` and `Group Containers`) under `~/Library` and links each item to the target through exactly one evidence source — `exact_bundle_id`, `known_app_path`, `vendor_identifier` or `name_heuristic`, strongest first. Items under `Group Containers` are additionally flagged as shared, because that data may belong to more than one app. `DiscoverInstalledApps` lists the third-party bundles available as targets. Running-process safety is a separate, later concern and is not part of discovery.
+
+That evidence is then scored by the **confidence engine** (`confidence.go` for the generic types, `app_uninstaller_confidence.go` for the uninstall-specific weights). Each `MatchReason{Source, Weight, Detail}` carries the score its source is worth — `exact_bundle_id` 100, `known_app_path` 95, `vendor_identifier` 80, `name_heuristic` 60 — and `scoreCandidate` takes the **strongest single reason**, not their sum: two weak hints about the same path do not add up to a strong one. `bandForScore` then maps the score to a `ConfidenceBand`: `>= 90` is `ConfidenceSafe`, `> 60` is `ConfidenceReview`, anything else is `ConfidenceCaution`. The Review bound is deliberately exclusive so that a lone `name_heuristic`, worth exactly 60, lands in Caution — a name match alone never implies an item belongs to the app. One hard rule overrides the score entirely: a `shared` item (anything under `Group Containers`) is always `ConfidenceCaution`, even with a perfect 100, because deleting it would take data from an application the user never asked to touch.
+
+`Scan` records the resulting `Confidence` per entry path, and the result is read back through `CandidateExplainer` (`registry.go`), an optional interface in the same family as `ItemSelectable`:
+
+```go
+type CandidateExplainer interface {
+    ExplainCandidate(entry FileEntry) (Confidence, bool)
+}
+```
+
+It lets a caller surface per-item confidence and evidence instead of the aggregate, category-level review every other cleaner gets. The index is rebuilt from scratch on each `Scan`, so stale scores never outlive the entries they described, and an entry that did not come out of that same `Scan` returns `ok == false` — "unexplained", which callers must not conflate with low confidence.
 
 ### Results and Progress Types
 

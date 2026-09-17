@@ -109,6 +109,14 @@ func (c *AppUninstaller) targetLabel() string {
 
 func (c *AppUninstaller) DeletesWholeDomain() bool { return false }
 
+// SupportsItemSelection opts this cleaner into the review screen's per-item
+// selection controls (see ItemSelectable). Every candidate -- the .app bundle
+// itself and each leftover -- is individually meaningful and the set is
+// always small (one application's worth), the same shape ItemSelectable was
+// designed for, and DeletesWholeDomain is false so a filtered entry list is
+// always honored.
+func (c *AppUninstaller) SupportsItemSelection() bool { return true }
+
 func (c *AppUninstaller) setDefaults() {
 	if c.bundleIDReader == nil {
 		c.bundleIDReader = readAppBundleID

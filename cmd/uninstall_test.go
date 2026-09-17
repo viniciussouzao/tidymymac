@@ -437,7 +437,13 @@ func TestUninstallCmd_FlagValidation(t *testing.T) {
 		{"invalid output", []string{"--output", "csv", "Foo"}, "invalid --output value"},
 		{"invalid min-confidence", []string{"--min-confidence", "yolo", "Foo"}, "invalid --min-confidence value"},
 		{"list with positional arg", []string{"--list", "Foo"}, "does not take an application argument"},
-		{"missing argument", []string{}, "requires exactly one application"},
+		// "--output=json" (not "--output", "json") so the positional-arg
+		// extraction below -- which naively treats any token not prefixed
+		// with "-" as positional -- doesn't mistake the flag's own value for
+		// an application argument and accidentally exercise the --output
+		// json + one-argument path (which calls DiscoverInstalledApps
+		// against a cmd.Context() this table test never sets).
+		{"missing argument with --output", []string{"--output=json"}, "requires exactly one application"},
 	}
 
 	for _, tt := range tests {
@@ -564,20 +570,43 @@ func TestUninstallCmd_UnknownApp_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestUninstallCmd_NoOutput_NotYetImplemented pins the deliberate scope
-// boundary: without --output, this command is the interactive/TUI surface,
-// which is Phase 5/7 work and out of scope here. This is checked before any
-// discovery/resolution work, so the test needs no fixture and touches no
-// filesystem beyond flag parsing.
-func TestUninstallCmd_NoOutput_NotYetImplemented(t *testing.T) {
-	resetUninstallFlags(t)
-	uninstallCmd.SetContext(context.Background())
+// ---------------------------------------------------------------------------
+// resolveUninstallInteractiveTarget -- decides the *cleaner.AppTarget handed
+// to the interactive TUI (nil vs resolved), without ever constructing or
+// running a tea.Program: that would need a real terminal (or hang reading a
+// test process's stdin) and is deliberately not exercised here. See
+// internal/tui's own tests (TestNewUninstallApp_NoTarget_OpensAppPicker etc.)
+// for coverage of what the TUI does with the target once it has one.
+// ---------------------------------------------------------------------------
 
-	err := uninstallCmd.RunE(uninstallCmd, []string{"Foo"})
-	if err == nil {
-		t.Fatal("expected a not-implemented error, got nil")
+// TestResolveUninstallInteractiveTarget_NoArgs pins that omitting the
+// positional argument defers discovery/selection to the TUI's own App Picker
+// screen entirely -- this function must not call DiscoverInstalledApps itself
+// in that case.
+func TestResolveUninstallInteractiveTarget_NoArgs(t *testing.T) {
+	target, err := resolveUninstallInteractiveTarget(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("resolveUninstallInteractiveTarget() error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not implemented") {
-		t.Errorf("error = %v, want it to say interactive mode is not implemented", err)
+	if target != nil {
+		t.Errorf("target = %+v, want nil so the App Picker screen resolves it", target)
+	}
+}
+
+// TestResolveUninstallInteractiveTarget_UnknownApp exercises the resolution
+// path (discovery + resolveUninstallTarget) deterministically, without
+// depending on any specific application being installed on the host: a name
+// this unlikely to exist must always fail to resolve, the same way it does
+// for the --output json path.
+func TestResolveUninstallInteractiveTarget_UnknownApp(t *testing.T) {
+	target, err := resolveUninstallInteractiveTarget(context.Background(), []string{"tidymymac-uninstall-test-does-not-exist-app"})
+	if err == nil {
+		t.Fatal("expected a not-found error, got nil")
+	}
+	if target != nil {
+		t.Errorf("target = %+v, want nil on error", target)
+	}
+	if !strings.Contains(err.Error(), "--list") {
+		t.Errorf("error = %v, want it to point at --list", err)
 	}
 }

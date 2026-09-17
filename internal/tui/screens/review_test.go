@@ -27,6 +27,136 @@ func (wholeDomainSelectableMockCleaner) Clean(context.Context, []cleaner.FileEnt
 	return nil, nil
 }
 
+// confidenceExplainerMockCleaner is a minimal cleaner.ItemSelectable +
+// cleaner.CandidateExplainer double standing in for AppUninstaller (the one
+// real cleaner implementing CandidateExplainer today), so the review
+// screen's confidence-badge and default-selection behavior can be pinned
+// without a real Smart Uninstall scan.
+type confidenceExplainerMockCleaner struct {
+	confidence map[string]cleaner.Confidence
+}
+
+func (confidenceExplainerMockCleaner) Category() cleaner.Category  { return "mock_confidence_explainer" }
+func (confidenceExplainerMockCleaner) Name() string                { return "mock" }
+func (confidenceExplainerMockCleaner) Description() string         { return "mock" }
+func (confidenceExplainerMockCleaner) RequiresSudo() bool          { return false }
+func (confidenceExplainerMockCleaner) DeletesWholeDomain() bool    { return false }
+func (confidenceExplainerMockCleaner) SupportsItemSelection() bool { return true }
+func (confidenceExplainerMockCleaner) Scan(context.Context, func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
+	return nil, nil
+}
+func (confidenceExplainerMockCleaner) Clean(context.Context, []cleaner.FileEntry, bool, func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	return nil, nil
+}
+func (m confidenceExplainerMockCleaner) ExplainCandidate(entry cleaner.FileEntry) (cleaner.Confidence, bool) {
+	conf, ok := m.confidence[entry.Path]
+	return conf, ok
+}
+
+const mockConfidenceCategory cleaner.Category = "mock_confidence_explainer"
+
+// confidenceReview builds a ReviewModel over a single Selectable,
+// CandidateExplainer category with one entry per confidence band -- Safe,
+// Review and Caution -- sized so they sort (largest first) Safe, Review,
+// Caution, matching cursor index 0/1/2 below.
+func confidenceReview(t *testing.T) ReviewModel {
+	t.Helper()
+	registry := cleaner.NewRegistry()
+	registry.Register(confidenceExplainerMockCleaner{
+		confidence: map[string]cleaner.Confidence{
+			"/a/safe":    {Band: cleaner.ConfidenceSafe, Score: 100},
+			"/a/review":  {Band: cleaner.ConfidenceReview, Score: 80},
+			"/a/caution": {Band: cleaner.ConfidenceCaution, Score: 40},
+		},
+	})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		mockConfidenceCategory: {
+			Category:   mockConfidenceCategory,
+			TotalSize:  60,
+			TotalFiles: 3,
+			Entries: []cleaner.FileEntry{
+				{Path: "/a/safe", Size: 30},
+				{Path: "/a/review", Size: 20},
+				{Path: "/a/caution", Size: 10},
+			},
+		},
+	}
+
+	return NewReview(results, false, registry, false)
+}
+
+// TestNewReview_ConfidenceDefaultSelection pins that only the Safe-band entry
+// is pre-selected by default -- Review and Caution entries require a human
+// to opt them in, via IsSafe() rather than any switch on Band (see
+// docs/ARCHITECTURE.md's Confidence section and NewReview's own comment).
+func TestNewReview_ConfidenceDefaultSelection(t *testing.T) {
+	m := confidenceReview(t)
+	if len(m.Categories) != 1 {
+		t.Fatalf("expected exactly 1 category, got %d", len(m.Categories))
+	}
+
+	want := map[string]bool{
+		"/a/safe":    true,
+		"/a/review":  false,
+		"/a/caution": false,
+	}
+	for _, f := range m.Categories[0].AllFiles {
+		if !f.HasConfidence {
+			t.Errorf("entry %q: HasConfidence = false, want true", f.Path)
+		}
+		if f.Selected != want[f.Path] {
+			t.Errorf("entry %q: Selected = %v, want %v", f.Path, f.Selected, want[f.Path])
+		}
+	}
+}
+
+// TestNewReview_ConfidenceBadgesInView pins that View() renders the correct
+// badge text for each band, using the review screen's existing safety-badge
+// styles rather than a fourth one.
+func TestNewReview_ConfidenceBadgesInView(t *testing.T) {
+	m := confidenceReview(t)
+	m.ShowFull = true // avoid path elision changing which text is on screen
+
+	view := m.View()
+	if !strings.Contains(view, "SAFE") {
+		t.Errorf("View() missing the SAFE badge:\n%s", view)
+	}
+	if !strings.Contains(view, "REVIEW") {
+		t.Errorf("View() missing the REVIEW badge:\n%s", view)
+	}
+	if !strings.Contains(view, "CAUTION") {
+		t.Errorf("View() missing the CAUTION badge:\n%s", view)
+	}
+}
+
+// TestToggleSelected_PromotesReviewBandEntry pins that a Review-band entry
+// deselected by default can still be manually promoted to selected -- the UI
+// must never make that permanent/impossible, only default it off.
+func TestToggleSelected_PromotesReviewBandEntry(t *testing.T) {
+	m := confidenceReview(t)
+	// Entries sort by size desc: safe(30), review(20), caution(10) -- index 1
+	// is the Review-band entry.
+	m.Cursor = m.globalFileIndexFor(0, 1)
+
+	if m.Categories[0].AllFiles[1].Path != "/a/review" {
+		t.Fatalf("expected cursor on /a/review, got %q", m.Categories[0].AllFiles[1].Path)
+	}
+	if m.Categories[0].AllFiles[1].Selected {
+		t.Fatal("Review-band entry should start deselected")
+	}
+
+	m.ToggleSelected()
+	if !m.Categories[0].AllFiles[1].Selected {
+		t.Error("ToggleSelected() must allow manually promoting a Review-band entry to selected")
+	}
+
+	m.ToggleSelected()
+	if m.Categories[0].AllFiles[1].Selected {
+		t.Error("ToggleSelected() must allow demoting it back")
+	}
+}
+
 func TestReviewModelShouldWarnAboutSudo(t *testing.T) {
 	registry := cleaner.NewRegistry()
 	registry.Register(cleaner.NewLogsCleaner())

@@ -185,7 +185,13 @@ func TestAppUninstallerTargetIsRunning(t *testing.T) {
 
 func TestAppUninstallerTargetIsRunningDefaultsChecker(t *testing.T) {
 	// A zero-value uninstaller must still be safe to use: setDefaults wires the
-	// real checker, and an empty BundlePath means "nothing to check".
+	// real checker rather than panicking on a nil one.
+	//
+	// The false returned for an empty BundlePath means "no evidence", NOT
+	// "safe to delete". This test pins only that TargetIsRunning is callable
+	// and does not report a bogus true; the refusal to act on that non-answer
+	// belongs to Clean and is pinned by
+	// TestAppUninstallerCleanRefusesWhenBundlePathIsUnknown.
 	c := &AppUninstaller{target: AppTarget{BundleID: "com.acme.editor"}}
 
 	running, err := c.TargetIsRunning(t.Context())
@@ -193,6 +199,119 @@ func TestAppUninstallerTargetIsRunningDefaultsChecker(t *testing.T) {
 		t.Fatalf("TargetIsRunning() error: %v", err)
 	}
 	if running {
-		t.Error("TargetIsRunning() = true, want false with an empty bundle path")
+		t.Error("TargetIsRunning() = true, want false: there is no evidence either way")
+	}
+}
+
+// Regression: a target resolved only by bundle id (what `uninstall
+// com.acme.editor` produces when the .app was never located) used to sail
+// straight past the running-process guard, because IsRunning answers
+// (false, nil) for an empty BundlePath and Clean read that non-answer as "not
+// running". "Cannot verify" must fail closed, exactly like a checker error.
+func TestAppUninstallerCleanRefusesWhenBundlePathIsUnknown(t *testing.T) {
+	checker := &fakeProcessChecker{running: false}
+	c, entries, filePath, dirPath := uninstallerWithFixture(t, checker)
+	c.target.BundlePath = ""
+
+	result, err := c.Clean(t.Context(), entries, false, nil)
+	if err != nil {
+		t.Fatalf("Clean() error: %v", err)
+	}
+
+	if !result.Skipped {
+		t.Fatal("Skipped = false, want true: a missing bundle path makes the running check unanswerable")
+	}
+	if !strings.Contains(result.SkipReason, "Acme Editor") {
+		t.Errorf("SkipReason = %q, want it to name the app", result.SkipReason)
+	}
+	if !strings.Contains(result.SkipReason, "bundle path is unknown") {
+		t.Errorf("SkipReason = %q, want it to explain why the check was impossible", result.SkipReason)
+	}
+	if result.FilesDeleted != 0 || result.BytesFreed != 0 {
+		t.Errorf("FilesDeleted = %d, BytesFreed = %d, want 0 and 0", result.FilesDeleted, result.BytesFreed)
+	}
+	assertStillOnDisk(t, filePath, dirPath)
+
+	if checker.calls != 0 {
+		t.Errorf("IsRunning called %d times, want 0: there was nothing it could answer", checker.calls)
+	}
+}
+
+// A dry run still previews everything: it deletes nothing by definition, so an
+// unverifiable bundle path costs it nothing.
+func TestAppUninstallerCleanDryRunUnaffectedByUnknownBundlePath(t *testing.T) {
+	c, entries, filePath, dirPath := uninstallerWithFixture(t, &fakeProcessChecker{running: true})
+	c.target.BundlePath = ""
+
+	result, err := c.Clean(t.Context(), entries, true, nil)
+	if err != nil {
+		t.Fatalf("Clean() error: %v", err)
+	}
+
+	if result.Skipped {
+		t.Errorf("dry run Skipped = true (%q), want false", result.SkipReason)
+	}
+	if result.FilesDeleted != 2 {
+		t.Errorf("FilesDeleted = %d, want 2 previewed", result.FilesDeleted)
+	}
+	assertStillOnDisk(t, filePath, dirPath)
+}
+
+// Defence in depth for the "shared data is never deleted" rule. The bands are
+// advice; this makes them binding for a caller that hands Clean an unfiltered
+// batch. The shared entry must survive, and the rest of the batch must still go
+// through -- one refusal never aborts the batch.
+func TestAppUninstallerCleanRefusesSharedEntries(t *testing.T) {
+	c, entries, filePath, dirPath := uninstallerWithFixture(t, &fakeProcessChecker{running: false})
+
+	// dirPath stands in for a Group Container shared with another app.
+	c.setConfidenceIndex(map[string]Confidence{
+		filePath: scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, false),
+		dirPath:  scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, true),
+	})
+
+	result, err := c.Clean(t.Context(), entries, false, nil)
+	if err != nil {
+		t.Fatalf("Clean() error: %v", err)
+	}
+
+	assertStillOnDisk(t, dirPath)
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Errorf("the non-shared entry should have been deleted (stat err = %v)", err)
+	}
+
+	if result.FilesDeleted != 1 || result.BytesFreed != 1024 {
+		t.Errorf("FilesDeleted = %d, BytesFreed = %d, want 1 and 1024", result.FilesDeleted, result.BytesFreed)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("Errors = %v, want exactly one refusal", result.Errors)
+	}
+	if !strings.Contains(result.Errors[0].Error(), "shared") {
+		t.Errorf("error = %q, want it to say the item is shared", result.Errors[0])
+	}
+}
+
+// Documented scope of the shared refusal: entries this uninstaller's Scan never
+// produced carry no evidence, so Clean has nothing to judge them by and leaves
+// them to the caller's own vetting instead of blocking on a guess.
+func TestAppUninstallerCleanDeletesUnexplainedEntries(t *testing.T) {
+	c, entries, filePath, dirPath := uninstallerWithFixture(t, &fakeProcessChecker{running: false})
+	c.setConfidenceIndex(map[string]Confidence{})
+
+	result, err := c.Clean(t.Context(), entries, false, nil)
+	if err != nil {
+		t.Fatalf("Clean() error: %v", err)
+	}
+
+	if len(result.Errors) != 0 {
+		t.Errorf("Errors = %v, want none", result.Errors)
+	}
+	if result.FilesDeleted != 2 {
+		t.Errorf("FilesDeleted = %d, want 2", result.FilesDeleted)
+	}
+	for _, path := range []string{filePath, dirPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("%q should have been deleted (stat err = %v)", path, err)
+		}
 	}
 }

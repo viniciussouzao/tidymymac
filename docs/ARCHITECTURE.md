@@ -311,16 +311,27 @@ type CandidateExplainer interface {
 
 It lets a caller surface per-item confidence and evidence instead of the aggregate, category-level review every other cleaner gets. The index is rebuilt from scratch on each `Scan`, so stale scores never outlive the entries they described, and an entry that did not come out of that same `Scan` returns `ok == false` — "unexplained", which callers must not conflate with low confidence.
 
+`Scan` builds that index in a *local* map and publishes it in a single guarded swap at the end, with a `sync.RWMutex` on the `AppUninstaller` shared by `ExplainCandidate`. A review screen reading per-item evidence while a rescan runs is a normal thing to do, so a concurrent reader must be able to observe only the complete previous index or the complete new one — never a half-filled one.
+
+**Deciding on a `Confidence` is done through `IsSafe()`/`NeedsReview()`, never through a bare `switch` on `Band`.** The zero value `Confidence{}` — exactly what `ExplainCandidate` returns for an unexplained entry — has `Band == ""`, which is none of the three constants, so a filter shaped like `switch band { case ConfidenceCaution: block; default: allow }` would wave every unexplained item straight through. `IsSafe()` is true only for `ConfidenceSafe`, which makes "no evidence" fail closed like every other unknown in this codebase.
+
 #### Running-process safety (`internal/safety`)
 
 Deleting the files of a running application corrupts its state, so a real (non dry-run) `AppUninstaller.Clean` first asks `safety.ProcessChecker.IsRunning(ctx, safety.ProcessTarget{BundleID, BundlePath})` and only then removes anything. `internal/safety` is deliberately a leaf package: it answers that one question and **must never import `internal/config`**, which would close the cycle `cleaner → safety → config → cleaner`. Protected paths stay where they already are, in the `internal/commands` pipeline.
 
-The default checker shells out to `ps -axo pid=,comm=` (on macOS `comm` is the executable's full path) through an injectable `processLister`, and considers the app running when some process executes a binary under `<BundlePath>/Contents/MacOS/`. Matching on the bundle path rather than the process name is what keeps two similarly named apps from different vendors apart. An empty `BundlePath` means "nothing to check" and returns `false, nil`; a failing `ps` is returned as a real error, because "the check failed" is not "the app is not running".
+The default checker shells out to **`ps -axo comm=`** (on macOS `comm` is the executable's full path) through an injectable `processLister`, and considers the app running when some process executes a binary under `<BundlePath>/Contents/MacOS/`. Matching on the bundle path rather than the process name is what keeps two similarly named apps from different vendors apart.
 
-`Clean` reacts to that in two ways, both reusing the existing `CleanResult.Skipped`/`SkipReason` fields (no new result fields):
+**Exactly one `ps` column is requested, and that is load-bearing — do not add a `pid=` back.** Apple's `ps` clamps a *multi*-column listing to the terminal width (120 columns with no tty) and replaces the tail of each line with `...`. `ps -axo pid=,comm=` therefore mangles every executable path longer than ~114 characters, which is routine for a bundle under a long home directory. A truncated path never matches the `<bundle>/Contents/MacOS/` prefix, so `IsRunning` would answer "not running" for an app that is running — the guard would fail **open**, the exact opposite of its contract. With a single `comm=` column `ps` emits the full path. The pid was parsed but never used by any match, so it was dropped outright; a future need for it must come from a separate `ps` invocation.
+
+A failing `ps` is returned as a real error, because "the check failed" is not "the app is not running". An empty `BundlePath` returns `false, nil`, but that means **"no evidence", not "safe to delete"** — with no bundle path there is nothing to match executables against. Acting on that non-answer is the caller's responsibility, and `Clean` refuses to (below).
+
+`Clean` reacts to all of this by reusing the existing `CleanResult.Skipped`/`SkipReason` fields (no new result fields):
 
 - **Running** — nothing is deleted at all, `Skipped = true` and `SkipReason` tells the user to quit the app first.
 - **Check failed** — it fails closed: nothing is deleted, the error is accumulated in `Errors`, and the result is also marked `Skipped` so the "nothing happened" outcome stays visible to callers that only read the skip fields.
+- **Cannot check** — a non-dry-run `Clean` whose target has an empty `BundlePath` skips the whole batch before calling the checker at all, because the running question is unanswerable. A target resolved only by bundle id (`uninstall com.acme.editor`, where the `.app` was never located) lands here.
+
+`Clean` additionally enforces the shared rule as **defence in depth**: for every entry it looks up the confidence index and refuses any entry recorded as `Shared`, accumulating one error per refusal without aborting the batch. The band is advice — callers are expected to filter Shared out long before `Clean` — but this makes it binding for a caller that forgets, so an unfiltered batch can never take a Group Container away from another app. The refusal is deliberately scoped to entries *this* uninstaller's own `Scan` produced: an entry with no confidence record did not come from this scan, so this cleaner has no evidence to judge it by and leaves it to the caller's own vetting.
 
 A dry run never consults the checker: it removes nothing by definition. To warn the user *before* the confirmation screen, the CLI and the TUI call the side-channel `(*AppUninstaller).TargetIsRunning(ctx) (bool, error)` — deliberately outside the `Cleaner` interface, in the same spirit as the sudo warning in the review screen.
 
@@ -438,7 +449,7 @@ The privilege boundary. It lets categories that genuinely need root (`temp`, `lo
 
 ### `internal/safety/`
 
-A deliberately tiny leaf package holding the pre-deletion guards for cleaners that remove user-visible applications. Today it answers exactly one question — "is this app running right now?" — through `ProcessChecker.IsRunning(ctx, ProcessTarget{BundleID, BundlePath})`, backed by `ps -axo pid=,comm=` with an injectable process lister for tests. It **must not import `internal/config`**: that would close the import cycle `cleaner → safety → config → cleaner`, and protected paths are already handled by the `internal/commands` pipeline. See [Running-process safety](#running-process-safety-internalsafety) for how `AppUninstaller.Clean` consumes it.
+A deliberately tiny leaf package holding the pre-deletion guards for cleaners that remove user-visible applications. Today it answers exactly one question — "is this app running right now?" — through `ProcessChecker.IsRunning(ctx, ProcessTarget{BundleID, BundlePath})`, backed by the single-column `ps -axo comm=` (see [Running-process safety](#running-process-safety-internalsafety) for why a second column would break the guard) with an injectable process lister for tests. It **must not import `internal/config`**: that would close the import cycle `cleaner → safety → config → cleaner`, and protected paths are already handled by the `internal/commands` pipeline. See [Running-process safety](#running-process-safety-internalsafety) for how `AppUninstaller.Clean` consumes it.
 
 ### `internal/celebration/`
 

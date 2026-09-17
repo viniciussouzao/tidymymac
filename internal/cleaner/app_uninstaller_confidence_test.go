@@ -284,3 +284,97 @@ func TestScanResetsConfidenceIndexBetweenRuns(t *testing.T) {
 		t.Errorf("stale confidence survived a rescan: (%+v, true)", got)
 	}
 }
+
+// Regression for the unsafe zero value. Confidence{} -- what ExplainCandidate
+// returns for an entry it has no evidence about -- has Band == "", which is
+// none of the three band constants. A filter written as
+// `switch band { case ConfidenceCaution: block; default: allow }` would
+// therefore wave every unexplained item through. IsSafe/NeedsReview invert that
+// default, and every caller deciding whether to delete must use them.
+func TestConfidenceZeroValueIsNotSafe(t *testing.T) {
+	var zero Confidence
+
+	if zero.Band == ConfidenceSafe || zero.Band == ConfidenceReview || zero.Band == ConfidenceCaution {
+		t.Fatalf("zero value Band = %q; this test exists because it is none of the constants", zero.Band)
+	}
+	if zero.IsSafe() {
+		t.Error("Confidence{}.IsSafe() = true, want false: no evidence is not safety")
+	}
+	if !zero.NeedsReview() {
+		t.Error("Confidence{}.NeedsReview() = false, want true")
+	}
+}
+
+func TestConfidenceIsSafe(t *testing.T) {
+	tests := []struct {
+		name string
+		band ConfidenceBand
+		want bool
+	}{
+		{name: "safe", band: ConfidenceSafe, want: true},
+		{name: "review", band: ConfidenceReview, want: false},
+		{name: "caution", band: ConfidenceCaution, want: false},
+		{name: "unset", band: "", want: false},
+		{name: "garbage", band: ConfidenceBand("totally-fine-honest"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := Confidence{Band: tt.band}
+			if got := c.IsSafe(); got != tt.want {
+				t.Errorf("IsSafe() = %v, want %v", got, tt.want)
+			}
+			if got := c.NeedsReview(); got == tt.want {
+				t.Errorf("NeedsReview() = %v, want %v", got, !tt.want)
+			}
+		})
+	}
+}
+
+// ExplainCandidate's "not explained" answer must itself be unsafe, so a caller
+// that ignores the ok flag still fails closed.
+func TestExplainCandidateUnknownEntryIsNotSafe(t *testing.T) {
+	c := newTestUninstaller(t.TempDir(), AppTarget{BundleID: "com.acme.editor", Name: "Acme Editor"})
+
+	got, ok := c.ExplainCandidate(FileEntry{Path: "/nowhere/at/all"})
+	if ok {
+		t.Fatalf("ExplainCandidate() ok = true for an unknown path: %+v", got)
+	}
+	if got.IsSafe() {
+		t.Error("the unexplained verdict reports IsSafe() = true; it must fail closed")
+	}
+}
+
+// Regression for the unsynchronised confidence index: Scan used to fill the
+// struct's map in place while ExplainCandidate read it, which the race detector
+// flags the moment a review screen reads during a rescan. Scan now builds a
+// local map and publishes it in one guarded swap.
+func TestConfidenceIndexIsRaceFreeAcrossScanAndExplain(t *testing.T) {
+	home := t.TempDir()
+	library := filepath.Join(home, "Library")
+	for _, name := range []string{"Caches", "Preferences", "Logs", "Containers"} {
+		createDir(t, library, name, "com.acme.editor")
+	}
+	target := filepath.Join(library, "Caches", "com.acme.editor")
+
+	c := newTestUninstaller(home, AppTarget{BundleID: "com.acme.editor", Name: "Acme Editor"})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			if _, err := c.Scan(t.Context(), nil); err != nil {
+				t.Errorf("Scan() error: %v", err)
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 200; i++ {
+		// The result is intentionally unasserted: a concurrent reader may
+		// legitimately observe either the pre- or the post-scan index. What is
+		// under test is that it never observes a half-built one.
+		_, _ = c.ExplainCandidate(FileEntry{Path: target})
+	}
+	<-done
+}

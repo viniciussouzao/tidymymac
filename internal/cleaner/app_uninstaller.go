@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/viniciussouzao/tidymymac/internal/safety"
@@ -28,9 +30,14 @@ type AppUninstaller struct {
 	bundleIDReader  func(context.Context, string) (string, error)
 	pathSizeFetcher func(context.Context, string) (int64, error)
 
+	// confidenceMu guards confidenceIndex. Scan publishes a whole new map while
+	// a review screen may be calling ExplainCandidate concurrently, so the field
+	// needs real synchronisation and not just an atomic-looking assignment.
+	confidenceMu sync.RWMutex
 	// confidenceIndex holds the per-entry evidence scoring produced by the
 	// last Scan, keyed by FileEntry.Path, and is what ExplainCandidate reads.
-	// It is only ever written by Scan.
+	// It is only ever replaced wholesale, never mutated in place after
+	// publication.
 	confidenceIndex map[string]Confidence
 
 	// processChecker refuses deletion while the target app is running.
@@ -126,8 +133,13 @@ func (c *AppUninstaller) Scan(ctx context.Context, progress func(ScanProgress)) 
 	start := time.Now()
 	result := &ScanResult{Category: CategoryAppUninstall}
 	// A fresh index per Scan: stale scores from a previous run must never
-	// outlive the entries they described.
-	c.confidenceIndex = map[string]Confidence{}
+	// outlive the entries they described. The index is built in a local map and
+	// published in a single assignment at the end, so a concurrent reader
+	// (ExplainCandidate from a review screen while a re-scan runs) can only ever
+	// observe the complete previous index or the complete new one, never a
+	// half-filled one.
+	localIndex := map[string]Confidence{}
+	defer func() { c.setConfidenceIndex(localIndex) }()
 
 	if c.homeDir == "" || (c.target.BundleID == "" && c.target.Name == "") {
 		result.Duration = time.Since(start)
@@ -144,7 +156,7 @@ func (c *AppUninstaller) Scan(ctx context.Context, progress func(ScanProgress)) 
 	for _, candidate := range candidates {
 		// Discovery keeps the single strongest reason per candidate, so the
 		// scored evidence is that one reason.
-		c.confidenceIndex[candidate.entry.Path] = scoreCandidate(
+		localIndex[candidate.entry.Path] = scoreCandidate(
 			[]MatchReason{candidate.reason}, candidate.shared,
 		)
 
@@ -182,6 +194,22 @@ func (c *AppUninstaller) Clean(ctx context.Context, entries []FileEntry, dryRun 
 	// the cost of shelling out to ps; callers that want to warn the user before
 	// confirming use TargetIsRunning instead.
 	if !dryRun {
+		// "I cannot check" is not "it is safe". Without a bundle path the
+		// running-process guard has nothing to match executables against and
+		// would answer false for an app that is very much running, so refuse
+		// the whole batch instead of deleting on the strength of a non-answer.
+		// A target resolved only by bundle id (e.g. `uninstall com.acme.editor`
+		// where the .app was never located) lands here.
+		if strings.TrimSpace(c.target.BundlePath) == "" {
+			result.Skipped = true
+			result.SkipReason = fmt.Sprintf(
+				"could not confirm whether %s is running: its application bundle path is unknown; nothing was removed",
+				c.targetLabel(),
+			)
+			result.Duration = time.Since(start)
+			return result, nil
+		}
+
 		running, err := c.TargetIsRunning(ctx)
 		if err != nil {
 			// Fail closed: a failed check is not the same as "not running".
@@ -204,6 +232,25 @@ func (c *AppUninstaller) Clean(ctx context.Context, entries []FileEntry, dryRun 
 	for i, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return result, err
+		}
+
+		// Defence in depth. Shared data (a Group Container used by more than one
+		// app) always scores as Caution, but that verdict is only advice: the
+		// CLI and the review screen are expected to filter it out long before
+		// Clean runs. This refusal makes the rule binding for any caller that
+		// forgets -- deleting a shared container takes data away from an
+		// application the user never asked to touch.
+		//
+		// Deliberate scope: only entries this uninstaller's own Scan produced
+		// are second-guessed. An entry with no confidence record is not from
+		// this scan (a caller-supplied path, or a call made before Scan), and
+		// this cleaner has no evidence to judge it with, so it is left to the
+		// caller's own vetting rather than blocked on a guess.
+		if confidence, known := c.lookupConfidence(entry.Path); known && confidence.Shared {
+			result.Errors = append(result.Errors, fmt.Errorf(
+				"refusing to remove %s: it is shared with other applications", entry.Path,
+			))
+			continue
 		}
 
 		if !dryRun {

@@ -68,12 +68,29 @@ func scoreCandidate(reasons []MatchReason, shared bool) Confidence {
 // (including a path from a different cleaner, or a call made before Scan) is
 // reported as unexplained rather than as low confidence.
 func (c *AppUninstaller) ExplainCandidate(entry FileEntry) (Confidence, bool) {
+	return c.lookupConfidence(entry.Path)
+}
+
+// lookupConfidence reads the published confidence index under a read lock.
+func (c *AppUninstaller) lookupConfidence(path string) (Confidence, bool) {
+	c.confidenceMu.RLock()
+	defer c.confidenceMu.RUnlock()
+
 	if c.confidenceIndex == nil {
 		return Confidence{}, false
 	}
-	confidence, ok := c.confidenceIndex[entry.Path]
+	confidence, ok := c.confidenceIndex[path]
 	if !ok {
 		return Confidence{}, false
 	}
 	return confidence, true
+}
+
+// setConfidenceIndex publishes a freshly built index in one swap. Scan builds
+// its map locally and calls this exactly once, so readers never see a partially
+// populated index.
+func (c *AppUninstaller) setConfidenceIndex(index map[string]Confidence) {
+	c.confidenceMu.Lock()
+	defer c.confidenceMu.Unlock()
+	c.confidenceIndex = index
 }

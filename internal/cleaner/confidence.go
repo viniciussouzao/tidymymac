@@ -35,6 +35,22 @@ type Confidence struct {
 	Shared  bool
 }
 
+// IsSafe reports whether this verdict clears the bar for deletion without
+// human review.
+//
+// Always decide with this method, never with a `switch c.Band` whose default
+// branch permits. The zero value Confidence{} -- what ExplainCandidate returns
+// for an entry it has no evidence about -- has Band == "", which is none of the
+// three constants, so a "block Caution, allow the rest" switch would wave
+// unexplained items straight through. IsSafe inverts that default: anything
+// that is not explicitly ConfidenceSafe, the zero value included, is not safe.
+func (c Confidence) IsSafe() bool { return c.Band == ConfidenceSafe }
+
+// NeedsReview reports whether a human must look at this verdict before it is
+// acted on. It is the complement of IsSafe, spelled out so callers do not have
+// to write the negation themselves and accidentally get the default wrong.
+func (c Confidence) NeedsReview() bool { return !c.IsSafe() }
+
 const (
 	// confidenceSafeThreshold is the inclusive lower bound for Safe: a score
 	// of exactly 90 is Safe.

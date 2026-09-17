@@ -265,7 +265,15 @@ func TestAppUninstallerCleanDryRunAndDeletion(t *testing.T) {
 			}
 			createSparseFile(t, dirPath, "payload.bin", 2048)
 
-			c := NewAppUninstaller(AppTarget{BundleID: "com.acme.editor", Name: "Acme Editor"})
+			// A real BundlePath plus a not-running checker: a non-dry-run Clean
+			// deliberately refuses when the bundle path is unknown, so this
+			// test has to give it a target it can actually verify.
+			c := NewAppUninstaller(AppTarget{
+				BundlePath: "/Applications/Acme Editor.app",
+				BundleID:   "com.acme.editor",
+				Name:       "Acme Editor",
+			})
+			c.SetProcessChecker(&fakeProcessChecker{running: false})
 			entries := []FileEntry{
 				{Path: filePath, Size: 1024, Category: CategoryAppUninstall},
 				{Path: dirPath, Size: 2048, IsDir: true, Category: CategoryAppUninstall},

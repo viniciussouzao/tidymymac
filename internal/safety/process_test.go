@@ -3,6 +3,8 @@ package safety
 import (
 	"context"
 	"errors"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -16,10 +18,10 @@ func checkerWith(processes []processInfo, err error) *defaultProcessChecker {
 
 func TestIsRunning(t *testing.T) {
 	running := []processInfo{
-		{pid: 1, execPath: "/sbin/launchd"},
-		{pid: 42, execPath: "/Applications/Acme Editor.app/Contents/MacOS/Acme Editor"},
-		{pid: 43, execPath: "/Applications/Acme Editor Pro.app/Contents/MacOS/Acme Editor"},
-		{pid: 44, execPath: "/Applications/Other Vendor/Acme Editor.app/Contents/MacOS/Acme Editor"},
+		{execPath: "/sbin/launchd"},
+		{execPath: "/Applications/Acme Editor.app/Contents/MacOS/Acme Editor"},
+		{execPath: "/Applications/Acme Editor Pro.app/Contents/MacOS/Acme Editor"},
+		{execPath: "/Applications/Other Vendor/Acme Editor.app/Contents/MacOS/Acme Editor"},
 	}
 
 	tests := []struct {
@@ -56,7 +58,11 @@ func TestIsRunning(t *testing.T) {
 			want:   false,
 		},
 		{
-			name:   "empty bundle path means nothing to check",
+			// "no evidence", not "safe to delete": with no bundle path there
+			// is nothing to match executables against. Refusing to act on this
+			// non-answer is the caller's job -- see
+			// TestAppUninstallerCleanRefusesWhenBundlePathIsUnknown.
+			name:   "empty bundle path yields no evidence",
 			target: ProcessTarget{BundleID: "com.acme.editor"},
 			want:   false,
 		},
@@ -120,7 +126,7 @@ func TestIsRunningContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	checker := checkerWith([]processInfo{{pid: 1, execPath: "/sbin/launchd"}}, nil)
+	checker := checkerWith([]processInfo{{execPath: "/sbin/launchd"}}, nil)
 	if _, err := checker.IsRunning(ctx, ProcessTarget{BundlePath: "/Applications/Acme Editor.app"}); err == nil {
 		t.Fatal("expected context cancellation error")
 	}
@@ -137,21 +143,117 @@ func TestNewProcessCheckerUsesRealLister(t *testing.T) {
 }
 
 func TestParseProcessList(t *testing.T) {
-	out := "    1 /sbin/launchd\n" +
-		"  431 /Applications/Acme Editor.app/Contents/MacOS/Acme Editor\n" +
+	out := "/sbin/launchd\n" +
+		"/Applications/Acme Editor.app/Contents/MacOS/Acme Editor\n" +
 		"\n" +
-		"notapid /bin/bogus\n" +
-		"  999\n" +
-		"  777 \n"
+		"   \n" +
+		"  /usr/libexec/indented \n"
 
 	got := parseProcessList(out)
-	if len(got) != 2 {
-		t.Fatalf("parsed %d processes, want 2: %+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("parsed %d processes, want 3: %+v", len(got), got)
 	}
-	if got[0].pid != 1 || got[0].execPath != "/sbin/launchd" {
-		t.Errorf("got[0] = %+v", got[0])
+	want := []string{
+		"/sbin/launchd",
+		"/Applications/Acme Editor.app/Contents/MacOS/Acme Editor",
+		"/usr/libexec/indented",
 	}
-	if got[1].pid != 431 || got[1].execPath != "/Applications/Acme Editor.app/Contents/MacOS/Acme Editor" {
-		t.Errorf("got[1] = %+v (executable paths with spaces must be preserved)", got[1])
+	for i, w := range want {
+		if got[i].execPath != w {
+			t.Errorf("got[%d].execPath = %q, want %q", i, got[i].execPath, w)
+		}
 	}
+}
+
+// A realistic bundle for an app installed under a long home directory. What
+// matters is that the match prefix -- <bundle>/Contents/MacOS/, 118 chars here
+// -- is itself past the 120-column line clamp Apple's ps applies to a
+// multi-column listing, because that is precisely when truncation destroys the
+// match rather than merely shortening the executable name.
+const (
+	longBundlePath     = "/Users/firstname.lastname/Applications/Vendor Suite Collection Pro/Some Very Long Application Name.app"
+	longBundleExecPath = longBundlePath + "/Contents/MacOS/Some Very Long Application Name"
+)
+
+// Regression for the `ps -axo pid=,comm=` truncation bug. Asking ps for a pid
+// column alongside comm made it clamp every line to 120 columns and replace the
+// tail with "...", so a long bundle path never matched the
+// <bundle>/Contents/MacOS/ prefix and IsRunning reported "not running" for a
+// running app -- the guard failed OPEN.
+func TestParseProcessListKeepsLongPathsIntact(t *testing.T) {
+	if len(longBundleExecPath) <= 120 {
+		t.Fatalf("fixture is only %d chars; it must exceed the 120-column clamp to be a regression", len(longBundleExecPath))
+	}
+
+	got := parseProcessList(longBundleExecPath + "\n")
+	if len(got) != 1 {
+		t.Fatalf("parsed %d processes, want 1", len(got))
+	}
+	if got[0].execPath != longBundleExecPath {
+		t.Fatalf("execPath = %q, want the full untruncated path %q", got[0].execPath, longBundleExecPath)
+	}
+}
+
+// The end-to-end half of the same regression: a full-length line coming out of
+// the lister must make IsRunning say "running". If anyone reintroduces a second
+// ps column, the real lister starts emitting the truncated variant this test
+// also pins as a non-match, and this assertion is what breaks.
+func TestIsRunningMatchesLongBundlePath(t *testing.T) {
+	const bundlePath = longBundlePath
+
+	t.Run("full path from a single-column listing matches", func(t *testing.T) {
+		checker := checkerWith(parseProcessList(longBundleExecPath+"\n"), nil)
+
+		got, err := checker.IsRunning(t.Context(), ProcessTarget{BundlePath: bundlePath})
+		if err != nil {
+			t.Fatalf("IsRunning() error: %v", err)
+		}
+		if !got {
+			t.Fatal("IsRunning() = false for a running app with a long bundle path; the guard failed open")
+		}
+	})
+
+	t.Run("truncated path from a multi-column listing would not match", func(t *testing.T) {
+		// Exactly what `ps -axo pid=,comm=` used to hand us: 120 columns with
+		// the tail replaced by "...". Documented here so the cost of adding a
+		// column back to the ps invocation stays visible.
+		truncated := longBundleExecPath[:117] + "..."
+		checker := checkerWith(parseProcessList(truncated+"\n"), nil)
+
+		got, err := checker.IsRunning(t.Context(), ProcessTarget{BundlePath: bundlePath})
+		if err != nil {
+			t.Fatalf("IsRunning() error: %v", err)
+		}
+		if got {
+			t.Fatal("a truncated ps line unexpectedly matched; the fixture no longer models the bug")
+		}
+	})
+}
+
+// TestListRunningProcessesIsNotTruncated exercises the real ps on the real
+// machine: whatever the longest executable path currently running is, it must
+// not come back with ps's truncation marker.
+func TestListRunningProcessesIsNotTruncated(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("ps column semantics are macOS-specific")
+	}
+
+	processes, err := listRunningProcesses(t.Context())
+	if err != nil {
+		t.Skipf("ps unavailable: %v", err)
+	}
+	if len(processes) == 0 {
+		t.Skip("ps returned no processes")
+	}
+
+	longest := 0
+	for _, p := range processes {
+		if strings.HasSuffix(p.execPath, "...") {
+			t.Errorf("ps returned a truncated executable path (%d chars): %q", len(p.execPath), p.execPath)
+		}
+		if len(p.execPath) > longest {
+			longest = len(p.execPath)
+		}
+	}
+	t.Logf("longest executable path seen: %d chars", longest)
 }

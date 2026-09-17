@@ -12,7 +12,6 @@ import (
 	"context"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -31,8 +30,13 @@ type ProcessChecker interface {
 }
 
 // processInfo is one entry of the running process table.
+//
+// It deliberately carries only the executable path. A pid column used to be
+// parsed here, but it was never read by any match, and asking ps for
+// `pid=,comm=` is what caused the truncation bug documented on
+// listRunningProcesses. If a pid is ever genuinely needed, it must be obtained
+// from a separate ps invocation rather than by widening this one.
 type processInfo struct {
-	pid      int
 	execPath string
 }
 
@@ -52,7 +56,13 @@ func NewProcessChecker() ProcessChecker {
 // Matching on the executable path (instead of the process name) avoids the
 // classic false positive of two vendors shipping similarly named apps.
 //
-// An empty BundlePath means there is nothing to check: (false, nil).
+// An empty BundlePath means this checker has nothing to match against, so it
+// reports (false, nil). That result means "no evidence", NOT "safe to delete":
+// without a bundle path the question is unanswerable. Callers must treat an
+// unknown bundle path as "cannot verify" and refuse to delete, rather than
+// reading the false as a green light -- see AppUninstaller.Clean, which checks
+// for the empty path itself before ever getting here.
+//
 // A failure to list processes is returned as a real error -- it is NOT the same
 // as "not running", and callers are expected to fail closed on it.
 func (d *defaultProcessChecker) IsRunning(ctx context.Context, target ProcessTarget) (bool, error) {
@@ -90,41 +100,38 @@ func (d *defaultProcessChecker) IsRunning(ctx context.Context, target ProcessTar
 
 // listRunningProcesses shells out to ps. On macOS `comm` is the full path of
 // the executable, which is exactly what the bundle-prefix match needs.
+//
+// Exactly one column is requested, and that is load-bearing. Apple's ps clamps
+// a multi-column listing to the terminal width (120 columns when there is no
+// tty), replacing the tail of the line with "..." -- so `ps -axo pid=,comm=`
+// silently mangles every executable path longer than ~114 characters, which is
+// routine for a bundle under a long home directory. A truncated path never
+// matches the <bundle>/Contents/MacOS/ prefix, so IsRunning would answer
+// "not running" for an app that is running: the guard would fail OPEN, which is
+// the exact opposite of its contract. With a single `comm=` column ps emits the
+// full path. Do not add columns back here.
 func listRunningProcesses(ctx context.Context) ([]processInfo, error) {
-	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,comm=").Output()
+	out, err := exec.CommandContext(ctx, "ps", "-axo", "comm=").Output()
 	if err != nil {
 		return nil, err
 	}
 	return parseProcessList(string(out)), nil
 }
 
-// parseProcessList reads `ps -axo pid=,comm=` output. Executable paths may
-// contain spaces, so only the first field is treated as the pid.
+// parseProcessList reads `ps -axo comm=` output: one executable path per line,
+// with no pid column to split off. Paths may contain spaces, so the whole line
+// (minus surrounding whitespace) is the path.
 func parseProcessList(out string) []processInfo {
 	var processes []processInfo
 
 	scanner := bufio.NewScanner(strings.NewReader(out))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		line := strings.TrimLeft(scanner.Text(), " \t")
-		if line == "" {
-			continue
-		}
-
-		pidField, rest, found := strings.Cut(line, " ")
-		if !found {
-			continue
-		}
-		pid, err := strconv.Atoi(pidField)
-		if err != nil {
-			continue
-		}
-
-		execPath := strings.TrimSpace(rest)
+		execPath := strings.TrimSpace(scanner.Text())
 		if execPath == "" {
 			continue
 		}
-		processes = append(processes, processInfo{pid: pid, execPath: execPath})
+		processes = append(processes, processInfo{execPath: execPath})
 	}
 
 	return processes

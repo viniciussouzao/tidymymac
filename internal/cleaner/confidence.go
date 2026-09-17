@@ -33,6 +33,23 @@ type Confidence struct {
 	Band    ConfidenceBand
 	Reasons []MatchReason
 	Shared  bool
+	// ContainerData marks data living inside the app's own sandbox container
+	// (~/Library/Containers/<bundle-id>/), which may hold real user documents
+	// and not just cache. It caps the band at Review; see bandForScore.
+	ContainerData bool
+}
+
+// confidenceFlags carries the properties of an item that override the numeric
+// score when deciding a band. It is a struct rather than a list of positional
+// bools so a call site reads as `confidenceFlags{ContainerData: true}` instead
+// of `(score, false, true)`.
+type confidenceFlags struct {
+	// Shared: the data may belong to more than one application (a Group
+	// Container). Always Caution.
+	Shared bool
+	// ContainerData: the data lives in the app's sandbox container and may
+	// include user documents. Never Safe.
+	ContainerData bool
 }
 
 // IsSafe reports whether this verdict clears the bar for deletion without
@@ -63,16 +80,33 @@ const (
 	confidenceReviewThreshold = 60
 )
 
-// bandForScore maps a score to a band. Hard rule, no exception: shared data
-// (a Group Container used by more than one app) is always Caution, even with a
-// perfect 100 from an exact bundle-id match -- deleting it would take data away
-// from an application the user never asked to touch.
-func bandForScore(score int, shared bool) ConfidenceBand {
-	if shared {
+// bandForScore maps a score to a band, with two hard rules that override the
+// score entirely:
+//
+//   - flags.Shared (a Group Container used by more than one app) is always
+//     Caution, even with a perfect 100 from an exact bundle-id match --
+//     deleting it would take data away from an application the user never
+//     asked to touch.
+//   - flags.ContainerData (~/Library/Containers/<bundle-id>/) is never Safe; it
+//     is capped at Review. A sandboxed app's container holds its Documents,
+//     Desktop and Library *inside* the container, so unlike Caches or
+//     Application Support it can contain files the user authored and would
+//     miss. It is capped rather than forced to Caution because the data is not
+//     shared with another app: nothing else is put at risk, a human just has to
+//     look before it goes.
+//
+// If an item were ever both, Shared wins: it is the stricter of the two. In
+// practice it cannot happen -- Group Containers and Containers are distinct
+// roots in appUninstallLibraryDirs and a candidate comes from exactly one.
+func bandForScore(score int, flags confidenceFlags) ConfidenceBand {
+	if flags.Shared {
 		return ConfidenceCaution
 	}
 	switch {
 	case score >= confidenceSafeThreshold:
+		if flags.ContainerData {
+			return ConfidenceReview
+		}
 		return ConfidenceSafe
 	case score > confidenceReviewThreshold:
 		return ConfidenceReview

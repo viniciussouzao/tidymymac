@@ -20,10 +20,15 @@ type AppTarget struct {
 	Name       string // "Foo"
 }
 
-// AppUninstaller removes an application and the leftovers it scattered across
-// the user's Library. Unlike every other Cleaner, it is not part of
-// DefaultRegistry(): it is built on demand for one specific target and
+// AppUninstaller removes an application -- its .app bundle and the leftovers it
+// scattered across the user's Library. Unlike every other Cleaner, it is not
+// part of DefaultRegistry(): it is built on demand for one specific target and
 // registered into a throwaway registry by the caller.
+//
+// Known limitation: the bundle is removed with the current process's own
+// privileges. A bundle in /Applications owned by root cannot be removed that
+// way; the failure is reported as an error on that one entry and the leftovers
+// are still cleaned. See describeRemovalError and RequiresSudo.
 type AppUninstaller struct {
 	target          AppTarget
 	homeDir         string
@@ -84,9 +89,14 @@ func (c *AppUninstaller) Description() string {
 	if c.target.Name == "" {
 		return "Application bundle and its leftover support files"
 	}
-	return fmt.Sprintf("Leftover files belonging to %s", c.target.Name)
+	return fmt.Sprintf("Application bundle and leftover files belonging to %s", c.target.Name)
 }
 
+// RequiresSudo is false on purpose: this cleaner never elevates. Everything
+// under ~/Library belongs to the user, and so does a bundle installed in
+// ~/Applications. A bundle in /Applications owned by root is the one case that
+// cannot be removed, and it is reported as a per-entry error rather than
+// escalating privileges for the whole run.
 func (c *AppUninstaller) RequiresSudo() bool { return false }
 
 // targetLabel is the human-readable name used in skip reasons and errors.
@@ -123,8 +133,9 @@ func (c *AppUninstaller) TargetIsRunning(ctx context.Context) (bool, error) {
 	})
 }
 
-// Scan collects the leftover candidates for the target application. It has no
-// side effects: nothing is deleted, moved or written.
+// Scan collects the removal candidates for the target application: its .app
+// bundle plus every leftover found under ~/Library. It has no side effects:
+// nothing is deleted, moved or written.
 func (c *AppUninstaller) Scan(ctx context.Context, progress func(ScanProgress)) (*ScanResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -141,23 +152,31 @@ func (c *AppUninstaller) Scan(ctx context.Context, progress func(ScanProgress)) 
 	localIndex := map[string]Confidence{}
 	defer func() { c.setConfidenceIndex(localIndex) }()
 
-	if c.homeDir == "" || (c.target.BundleID == "" && c.target.Name == "") {
-		result.Duration = time.Since(start)
-		return result, nil
-	}
-
 	c.setDefaults()
 
-	candidates, err := c.findLeftoverCandidates(ctx)
-	if err != nil {
-		return result, err
+	var candidates []rawCandidate
+
+	// The .app bundle itself, so an uninstall really uninstalls. It goes
+	// through the very same scoring pipeline as the leftovers -- no special
+	// case downstream.
+	if bundle, ok := appBundleCandidate(ctx, c.target, c.pathSizeFetcher); ok {
+		candidates = append(candidates, bundle)
+	}
+
+	if c.homeDir != "" && (c.target.BundleID != "" || c.target.Name != "") {
+		leftovers, err := c.findLeftoverCandidates(ctx)
+		if err != nil {
+			return result, err
+		}
+		candidates = append(candidates, leftovers...)
 	}
 
 	for _, candidate := range candidates {
 		// Discovery keeps the single strongest reason per candidate, so the
 		// scored evidence is that one reason.
 		localIndex[candidate.entry.Path] = scoreCandidate(
-			[]MatchReason{candidate.reason}, candidate.shared,
+			[]MatchReason{candidate.reason},
+			confidenceFlags{Shared: candidate.shared, ContainerData: candidate.isContainerData},
 		)
 
 		result.Entries = append(result.Entries, candidate.entry)
@@ -261,7 +280,7 @@ func (c *AppUninstaller) Clean(ctx context.Context, entries []FileEntry, dryRun 
 				err = os.Remove(entry.Path)
 			}
 			if err != nil && !os.IsNotExist(err) {
-				result.Errors = append(result.Errors, err)
+				result.Errors = append(result.Errors, c.describeRemovalError(entry, err))
 				continue
 			}
 		}
@@ -283,4 +302,23 @@ func (c *AppUninstaller) Clean(ctx context.Context, entries []FileEntry, dryRun 
 
 	result.Duration = time.Since(start)
 	return result, nil
+}
+
+// describeRemovalError wraps a failed removal with context. The one case worth
+// spelling out is a permission failure on the .app bundle itself: an
+// application under /Applications frequently belongs to root, and this cleaner
+// deliberately does not elevate (see RequiresSudo). The user gets a message
+// they can act on instead of a bare EACCES, and -- because this is an error and
+// not a Skipped result -- the leftovers in ~/Library are still removed. Skipped
+// means "nothing was touched at all", which is reserved for the running-app and
+// unverifiable-target refusals; conflating the two would hide the fact that the
+// rest of the batch did go through.
+func (c *AppUninstaller) describeRemovalError(entry FileEntry, err error) error {
+	if c.target.BundlePath != "" && entry.Path == c.target.BundlePath && os.IsPermission(err) {
+		return fmt.Errorf(
+			"removing the app bundle requires elevated permissions, not supported yet -- "+
+				"remove %s manually or drag it to Trash: %w", entry.Path, err,
+		)
+	}
+	return err
 }

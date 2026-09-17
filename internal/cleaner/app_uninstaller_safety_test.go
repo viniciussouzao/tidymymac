@@ -266,8 +266,8 @@ func TestAppUninstallerCleanRefusesSharedEntries(t *testing.T) {
 
 	// dirPath stands in for a Group Container shared with another app.
 	c.setConfidenceIndex(map[string]Confidence{
-		filePath: scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, false),
-		dirPath:  scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, true),
+		filePath: scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, confidenceFlags{}),
+		dirPath:  scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, confidenceFlags{Shared: true}),
 	})
 
 	result, err := c.Clean(t.Context(), entries, false, nil)

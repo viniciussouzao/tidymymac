@@ -23,6 +23,7 @@ func TestEvidenceSourceBandMatrix(t *testing.T) {
 		wantScore int
 		wantBand  ConfidenceBand
 	}{
+		{matchSourceAppBundleItself, 100, ConfidenceSafe},
 		{matchSourceExactBundleID, 100, ConfidenceSafe},
 		{matchSourceKnownAppPath, 95, ConfidenceSafe},
 		{matchSourceVendorIdentifier, 80, ConfidenceReview},
@@ -32,7 +33,7 @@ func TestEvidenceSourceBandMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.source, func(t *testing.T) {
-			got := scoreCandidate([]MatchReason{newMatchReason(tt.source)}, false)
+			got := scoreCandidate([]MatchReason{newMatchReason(tt.source)}, confidenceFlags{})
 
 			if got.Score != tt.wantScore {
 				t.Errorf("Score = %d, want %d", got.Score, tt.wantScore)
@@ -65,7 +66,7 @@ func TestNameHeuristicAloneNeverSafe(t *testing.T) {
 	}
 
 	for _, shared := range []bool{false, true} {
-		got := scoreCandidate([]MatchReason{newMatchReason(matchSourceNameHeuristic)}, shared)
+		got := scoreCandidate([]MatchReason{newMatchReason(matchSourceNameHeuristic)}, confidenceFlags{Shared: shared})
 		if got.Band == ConfidenceSafe {
 			t.Errorf("name heuristic alone (shared=%v) produced %q, want anything but %q",
 				shared, got.Band, ConfidenceSafe)
@@ -76,7 +77,7 @@ func TestNameHeuristicAloneNeverSafe(t *testing.T) {
 	// without crossing the Safe threshold.
 	for score := 0; score < confidenceSafeThreshold; score++ {
 		reason := MatchReason{Source: matchSourceNameHeuristic, Weight: score}
-		if got := scoreCandidate([]MatchReason{reason}, false); got.Band == ConfidenceSafe {
+		if got := scoreCandidate([]MatchReason{reason}, confidenceFlags{}); got.Band == ConfidenceSafe {
 			t.Fatalf("score %d with a lone name heuristic produced %q", score, ConfidenceSafe)
 		}
 	}
@@ -95,8 +96,8 @@ func TestSharedAlwaysCaution(t *testing.T) {
 
 	for _, source := range sources {
 		t.Run(source, func(t *testing.T) {
-			unshared := scoreCandidate([]MatchReason{newMatchReason(source)}, false)
-			shared := scoreCandidate([]MatchReason{newMatchReason(source)}, true)
+			unshared := scoreCandidate([]MatchReason{newMatchReason(source)}, confidenceFlags{})
+			shared := scoreCandidate([]MatchReason{newMatchReason(source)}, confidenceFlags{Shared: true})
 
 			if shared.Band != ConfidenceCaution {
 				t.Errorf("shared Band = %q, want %q", shared.Band, ConfidenceCaution)
@@ -113,7 +114,7 @@ func TestSharedAlwaysCaution(t *testing.T) {
 	}
 
 	// Explicitly: the one case that would otherwise be Safe.
-	perfect := scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, true)
+	perfect := scoreCandidate([]MatchReason{newMatchReason(matchSourceExactBundleID)}, confidenceFlags{Shared: true})
 	if perfect.Score != 100 {
 		t.Fatalf("exact bundle id Score = %d, want 100", perfect.Score)
 	}
@@ -124,25 +125,150 @@ func TestSharedAlwaysCaution(t *testing.T) {
 
 func TestBandForScore(t *testing.T) {
 	tests := []struct {
-		score  int
-		shared bool
-		want   ConfidenceBand
+		score int
+		flags confidenceFlags
+		want  ConfidenceBand
 	}{
-		{100, false, ConfidenceSafe},
-		{90, false, ConfidenceSafe}, // inclusive lower bound for Safe
-		{89, false, ConfidenceReview},
-		{61, false, ConfidenceReview},
-		{60, false, ConfidenceCaution}, // exclusive lower bound for Review
-		{59, false, ConfidenceCaution},
-		{0, false, ConfidenceCaution},
-		{100, true, ConfidenceCaution},
-		{0, true, ConfidenceCaution},
+		{100, confidenceFlags{}, ConfidenceSafe},
+		{90, confidenceFlags{}, ConfidenceSafe}, // inclusive lower bound for Safe
+		{89, confidenceFlags{}, ConfidenceReview},
+		{61, confidenceFlags{}, ConfidenceReview},
+		{60, confidenceFlags{}, ConfidenceCaution}, // exclusive lower bound for Review
+		{59, confidenceFlags{}, ConfidenceCaution},
+		{0, confidenceFlags{}, ConfidenceCaution},
+		{100, confidenceFlags{Shared: true}, ConfidenceCaution},
+		{0, confidenceFlags{Shared: true}, ConfidenceCaution},
+		// Container data is capped at Review, not pushed down to Caution: it is
+		// not shared with any other app, it just may hold user documents.
+		{100, confidenceFlags{ContainerData: true}, ConfidenceReview},
+		{90, confidenceFlags{ContainerData: true}, ConfidenceReview},
+		{80, confidenceFlags{ContainerData: true}, ConfidenceReview},
+		{60, confidenceFlags{ContainerData: true}, ConfidenceCaution},
+		// Shared is the stricter rule and wins if both were ever set.
+		{100, confidenceFlags{Shared: true, ContainerData: true}, ConfidenceCaution},
 	}
 
 	for _, tt := range tests {
-		if got := bandForScore(tt.score, tt.shared); got != tt.want {
-			t.Errorf("bandForScore(%d, %v) = %q, want %q", tt.score, tt.shared, got, tt.want)
+		if got := bandForScore(tt.score, tt.flags); got != tt.want {
+			t.Errorf("bandForScore(%d, %+v) = %q, want %q", tt.score, tt.flags, got, tt.want)
 		}
+	}
+}
+
+// TestContainerDataNeverSafe is an invariant guard: ~/Library/Containers/<id>
+// holds a sandboxed app's Documents/Desktop/Library, i.e. files the user
+// authored, so no amount of certainty that the container belongs to the target
+// makes deleting it safe without a human look. It must hold for every score,
+// 100 (exact_bundle_id) included.
+func TestContainerDataNeverSafe(t *testing.T) {
+	for score := 0; score <= 100; score++ {
+		flags := confidenceFlags{ContainerData: true}
+		if got := bandForScore(score, flags); got == ConfidenceSafe {
+			t.Fatalf("bandForScore(%d, %+v) = %q, want anything but %q", score, flags, got, ConfidenceSafe)
+		}
+
+		reason := MatchReason{Source: matchSourceExactBundleID, Weight: score}
+		got := scoreCandidate([]MatchReason{reason}, flags)
+		if got.Band == ConfidenceSafe {
+			t.Fatalf("scoreCandidate(weight %d, container data) = %q, want anything but %q",
+				score, got.Band, ConfidenceSafe)
+		}
+		if !got.ContainerData {
+			t.Fatalf("scoreCandidate(weight %d) ContainerData = false, want true", score)
+		}
+		if got.Shared {
+			t.Fatalf("scoreCandidate(weight %d) Shared = true, want false", score)
+		}
+		// The evidence itself is untouched: the flag downgrades the verdict,
+		// not the strength of the match.
+		if got.Score != score {
+			t.Fatalf("Score = %d, want %d", got.Score, score)
+		}
+	}
+
+	// The strongest real evidence there is, on container data: Review, not Safe.
+	perfect := scoreCandidate(
+		[]MatchReason{newMatchReason(matchSourceExactBundleID)},
+		confidenceFlags{ContainerData: true},
+	)
+	if perfect.Score != weightExactBundleID {
+		t.Fatalf("Score = %d, want %d", perfect.Score, weightExactBundleID)
+	}
+	if perfect.Band != ConfidenceReview {
+		t.Fatalf("exact bundle id on container data = %q, want %q", perfect.Band, ConfidenceReview)
+	}
+	if perfect.IsSafe() {
+		t.Error("container data reports IsSafe() = true")
+	}
+}
+
+// The two Library roots that carry a flag must stay distinct: "Containers" is
+// the app's own sandbox, "Group Containers" is data shared between apps. If
+// they ever collapsed into one prefix check, a shared container could be scored
+// as mere container data and lose its hard Caution.
+func TestContainerRootsAreDistinct(t *testing.T) {
+	if libraryRootContainers == libraryRootGroupContainers {
+		t.Fatal("Containers and Group Containers must be distinct Library roots")
+	}
+
+	var containers, groupContainers bool
+	for _, rel := range appUninstallLibraryDirs {
+		switch rel {
+		case libraryRootContainers:
+			containers = true
+		case libraryRootGroupContainers:
+			groupContainers = true
+		}
+	}
+	if !containers || !groupContainers {
+		t.Fatalf("appUninstallLibraryDirs = %v, want both %q and %q",
+			appUninstallLibraryDirs, libraryRootContainers, libraryRootGroupContainers)
+	}
+}
+
+// Integration counterpart of TestContainerDataNeverSafe: a real leftover under
+// ~/Library/Containers/<exact bundle id> comes out of Scan as Review even
+// though its evidence is a perfect exact_bundle_id match.
+func TestScanScoresContainersAsReview(t *testing.T) {
+	home := t.TempDir()
+	library := filepath.Join(home, "Library")
+
+	container := createDir(t, library, "Containers", "com.acme.editor")
+	createDir(t, container, "Data", "Documents")
+	createSparseFile(t, filepath.Join(container, "Data", "Documents"), "algumacoisa.txt", 64)
+
+	appSupport := createDir(t, library, "Application Support", "com.acme.editor")
+
+	c := newTestUninstaller(home, AppTarget{BundleID: "com.acme.editor", Name: "Acme Editor"})
+	if _, err := c.Scan(t.Context(), nil); err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	got, ok := c.ExplainCandidate(FileEntry{Path: container})
+	if !ok {
+		t.Fatalf("container %q was not explained by Scan", container)
+	}
+	if got.Score != weightExactBundleID || got.Reasons[0].Source != matchSourceExactBundleID {
+		t.Errorf("container evidence = %+v, want a perfect %q match", got, matchSourceExactBundleID)
+	}
+	if got.Band != ConfidenceReview {
+		t.Errorf("container Band = %q, want %q", got.Band, ConfidenceReview)
+	}
+	if !got.ContainerData {
+		t.Error("container ContainerData = false, want true")
+	}
+	if got.Shared {
+		t.Error("container Shared = true, want false: a sandbox container is not shared data")
+	}
+
+	// Control: the same evidence outside Containers stays Safe, so the
+	// downgrade is about the root and not about the scoring changing.
+	support, ok := c.ExplainCandidate(FileEntry{Path: appSupport})
+	if !ok {
+		t.Fatalf("%q was not explained by Scan", appSupport)
+	}
+	if support.Band != ConfidenceSafe || support.ContainerData {
+		t.Errorf("Application Support verdict = %+v, want Safe and ContainerData=false", support)
 	}
 }
 
@@ -153,7 +279,7 @@ func TestScoreCandidateTakesStrongestReason(t *testing.T) {
 		newMatchReason(matchSourceVendorIdentifier),
 	}
 
-	got := scoreCandidate(reasons, false)
+	got := scoreCandidate(reasons, confidenceFlags{})
 	if got.Score != weightExactBundleID {
 		t.Errorf("Score = %d, want %d (max, not sum)", got.Score, weightExactBundleID)
 	}
@@ -163,9 +289,9 @@ func TestScoreCandidateTakesStrongestReason(t *testing.T) {
 }
 
 func TestScoreCandidateNoReasons(t *testing.T) {
-	got := scoreCandidate(nil, false)
+	got := scoreCandidate(nil, confidenceFlags{})
 	if got.Score != 0 || got.Band != ConfidenceCaution {
-		t.Errorf("scoreCandidate(nil, false) = %+v, want score 0 / %q", got, ConfidenceCaution)
+		t.Errorf("scoreCandidate(nil, confidenceFlags{}) = %+v, want score 0 / %q", got, ConfidenceCaution)
 	}
 }
 

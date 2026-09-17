@@ -2,8 +2,10 @@ package cleaner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -427,4 +429,233 @@ func TestLeftoverBaseName(t *testing.T) {
 			t.Errorf("leftoverBaseName(%q, %q) = %q, want %q", tt.rel, tt.name, got, tt.want)
 		}
 	}
+}
+
+// The .app bundle is a removal candidate in its own right: without it an
+// "uninstall" would only sweep up the traces and leave the application itself
+// installed. It is the exact resolved target, so it scores at the top of the
+// evidence table and lands in Safe.
+func TestScanIncludesAppBundleAsCandidate(t *testing.T) {
+	home := t.TempDir()
+	library := filepath.Join(home, "Library")
+	leftover := createDir(t, library, "Application Support", "com.acme.editor")
+	bundle := createTestApp(t, filepath.Join(home, "Applications"), "Acme Editor.app", "com.acme.editor")
+
+	c := newTestUninstaller(home, AppTarget{
+		BundlePath: bundle,
+		BundleID:   "com.acme.editor",
+		Name:       "Acme Editor",
+	})
+
+	result, err := c.Scan(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	var bundleEntry *FileEntry
+	for i, entry := range result.Entries {
+		if entry.Path == bundle {
+			bundleEntry = &result.Entries[i]
+		}
+	}
+	if bundleEntry == nil {
+		t.Fatalf("Scan entries %v do not include the bundle %q", entryPaths(result.Entries), bundle)
+	}
+	if !bundleEntry.IsDir {
+		t.Error("bundle entry IsDir = false, want true: a .app is a directory")
+	}
+	if bundleEntry.Size != 4096 {
+		t.Errorf("bundle entry Size = %d, want the size fetcher's 4096", bundleEntry.Size)
+	}
+	if bundleEntry.Category != CategoryAppUninstall {
+		t.Errorf("bundle entry Category = %q, want %q", bundleEntry.Category, CategoryAppUninstall)
+	}
+
+	got, ok := c.ExplainCandidate(*bundleEntry)
+	if !ok {
+		t.Fatal("the bundle entry was not explained: it must go through the same scoring pipeline")
+	}
+	if got.Band != ConfidenceSafe {
+		t.Errorf("bundle Band = %q, want %q", got.Band, ConfidenceSafe)
+	}
+	if got.Score != weightAppBundleItself || len(got.Reasons) != 1 || got.Reasons[0].Source != matchSourceAppBundleItself {
+		t.Errorf("bundle evidence = %+v, want the single source %q at weight %d",
+			got, matchSourceAppBundleItself, weightAppBundleItself)
+	}
+	if got.Reasons[0].Detail != bundle {
+		t.Errorf("bundle reason detail = %q, want the path", got.Reasons[0].Detail)
+	}
+	if got.Shared || got.ContainerData {
+		t.Errorf("bundle flags = %+v, want neither shared nor container data", got)
+	}
+
+	// The leftovers are still there: the bundle is an addition, not a swap.
+	if _, ok := c.ExplainCandidate(FileEntry{Path: leftover}); !ok {
+		t.Errorf("leftover %q disappeared from the scan", leftover)
+	}
+	// And it is listed exactly once.
+	var count int
+	for _, entry := range result.Entries {
+		if entry.Path == bundle {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("bundle listed %d times, want exactly 1", count)
+	}
+}
+
+func TestAppBundleCandidate(t *testing.T) {
+	home := t.TempDir()
+	bundle := createTestApp(t, filepath.Join(home, "Applications"), "Acme Editor.app", "com.acme.editor")
+	sizer := func(context.Context, string) (int64, error) { return 8192, nil }
+
+	t.Run("no bundle path", func(t *testing.T) {
+		if _, ok := appBundleCandidate(t.Context(), AppTarget{BundleID: "com.acme.editor"}, sizer); ok {
+			t.Error("ok = true for a target with no bundle path, want false")
+		}
+	})
+
+	t.Run("bundle not on disk", func(t *testing.T) {
+		target := AppTarget{BundlePath: filepath.Join(home, "Applications", "Gone.app")}
+		if _, ok := appBundleCandidate(t.Context(), target, sizer); ok {
+			t.Error("ok = true for a bundle that is not on disk, want false")
+		}
+	})
+
+	t.Run("size fetcher failure still yields a candidate", func(t *testing.T) {
+		failing := func(context.Context, string) (int64, error) { return 0, errors.New("du exploded") }
+		got, ok := appBundleCandidate(t.Context(), AppTarget{BundlePath: bundle}, failing)
+		if !ok {
+			t.Fatal("ok = false; an unmeasurable bundle must still be offered for removal")
+		}
+		if got.entry.Path != bundle {
+			t.Errorf("entry path = %q, want %q", got.entry.Path, bundle)
+		}
+	})
+
+	got, ok := appBundleCandidate(t.Context(), AppTarget{BundlePath: bundle}, sizer)
+	if !ok {
+		t.Fatal("ok = false for a real bundle")
+	}
+	if got.entry.Size != 8192 {
+		t.Errorf("entry size = %d, want the fetcher's 8192", got.entry.Size)
+	}
+	if got.reason.Source != matchSourceAppBundleItself || got.reason.Weight != weightAppBundleItself {
+		t.Errorf("reason = %+v, want %q at %d", got.reason, matchSourceAppBundleItself, weightAppBundleItself)
+	}
+	if got.shared || got.isContainerData {
+		t.Errorf("candidate flags = %+v, want neither shared nor container data", got)
+	}
+}
+
+func TestCleanRemovesAppBundleWhenWritable(t *testing.T) {
+	home := t.TempDir()
+	bundle := createTestApp(t, filepath.Join(home, "Applications"), "Acme Editor.app", "com.acme.editor")
+	leftover := createDir(t, filepath.Join(home, "Library"), "Application Support", "com.acme.editor")
+
+	c := newTestUninstaller(home, AppTarget{
+		BundlePath: bundle,
+		BundleID:   "com.acme.editor",
+		Name:       "Acme Editor",
+	})
+	c.SetProcessChecker(&fakeProcessChecker{running: false})
+
+	scanned, err := c.Scan(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	result, err := c.Clean(t.Context(), scanned.Entries, false, nil)
+	if err != nil {
+		t.Fatalf("Clean() error: %v", err)
+	}
+	if len(result.Errors) != 0 {
+		t.Fatalf("Errors = %v, want none", result.Errors)
+	}
+	if result.Skipped {
+		t.Errorf("Skipped = true (%q), want false", result.SkipReason)
+	}
+	if result.FilesDeleted != len(scanned.Entries) {
+		t.Errorf("FilesDeleted = %d, want %d", result.FilesDeleted, len(scanned.Entries))
+	}
+	for _, path := range []string{bundle, leftover} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("%q should have been deleted (stat err = %v)", path, err)
+		}
+	}
+}
+
+// A bundle the current user cannot remove (the /Applications-owned-by-root
+// case, simulated with a read-only parent directory) is reported as a per-entry
+// error with an actionable message. It must not abort the batch and must not
+// set Skipped: the leftovers in ~/Library are still cleaned, and "skipped"
+// means "nothing was touched at all", which is reserved for the running-app
+// refusal.
+func TestCleanReportsPermissionErrorForAppBundleWithoutBlockingLeftovers(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: no path is unwritable")
+	}
+
+	home := t.TempDir()
+	appRoot := filepath.Join(home, "Applications")
+	bundle := createTestApp(t, appRoot, "Acme Editor.app", "com.acme.editor")
+	leftover := createDir(t, filepath.Join(home, "Library"), "Application Support", "com.acme.editor")
+
+	c := newTestUninstaller(home, AppTarget{
+		BundlePath: bundle,
+		BundleID:   "com.acme.editor",
+		Name:       "Acme Editor",
+	})
+	c.SetProcessChecker(&fakeProcessChecker{running: false})
+
+	scanned, err := c.Scan(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("Scan() error: %v", err)
+	}
+
+	// Removing a directory entry needs write permission on its *parent*, so
+	// locking appRoot is what makes the bundle unremovable. Restored on cleanup
+	// so t.TempDir() can clean itself up.
+	if err := os.Chmod(appRoot, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(appRoot, 0o755) })
+
+	result, err := c.Clean(t.Context(), scanned.Entries, false, nil)
+	if err != nil {
+		t.Fatalf("Clean() error: %v", err)
+	}
+
+	if result.Skipped {
+		t.Errorf("Skipped = true (%q); a permission failure is not a skip", result.SkipReason)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("Errors = %v, want exactly one (the bundle)", result.Errors)
+	}
+	message := result.Errors[0].Error()
+	for _, want := range []string{"elevated permissions", bundle} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error = %q, want it to mention %q", message, want)
+		}
+	}
+
+	if _, err := os.Stat(bundle); err != nil {
+		t.Errorf("the bundle should still be on disk: %v", err)
+	}
+	if _, err := os.Stat(leftover); !os.IsNotExist(err) {
+		t.Errorf("the leftover should have been removed despite the bundle failure (stat err = %v)", err)
+	}
+	if result.FilesDeleted != len(scanned.Entries)-1 {
+		t.Errorf("FilesDeleted = %d, want %d: one failure never aborts the batch",
+			result.FilesDeleted, len(scanned.Entries)-1)
+	}
+}
+
+func entryPaths(entries []FileEntry) []string {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.Path)
+	}
+	return paths
 }

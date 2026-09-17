@@ -25,12 +25,26 @@ var appUninstallLibraryDirs = []string{
 	"Group Containers",
 }
 
-// rawCandidate is a leftover path plus the evidence that linked it to the
-// target, before any scoring happens.
+// libraryRootContainers and libraryRootGroupContainers are distinct roots: a
+// Group Container lives under ~/Library/Group Containers, an app's own sandbox
+// container under ~/Library/Containers. No candidate can come from both, which
+// is why rawCandidate never carries shared and isContainerData at once.
+const (
+	libraryRootContainers      = "Containers"
+	libraryRootGroupContainers = "Group Containers"
+)
+
+// rawCandidate is a candidate path plus the evidence that linked it to the
+// target, before any scoring happens. It is either a leftover under ~/Library
+// or the target's own .app bundle.
 type rawCandidate struct {
 	entry  FileEntry
 	reason MatchReason
 	shared bool // true iff the path lives under Group Containers
+	// isContainerData is true iff the path is the app's own sandbox container
+	// (~/Library/Containers/<id>), which can hold user documents and is
+	// therefore never scored Safe. Group Containers are covered by shared.
+	isContainerData bool
 }
 
 // DiscoverInstalledApps lists the third-party applications found under the
@@ -101,6 +115,56 @@ func DiscoverInstalledApps(ctx context.Context, searchRoots []string, bundleIDRe
 	return apps, firstEr
 }
 
+// appBundleCandidate turns the target's own .app bundle into a removal
+// candidate, so uninstalling actually removes the application and not only the
+// traces it left behind. It returns ok == false when the target has no bundle
+// path or the bundle is no longer on disk. It is read-only: nothing but
+// os.Lstat and the size fetcher touches the filesystem.
+//
+// It is deliberately separate from findLeftoverCandidates, which stays a walk
+// of ~/Library and nothing else.
+func appBundleCandidate(ctx context.Context, target AppTarget, pathSizeFetcher func(context.Context, string) (int64, error)) (rawCandidate, bool) {
+	path := strings.TrimSpace(target.BundlePath)
+	if path == "" {
+		return rawCandidate{}, false
+	}
+
+	// Lstat, not Stat: a symlinked "bundle" must be reported as the link it is,
+	// so Clean unlinks it instead of recursing into whatever it points at.
+	info, err := os.Lstat(path)
+	if err != nil {
+		return rawCandidate{}, false
+	}
+
+	isDir := info.IsDir()
+	size := info.Size()
+	if isDir && pathSizeFetcher != nil {
+		if measured, sizeErr := pathSizeFetcher(ctx, path); sizeErr == nil {
+			size = measured
+		}
+		// A failed measurement is not a reason to hide the application from the
+		// uninstall list; the entry is kept with the stat-reported size.
+	}
+
+	reason := newMatchReason(matchSourceAppBundleItself)
+	reason.Detail = path
+
+	return rawCandidate{
+		entry: FileEntry{
+			Path:     path,
+			Size:     size,
+			IsDir:    isDir,
+			ModTime:  info.ModTime(),
+			Category: CategoryAppUninstall,
+		},
+		reason: reason,
+		// The bundle is neither shared with another app nor sandbox container
+		// data: it is program code, the exact thing the user asked to remove.
+		shared:          false,
+		isContainerData: false,
+	}, true
+}
+
 // findLeftoverCandidates walks the known Library roots and returns every item
 // that matches the target by one of the four evidence heuristics. It is
 // read-only.
@@ -124,7 +188,8 @@ func (c *AppUninstaller) findLeftoverCandidates(ctx context.Context) ([]rawCandi
 			continue
 		}
 
-		shared := rel == "Group Containers"
+		shared := rel == libraryRootGroupContainers
+		containerData := rel == libraryRootContainers
 
 		for _, entry := range entries {
 			if err := ctx.Err(); err != nil {
@@ -132,6 +197,9 @@ func (c *AppUninstaller) findLeftoverCandidates(ctx context.Context) ([]rawCandi
 			}
 
 			path := filepath.Join(root, entry.Name())
+			// The .app bundle is a candidate in its own right, contributed by
+			// appBundleCandidate. Skipping it here keeps it from being listed
+			// twice in the pathological case where it sits under ~/Library.
 			if c.target.BundlePath != "" && path == c.target.BundlePath {
 				continue
 			}
@@ -164,8 +232,9 @@ func (c *AppUninstaller) findLeftoverCandidates(ctx context.Context) ([]rawCandi
 					ModTime:  info.ModTime(),
 					Category: CategoryAppUninstall,
 				},
-				reason: reason,
-				shared: shared,
+				reason:          reason,
+				shared:          shared,
+				isContainerData: containerData,
 			})
 		}
 	}

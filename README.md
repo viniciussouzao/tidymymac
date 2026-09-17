@@ -193,6 +193,31 @@ tidymymac clean --output json
 tidymymac clean --execute --output json --prompt-sudo
 ```
 
+#### `uninstall` — Smart Uninstall (remove one app + its leftovers)
+
+Removes an application's `.app` bundle plus the support files, caches and preferences it
+scattered under `~/Library`, scored by how confident TidyMyMac is that each item actually
+belongs to it. Dry-run by default; destructive only with `--execute`, same as `clean`.
+Currently requires `--output json` (the interactive review screen is planned).
+
+```bash
+# List every third-party application TidyMyMac can discover
+tidymymac uninstall --list
+
+# Preview removing an app by name (dry-run, machine-readable)
+tidymymac uninstall Caffeine --output json
+
+# Actually remove it, but only the entries TidyMyMac is fully confident about
+tidymymac uninstall Caffeine --execute --output json
+
+# Widen the removal to entries that need a human look too (still excludes data
+# shared with other applications, e.g. Group Containers)
+tidymymac uninstall Caffeine --execute --output json --min-confidence review
+
+# Match by bundle identifier instead of display name
+tidymymac uninstall net.domzilla.caffeine --output json
+```
+
 #### `profile` — bundle categories and project paths
 
 A profile groups the categories you clean together with project directories to sweep for

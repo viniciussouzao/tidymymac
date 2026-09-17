@@ -73,6 +73,8 @@ tidymymac/
 │   ├── root.go                   # root command, launches TUI, loads config
 │   ├── scan.go                   # `tidymymac scan`
 │   ├── clean.go                  # `tidymymac clean`
+│   ├── uninstall.go              # `tidymymac uninstall [app]` (Smart Uninstall, non-interactive)
+│   ├── uninstall_output.go       # confidence filtering + JSON shaping for `uninstall`
 │   ├── list.go                   # `tidymymac list categories|protected|profiles`
 │   ├── profile.go                # `tidymymac profile <subcommand>`
 │   ├── protect.go                # `tidymymac protect --path`
@@ -386,6 +388,7 @@ The `cmd/` package uses [Cobra](https://github.com/spf13/cobra) to define the CL
 | `execute` | Open the same interactive TUI as the root command, but already in execute mode. Deletion still goes through the TUI's own review and confirmation step. Prefer this over the deprecated `tidymymac --execute`. |
 | `scan [categories...]` | Run scans and emit an interactive table or machine-readable JSON/CSV/table (with `--output json\|csv\|table`, `--detailed`, `--save`, `--quiet`, `--generate-script`). `--output table --detailed` prints a concise report (totals + top 10 largest items per category, Docker grouped by resource type); add `--print-all` to list every item instead of capping at 10 (only valid with `--output table --detailed`). `--profile <name>` runs a configured profile instead of positional categories. |
 | `clean [categories...]` | Delete scanned files. Dry-run by default; destructive only with `--execute`. Supports `--from-file` to reuse a previously saved detailed scan, `--output json`, `--profile <name>`, `--include-large-files` to opt into deleting the oversized files a profile's project paths turn up, and `--prompt-sudo` to allow `--execute --output json` to prompt for a sudo password when the prepared plan has entries that genuinely need root. Prompting requires a controlling terminal and terminal stderr; stdin may still carry `--from-file -`. |
+| `uninstall [app]` | Smart Uninstall: remove one installed application (matched by name or bundle id) plus the leftovers it scattered under `~/Library`, scored by the confidence engine (see `CategoryAppUninstall` above). Dry-run by default; destructive only with `--execute`, guarded the same way as `clean`. `--list` prints every application `DiscoverInstalledApps` finds instead of targeting one. `--min-confidence safe\|review\|caution` (default `safe`) sets how far below a perfect match the run is allowed to remove — the filter runs on the fresh scan before it is prepared for cleaning, never after. Requires `--output json` today; the interactive review screen is Phase 5/7 future work. |
 | `list categories\|protected\|profiles` | Print all registered categories (add `--detailed` for descriptions), the current safety config, or the configured profiles. |
 | `profile <subcommand>` | `create`, `delete`, `add-category`, `remove-category`, `add-path`, `remove-path` — CRUD over the `profiles` tree in the config file. |
 | `protect --path` / `unprotect --path` | Add or remove an entry in `protected_paths`. |

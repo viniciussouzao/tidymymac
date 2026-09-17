@@ -21,6 +21,7 @@ This document describes the internal architecture of TidyMyMac: how the packages
   - [internal/commands/](#internalcommands)
   - [internal/config/](#internalconfig)
   - [internal/elevate/](#internalelevate)
+  - [internal/safety/](#internalsafety)
   - [internal/celebration/](#internalcelebration)
   - [internal/tui/](#internaltui)
   - [internal/history/](#internalhistory)
@@ -72,6 +73,8 @@ tidymymac/
 │   ├── root.go                   # root command, launches TUI, loads config
 │   ├── scan.go                   # `tidymymac scan`
 │   ├── clean.go                  # `tidymymac clean`
+│   ├── uninstall.go              # `tidymymac uninstall [app]` (Smart Uninstall, non-interactive)
+│   ├── uninstall_output.go       # confidence filtering + JSON shaping for `uninstall`
 │   ├── list.go                   # `tidymymac list categories|protected|profiles`
 │   ├── profile.go                # `tidymymac profile <subcommand>`
 │   ├── protect.go                # `tidymymac protect --path`
@@ -294,6 +297,72 @@ The built-in categories (see `internal/cleaner/category.go`) are:
 
 Adding a new cleaner is purely additive — implement the interface, add a category constant, and register it (see [Extending TidyMyMac](#extending-tidymymac)).
 
+One category is deliberately **not** in `DefaultRegistry()`: `CategoryAppUninstall` (`app-uninstall`, display name "Uninstall App"). `AppUninstaller` (`app_uninstaller.go`, discovery in `app_uninstaller_discovery.go`) targets one specific application chosen by the user — `AppTarget{BundlePath, BundleID, Name}` — so it is built on demand with `NewAppUninstaller(target)` and registered into a throwaway `NewRegistry()`, then orchestrated by the same `commands.PrepareScanResultForClean` / `commands.RunCleanWithPreparedScanResult` pair as any other cleaner. It would make no sense in a whole-system scan, which is why it stays out of the default registry.
+
+Its `Scan` is read-only like every other cleaner and produces two kinds of candidate:
+
+- **The `.app` bundle itself.** `appBundleCandidate(ctx, target, pathSizeFetcher)` turns `target.BundlePath` into a candidate of its own (evidence source `app_bundle_itself`, weight 100) when the path is set and still on disk, so an uninstall really removes the application and not just the traces it left behind. It is a separate function from the leftover walk on purpose, and the result goes through the *same* scoring pipeline — there is no special-cased entry downstream. It uses `os.Lstat`, so a symlinked "bundle" is reported as the link it is rather than followed.
+- **The leftovers.** `findLeftoverCandidates` walks `appUninstallLibraryDirs` (the `app-orphans` roots plus the user's `LaunchAgents`, `Containers` and `Group Containers`) under `~/Library` and links each item to the target through exactly one evidence source — `exact_bundle_id`, `known_app_path`, `vendor_identifier` or `name_heuristic`, strongest first. It still skips `target.BundlePath` so the bundle can never be listed twice.
+
+Items under `Group Containers` are flagged `shared`, because that data may belong to more than one app; items under `Containers` are flagged `isContainerData` (see the band rules below). The two are distinct Library roots, so no candidate carries both flags. `DiscoverInstalledApps` lists the third-party bundles available as targets. Running-process safety is enforced at `Clean` time, not during discovery (see below).
+
+That evidence is then scored by the **confidence engine** (`confidence.go` for the generic types, `app_uninstaller_confidence.go` for the uninstall-specific weights). Each `MatchReason{Source, Weight, Detail}` carries the score its source is worth — `app_bundle_itself` 100, `exact_bundle_id` 100, `known_app_path` 85, `vendor_identifier` 80, `name_heuristic` 60 — and `scoreCandidate` takes the **strongest single reason**, not their sum: two weak hints about the same path do not add up to a strong one. `bandForScore(score, confidenceFlags{Shared, ContainerData})` then maps the score to a `ConfidenceBand`: `>= 90` is `ConfidenceSafe`, `> 60` is `ConfidenceReview`, anything else is `ConfidenceCaution`. The Review bound is deliberately exclusive so that a lone `name_heuristic`, worth exactly 60, lands in Caution — a name match alone never implies an item belongs to the app.
+
+Only the two identifier-based sources (`app_bundle_itself`, `exact_bundle_id`) clear the Safe threshold. `known_app_path` sits at 85 — above `vendor_identifier`, because an exact path-name match is stronger evidence, but deliberately **below** the 90 Safe threshold, so it lands in Review. That source is nothing more than "this directory's name equals the app's display name", and a collision with an unrelated, precious directory is entirely plausible: `~/Library/Application Support/Steam` is a user's whole game library, not a leftover, and at 95 it would have been permanently deleted without review by a default `uninstall Steam --execute` (`--min-confidence safe`). A directory-name match alone now always requires a human to look.
+
+Two flags in `confidenceFlags` override the score entirely (a struct rather than positional bools, so call sites read as `confidenceFlags{ContainerData: true}`):
+
+- **`Shared`** — anything under `Group Containers` is always `ConfidenceCaution`, even with a perfect 100, because deleting it would take data from an application the user never asked to touch.
+- **`ContainerData`** — anything under `~/Library/Containers/<bundle-id>/` is **never `ConfidenceSafe`**; a 90+ score is capped at `ConfidenceReview`. A sandboxed app keeps its `Documents`, `Desktop` and `Library` *inside* its container, so unlike `Caches` or `Application Support` that directory can hold files the user authored and would miss. It is capped at Review rather than forced to Caution because the data is not shared with any other app — nothing else is put at risk, a human just has to look before it goes. `Shared` is the stricter rule and wins if both were ever set.
+
+Both invariants are pinned by tests (`TestSharedAlwaysCaution`, `TestContainerDataNeverSafe`) that sweep every score, so raising a weight or moving a threshold cannot quietly promote either kind of data to Safe.
+
+`Scan` records the resulting `Confidence` per entry path, and the result is read back through `CandidateExplainer` (`registry.go`), an optional interface in the same family as `ItemSelectable`:
+
+```go
+type CandidateExplainer interface {
+    ExplainCandidate(entry FileEntry) (Confidence, bool)
+}
+```
+
+It lets a caller surface per-item confidence and evidence instead of the aggregate, category-level review every other cleaner gets. The index is rebuilt from scratch on each `Scan`, so stale scores never outlive the entries they described, and an entry that did not come out of that same `Scan` returns `ok == false` — "unexplained", which callers must not conflate with low confidence.
+
+`Scan` builds that index in a *local* map and publishes it in a single guarded swap at the end, with a `sync.RWMutex` on the `AppUninstaller` shared by `ExplainCandidate`. A review screen reading per-item evidence while a rescan runs is a normal thing to do, so a concurrent reader must be able to observe only the complete previous index or the complete new one — never a half-filled one.
+
+**Deciding on a `Confidence` is done through `IsSafe()`/`NeedsReview()`, never through a bare `switch` on `Band`.** The zero value `Confidence{}` — exactly what `ExplainCandidate` returns for an unexplained entry — has `Band == ""`, which is none of the three constants, so a filter shaped like `switch band { case ConfidenceCaution: block; default: allow }` would wave every unexplained item straight through. `IsSafe()` is true only for `ConfidenceSafe`, which makes "no evidence" fail closed like every other unknown in this codebase.
+
+#### Running-process safety (`internal/safety`)
+
+Deleting the files of a running application corrupts its state, so a real (non dry-run) `AppUninstaller.Clean` first asks `safety.ProcessChecker.IsRunning(ctx, safety.ProcessTarget{BundleID, BundlePath})` and only then removes anything. `internal/safety` is deliberately a leaf package: it answers that one question and **must never import `internal/config`**, which would close the cycle `cleaner → safety → config → cleaner`. Protected paths stay where they already are, in the `internal/commands` pipeline.
+
+The default checker shells out to **`ps -axo comm=`** (on macOS `comm` is the executable's full path) through an injectable `processLister`, and considers the app running when some process executes a binary under `<BundlePath>/Contents/MacOS/`. Matching on the bundle path rather than the process name is what keeps two similarly named apps from different vendors apart.
+
+**Exactly one `ps` column is requested, and that is load-bearing — do not add a `pid=` back.** Apple's `ps` clamps a *multi*-column listing to the terminal width (120 columns with no tty) and replaces the tail of each line with `...`. `ps -axo pid=,comm=` therefore mangles every executable path longer than ~114 characters, which is routine for a bundle under a long home directory. A truncated path never matches the `<bundle>/Contents/MacOS/` prefix, so `IsRunning` would answer "not running" for an app that is running — the guard would fail **open**, the exact opposite of its contract. With a single `comm=` column `ps` emits the full path. The pid was parsed but never used by any match, so it was dropped outright; a future need for it must come from a separate `ps` invocation.
+
+A failing `ps` is returned as a real error, because "the check failed" is not "the app is not running". An empty `BundlePath` returns `false, nil`, but that means **"no evidence", not "safe to delete"** — with no bundle path there is nothing to match executables against. Acting on that non-answer is the caller's responsibility, and `Clean` refuses to (below).
+
+`Clean` reacts to all of this by reusing the existing `CleanResult.Skipped`/`SkipReason` fields (no new result fields):
+
+- **Running** — nothing is deleted at all, `Skipped = true` and `SkipReason` tells the user to quit the app first.
+- **Check failed** — it fails closed: nothing is deleted, the error is accumulated in `Errors`, and the result is also marked `Skipped` so the "nothing happened" outcome stays visible to callers that only read the skip fields.
+- **Cannot check** — a non-dry-run `Clean` whose target has an empty `BundlePath` skips the whole batch before calling the checker at all, because the running question is unanswerable. A target resolved only by bundle id (`uninstall com.acme.editor`, where the `.app` was never located) lands here.
+
+Those fields are carried all the way out: `runClean` (`internal/commands/clean.go`) copies them into `CleanCategoryResult.Skipped` / `CleanCategoryResult.SkipReason` (`skipped` / `skip_reason` in the JSON output, both `omitempty`). Without that propagation an `uninstall Slack --execute` with Slack still open produced `deleted_files: 0`, `has_errors: false` — byte-for-byte identical to a successful run over an already-clean category. A skip is deliberately **not** folded into `HasErrors` at this layer: `internal/commands` reports the outcome, and the CLI decides what it means for wording and exit status.
+
+`AppUninstaller` also implements the optional `SizeGrowthGuard` (`registry.go`), alongside `DownloadsCleaner` and `IOSBackupsCleaner`: `RevalidateEntrySize` re-measures a directory entry through the same size fetcher `Scan` used (a plain file uses its `Lstat` size) and `ReconfirmGrowthThreshold` returns the shared `sensitiveSizeGrowthThreshold` (100 MiB). The review screen can leave minutes between the size preview and the confirmation, and the target app may still be running and writing into the very folders queued for removal, so `PrepareScanResultForClean` re-measures and the TUI can ask again instead of deleting far more than the user was shown.
+
+`Clean` additionally enforces the shared rule as **defence in depth**: for every entry it looks up the confidence index and refuses any entry recorded as `Shared`, accumulating one error per refusal without aborting the batch. The band is advice — callers are expected to filter Shared out long before `Clean` — but this makes it binding for a caller that forgets, so an unfiltered batch can never take a Group Container away from another app. The refusal is deliberately scoped to entries *this* uninstaller's own `Scan` produced: an entry with no confidence record did not come from this scan, so this cleaner has no evidence to judge it by and leaves it to the caller's own vetting.
+
+##### Removing the `.app` bundle: no elevation, per-entry error
+
+`RequiresSudo()` stays `false` and this cleaner **never elevates**. Everything under `~/Library` belongs to the user, and so does a bundle installed in `~/Applications` — but `/Applications/Foo.app` frequently belongs to `root`, and `os.RemoveAll` on it fails with `EACCES` for a non-elevated process.
+
+That failure is handled as a **per-entry error, not a skip**: `describeRemovalError` recognises a permission failure on `target.BundlePath` and replaces the bare `EACCES` with an actionable message ("removing the app bundle requires elevated permissions, not supported yet — remove `/Applications/Foo.app` manually or drag it to Trash"), the error is accumulated in `CleanResult.Errors`, and the loop continues so every leftover under `~/Library` is still removed. `Skipped` is deliberately *not* set: it means "nothing was touched at all" and is reserved for the running-app and unverifiable-target refusals, so using it here would hide the fact that the rest of the batch did go through.
+
+**Known limitation:** a system-owned `.app` therefore survives the uninstall and the user has to remove it by hand. Privilege elevation (an authorization prompt, or moving to `~/.Trash` instead of unlinking) is out of scope for now and would be a separate, deliberate piece of work.
+
+A dry run never consults the checker: it removes nothing by definition. To warn the user *before* the confirmation screen, the CLI and the TUI call the side-channel `(*AppUninstaller).TargetIsRunning(ctx) (bool, error)` — deliberately outside the `Cleaner` interface, in the same spirit as the sudo warning in the review screen.
+
 ### Results and Progress Types
 
 All data flowing between the cleaner layer and the TUI is typed explicitly in `results.go`:
@@ -325,6 +394,7 @@ The `cmd/` package uses [Cobra](https://github.com/spf13/cobra) to define the CL
 | `execute` | Open the same interactive TUI as the root command, but already in execute mode. Deletion still goes through the TUI's own review and confirmation step. Prefer this over the deprecated `tidymymac --execute`. |
 | `scan [categories...]` | Run scans and emit an interactive table or machine-readable JSON/CSV/table (with `--output json\|csv\|table`, `--detailed`, `--save`, `--quiet`, `--generate-script`). `--output table --detailed` prints a concise report (totals + top 10 largest items per category, Docker grouped by resource type); add `--print-all` to list every item instead of capping at 10 (only valid with `--output table --detailed`). `--profile <name>` runs a configured profile instead of positional categories. |
 | `clean [categories...]` | Delete scanned files. Dry-run by default; destructive only with `--execute`. Supports `--from-file` to reuse a previously saved detailed scan, `--output json`, `--profile <name>`, `--include-large-files` to opt into deleting the oversized files a profile's project paths turn up, and `--prompt-sudo` to allow `--execute --output json` to prompt for a sudo password when the prepared plan has entries that genuinely need root. Prompting requires a controlling terminal and terminal stderr; stdin may still carry `--from-file -`. |
+| `uninstall [app]` | Smart Uninstall: remove one installed application (matched by name or bundle id) plus the leftovers it scattered under `~/Library`, scored by the confidence engine (see `CategoryAppUninstall` above). Dry-run by default; destructive only with `--execute`, guarded the same way as `clean`. `--list` prints every application `DiscoverInstalledApps` finds instead of targeting one. `--min-confidence safe\|review\|caution` (default `safe`) sets how far below a perfect match the run is allowed to remove — the filter runs on the fresh scan before it is prepared for cleaning, never after. Without `--output`, opens the interactive TUI (`tui.NewUninstallApp`): the App Picker screen if no app was named, or straight into the scan/review flow for the one app named. `--output json` instead runs the same non-interactive path `clean`/`scan` use, and is required whenever no controlling terminal is available. |
 | `list categories\|protected\|profiles` | Print all registered categories (add `--detailed` for descriptions), the current safety config, or the configured profiles. |
 | `profile <subcommand>` | `create`, `delete`, `add-category`, `remove-category`, `add-path`, `remove-path` — CRUD over the `profiles` tree in the config file. |
 | `protect --path` / `unprotect --path` | Add or remove an entry in `protected_paths`. |
@@ -405,6 +475,10 @@ The privilege boundary. It lets categories that genuinely need root (`temp`, `lo
 `HelperCommandName` (`internal-elevated-clean`) is exported only so `cmd/elevated_clean.go` can register the hidden command under exactly the name `Invoke` passes to `sudo`.
 
 `tidymymac execute` (the TUI) calls `Invoke` from `internal/tui/app.go`'s `startElevation`/`handleElevateComplete`: the review screen's sudo dialog lets the user Authenticate or Skip, and on Authenticate the terminal is handed to `sudo`'s native password prompt via bubbletea's `tea.Exec` (the same mechanism used to shell out to an external editor) before `Invoke` runs. The interactive `clean --execute` (table output) calls it too, transparently, via `cmd/clean.go`'s `resolveSudoElevation`, before any bubbletea `Program` starts — one password authenticates every sudo category in the run. `clean --execute --output json` is the automation surface and has the opposite default: it first prepares and privilege-splits the approved entries without deleting anything. If the resulting plan contains privileged entries, the run is refused unless invoked as `clean --execute --output json --prompt-sudo` with a controlling terminal and terminal stderr. Stdin is deliberately not required to be a terminal, so `--from-file -` remains compatible. That preflight refusal is the only case that aborts before anything runs; once elevation is actually attempted, an authentication or helper failure is mapped to a per-category error via the honest-outcome contract (see below) rather than discarding the run -- each category's own direct entries and the ordinary (non-sudo) categories still complete, exactly as they do for the interactive CLI. A non-interactive process therefore never hangs on a password prompt it cannot answer, but a failed authentication for one category never costs an unrelated category its result.
+
+### `internal/safety/`
+
+A deliberately tiny leaf package holding the pre-deletion guards for cleaners that remove user-visible applications. Today it answers exactly one question — "is this app running right now?" — through `ProcessChecker.IsRunning(ctx, ProcessTarget{BundleID, BundlePath})`, backed by the single-column `ps -axo comm=` (see [Running-process safety](#running-process-safety-internalsafety) for why a second column would break the guard) with an injectable process lister for tests. It **must not import `internal/config`**: that would close the import cycle `cleaner → safety → config → cleaner`, and protected paths are already handled by the `internal/commands` pipeline. See [Running-process safety](#running-process-safety-internalsafety) for how `AppUninstaller.Clean` consumes it.
 
 ### `internal/celebration/`
 

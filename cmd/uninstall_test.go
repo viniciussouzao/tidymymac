@@ -426,6 +426,29 @@ func TestWriteUninstallAppListHuman_ListsSortedByName(t *testing.T) {
 	}
 }
 
+func TestWriteUninstallAppListHuman_ShowsPathWithBlankLineBetweenEntries(t *testing.T) {
+	apps := []cleaner.AppTarget{
+		{Name: "Alpha", BundleID: "com.acme.alpha", BundlePath: "/Applications/Alpha.app"},
+		{Name: "Zeta", BundleID: "com.acme.zeta", BundlePath: "/Applications/Zeta.app"},
+	}
+	var buf strings.Builder
+	if err := writeUninstallAppListHuman(&buf, apps); err != nil {
+		t.Fatalf("writeUninstallAppListHuman() error: %v", err)
+	}
+	out := buf.String()
+
+	for _, wantPath := range []string{"/Applications/Alpha.app", "/Applications/Zeta.app"} {
+		if !strings.Contains(out, wantPath) {
+			t.Errorf("output missing path %q, got:\n%s", wantPath, out)
+		}
+	}
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 || lines[1] != "" {
+		t.Errorf("expected exactly one blank line between the two entries, got %d lines:\n%q", len(lines), lines)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Command wiring (flag validation, end-to-end RunE) -- mirrors the style of
 // TestCommandsReturnOutputErrors in output_errors_test.go.

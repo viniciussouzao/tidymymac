@@ -9,8 +9,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/commands"
+	"github.com/viniciussouzao/tidymymac/internal/tui/styles"
 	"github.com/viniciussouzao/tidymymac/pkg/utils"
 )
 
@@ -266,11 +269,14 @@ func writeUninstallAppListJSON(w io.Writer, apps []cleaner.AppTarget) error {
 	return enc.Encode(entries)
 }
 
-// writeUninstallAppListHuman writes every discovered app as a plain,
-// human-readable list to w.
+// writeUninstallAppListHuman writes every discovered app as a styled,
+// human-readable list to w: bold name, dimmed path, one blank line between
+// entries. The bundle id (needed to disambiguate two apps sharing a display
+// name -- see resolveUninstallTarget) is left out of this pretty view on
+// purpose; --output json still carries it for scripts.
 func writeUninstallAppListHuman(w io.Writer, apps []cleaner.AppTarget) error {
 	if len(apps) == 0 {
-		_, err := fmt.Fprintln(w, "no third-party applications found")
+		_, err := fmt.Fprintln(w, styles.Dim.Render("no third-party applications found"))
 		return err
 	}
 
@@ -278,8 +284,16 @@ func writeUninstallAppListHuman(w io.Writer, apps []cleaner.AppTarget) error {
 	copy(sorted, apps)
 	sort.Slice(sorted, func(i, j int) bool { return strings.ToLower(sorted[i].Name) < strings.ToLower(sorted[j].Name) })
 
-	for _, app := range sorted {
-		if _, err := fmt.Fprintf(w, "%s (%s)\n  %s\n", app.Name, app.BundleID, app.BundlePath); err != nil {
+	boldStyle := lipgloss.NewStyle().Bold(true)
+
+	for i, app := range sorted {
+		if i > 0 {
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+		}
+		line := fmt.Sprintf("%s %s", boldStyle.Render(app.Name), styles.Dim.Render("("+app.BundlePath+")"))
+		if _, err := fmt.Fprintln(w, line); err != nil {
 			return err
 		}
 	}

@@ -294,6 +294,10 @@ The built-in categories (see `internal/cleaner/category.go`) are:
 
 Adding a new cleaner is purely additive — implement the interface, add a category constant, and register it (see [Extending TidyMyMac](#extending-tidymymac)).
 
+One category is deliberately **not** in `DefaultRegistry()`: `CategoryAppUninstall` (`app-uninstall`, display name "Uninstall App"). `AppUninstaller` (`app_uninstaller.go`, discovery in `app_uninstaller_discovery.go`) targets one specific application chosen by the user — `AppTarget{BundlePath, BundleID, Name}` — so it is built on demand with `NewAppUninstaller(target)` and registered into a throwaway `NewRegistry()`, then orchestrated by the same `commands.PrepareScanResultForClean` / `commands.RunCleanWithPreparedScanResult` pair as any other cleaner. It would make no sense in a whole-system scan, which is why it stays out of the default registry.
+
+Its `Scan` is read-only like every other cleaner: `findLeftoverCandidates` walks `appUninstallLibraryDirs` (the `app-orphans` roots plus the user's `LaunchAgents` and `Group Containers`) under `~/Library` and links each item to the target through exactly one evidence source — `exact_bundle_id`, `known_app_path`, `vendor_identifier` or `name_heuristic`, strongest first. Items under `Group Containers` are additionally flagged as shared, because that data may belong to more than one app. `DiscoverInstalledApps` lists the third-party bundles available as targets. Evidence scoring, confidence bands and running-process safety are separate, later concerns and are not part of discovery.
+
 ### Results and Progress Types
 
 All data flowing between the cleaner layer and the TUI is typed explicitly in `results.go`:

@@ -17,6 +17,7 @@ func TestCategoryDisplayName(t *testing.T) {
 		{CategoryUpdates, "macOS Updates"},
 		{CategoryDownloads, "Downloads"},
 		{CategoryAppOrphans, "App Orphans"},
+		{CategoryAppUninstall, "Uninstall App"},
 		{CategoryTrashBin, "Trash Files"},
 		{CategoryXcode, "Xcode"},
 	}

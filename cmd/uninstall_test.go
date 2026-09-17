@@ -3,9 +3,12 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/spf13/pflag"
@@ -180,7 +183,7 @@ func TestResolveUninstallTarget(t *testing.T) {
 // cleaner.AppUninstaller against an isolated fake home directory.
 type fooFixture struct {
 	registry   *cleaner.Registry
-	explainer  cleaner.CandidateExplainer
+	explainer  uninstallRunningChecker
 	bundlePath string // Foo.app itself -- an exact-identity Safe candidate
 	prefsPath  string // Foo's own Preferences plist -- exact_bundle_id, Safe
 	helperPath string // "Foo Helper"'s Application Support dir -- vendor_identifier, Review only
@@ -608,5 +611,265 @@ func TestResolveUninstallInteractiveTarget_UnknownApp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--list") {
 		t.Errorf("error = %v, want it to point at --list", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Security review follow-ups (Fase 7/7):
+//   - a Skipped category (the cleaner refusing the whole batch, e.g. because
+//     the target app is running) must not exit 0 under --execute
+//   - TargetIsRunning must actually be called, and its answer surfaced,
+//     before the scan/clean pipeline runs at all
+//
+// fakeUninstallCleaner is a minimal cleaner.Cleaner + cleaner.CandidateExplainer
+// + uninstallRunningChecker double that lets both be pinned deterministically.
+// It is needed because the real *cleaner.AppUninstaller can never produce
+// CleanResult.Skipped during a dry run (its running-process check only runs
+// when !dryRun -- see internal/cleaner/app_uninstaller.go's Clean), so a fake
+// is the only way to exercise runUninstallNonInteractive's dry-run-vs-execute
+// exit-status decision for a skip under both branches.
+// ---------------------------------------------------------------------------
+
+type fakeUninstallCleaner struct {
+	entry      cleaner.FileEntry
+	confidence cleaner.Confidence
+	target     cleaner.AppTarget
+
+	skipOnClean bool
+	skipReason  string
+
+	running    bool
+	runningErr error
+}
+
+func (f *fakeUninstallCleaner) Category() cleaner.Category { return cleaner.CategoryAppUninstall }
+func (f *fakeUninstallCleaner) Name() string               { return "fake uninstall" }
+func (f *fakeUninstallCleaner) Description() string        { return "fake uninstall cleaner for tests" }
+func (f *fakeUninstallCleaner) RequiresSudo() bool         { return false }
+func (f *fakeUninstallCleaner) DeletesWholeDomain() bool   { return false }
+
+func (f *fakeUninstallCleaner) Scan(ctx context.Context, progress func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
+	return &cleaner.ScanResult{
+		Category:   cleaner.CategoryAppUninstall,
+		Entries:    []cleaner.FileEntry{f.entry},
+		TotalFiles: 1,
+		TotalSize:  f.entry.Size,
+	}, nil
+}
+
+func (f *fakeUninstallCleaner) Clean(ctx context.Context, entries []cleaner.FileEntry, dryRun bool, progress func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	if f.skipOnClean {
+		return &cleaner.CleanResult{Category: cleaner.CategoryAppUninstall, DryRun: dryRun, Skipped: true, SkipReason: f.skipReason}, nil
+	}
+	return &cleaner.CleanResult{Category: cleaner.CategoryAppUninstall, DryRun: dryRun, FilesDeleted: len(entries)}, nil
+}
+
+func (f *fakeUninstallCleaner) ExplainCandidate(entry cleaner.FileEntry) (cleaner.Confidence, bool) {
+	if entry.Path != f.entry.Path {
+		return cleaner.Confidence{}, false
+	}
+	return f.confidence, true
+}
+
+func (f *fakeUninstallCleaner) Target() cleaner.AppTarget { return f.target }
+
+func (f *fakeUninstallCleaner) TargetIsRunning(ctx context.Context) (bool, error) {
+	return f.running, f.runningErr
+}
+
+// newFakeUninstallFixture builds a registry around one fakeUninstallCleaner
+// backed by a real (but empty) file on disk under an isolated $HOME, so
+// PrepareScanResultForClean's os.Lstat-based revalidation keeps the entry
+// instead of dropping it as missing.
+func newFakeUninstallFixture(t *testing.T, configure func(*fakeUninstallCleaner)) (*cleaner.Registry, *fakeUninstallCleaner) {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SUDO_USER", "")
+	withLoadedConfig(t)
+
+	entryPath := filepath.Join(home, "Applications", "Fake.app")
+	mustMkdirAll(t, filepath.Dir(entryPath))
+	mustWriteFile(t, entryPath, "fake bundle")
+
+	f := &fakeUninstallCleaner{
+		entry:      cleaner.FileEntry{Path: entryPath, Size: 11, Category: cleaner.CategoryAppUninstall},
+		confidence: cleaner.Confidence{Band: cleaner.ConfidenceSafe},
+		target:     cleaner.AppTarget{Name: "Fake", BundleID: "com.acme.fake", BundlePath: entryPath},
+	}
+	if configure != nil {
+		configure(f)
+	}
+
+	registry := cleaner.NewRegistry()
+	registry.Register(f)
+	return registry, f
+}
+
+// captureStderr mirrors captureStdout (see clean_automation_test.go): the
+// warning this covers is written directly to os.Stderr, not through cobra's
+// own writer.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	previous := os.Stderr
+	os.Stderr = w
+
+	drained := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		_, _ = io.Copy(&b, r)
+		drained <- b.String()
+	}()
+
+	var (
+		once sync.Once
+		got  string
+	)
+	stop := func() string {
+		once.Do(func() {
+			os.Stderr = previous
+			_ = w.Close()
+			got = <-drained
+			_ = r.Close()
+		})
+		return got
+	}
+	t.Cleanup(func() { stop() })
+	return stop
+}
+
+func TestRunUninstallNonInteractive_Skipped_Execute_FailsExitCode(t *testing.T) {
+	registry, f := newFakeUninstallFixture(t, func(f *fakeUninstallCleaner) {
+		f.skipOnClean = true
+		f.skipReason = "Fake is currently running; quit it before removing its files"
+	})
+	withExecuteFlag(t, true)
+
+	stop := captureStdout(t)
+	err := runUninstallNonInteractive(context.Background(), registry, f, "safe", true, "json")
+	raw := stop()
+
+	if err == nil {
+		t.Fatal("expected a Skipped run to return a non-nil error under --execute, got nil")
+	}
+	if !strings.Contains(err.Error(), f.skipReason) {
+		t.Errorf("error = %v, want it to contain the skip reason %q", err, f.skipReason)
+	}
+
+	out := decodeCleanOutput(t, raw)
+	if len(out.Result.Categories) != 1 {
+		t.Fatalf("categories = %d, want 1", len(out.Result.Categories))
+	}
+	cat := out.Result.Categories[0]
+	if !cat.Skipped {
+		t.Errorf("Categories[0].Skipped = false, want true")
+	}
+	if cat.SkipReason != f.skipReason {
+		t.Errorf("Categories[0].SkipReason = %q, want %q", cat.SkipReason, f.skipReason)
+	}
+}
+
+// TestRunUninstallNonInteractive_Skipped_DryRun_DoesNotFail pins the decision
+// that a dry-run preview never fails on its own (matching
+// runCleanNonInteractive's convention elsewhere in this package): the
+// skipped/skip_reason fields are already visible in the JSON this call wrote,
+// and that is enough for a preview -- there is nothing to "undo" or fail
+// about, since a dry run never deletes anything regardless.
+func TestRunUninstallNonInteractive_Skipped_DryRun_DoesNotFail(t *testing.T) {
+	registry, f := newFakeUninstallFixture(t, func(f *fakeUninstallCleaner) {
+		f.skipOnClean = true
+		f.skipReason = "Fake is currently running; quit it before removing its files"
+	})
+	withExecuteFlag(t, false)
+
+	stop := captureStdout(t)
+	err := runUninstallNonInteractive(context.Background(), registry, f, "safe", true, "json")
+	raw := stop()
+
+	if err != nil {
+		t.Fatalf("runUninstallNonInteractive() (dry-run) error: %v\noutput: %s", err, raw)
+	}
+
+	out := decodeCleanOutput(t, raw)
+	cat := out.Result.Categories[0]
+	if !cat.Skipped {
+		t.Errorf("Categories[0].Skipped = false, want true (still visible in a dry-run preview)")
+	}
+	if cat.SkipReason != f.skipReason {
+		t.Errorf("Categories[0].SkipReason = %q, want %q", cat.SkipReason, f.skipReason)
+	}
+}
+
+// TestRunUninstallNonInteractive_TargetRunning_WarnsBeforePipeline pins that
+// TargetIsRunning is actually called -- and its answer surfaced to the user
+// on stderr -- up front, before the scan/clean pipeline runs, rather than the
+// running app only ever being discovered as a silent (or, after the fix
+// above, merely non-zero-exit) no-op deep inside --execute.
+func TestRunUninstallNonInteractive_TargetRunning_WarnsBeforePipeline(t *testing.T) {
+	registry, f := newFakeUninstallFixture(t, func(f *fakeUninstallCleaner) {
+		f.running = true
+	})
+
+	stopOut := captureStdout(t)
+	stopErr := captureStderr(t)
+	err := runUninstallNonInteractive(context.Background(), registry, f, "safe", true, "json")
+	rawOut := stopOut()
+	rawErr := stopErr()
+
+	if err != nil {
+		t.Fatalf("runUninstallNonInteractive() error: %v\nstdout: %s\nstderr: %s", err, rawOut, rawErr)
+	}
+	if !strings.Contains(rawErr, "Fake") || !strings.Contains(strings.ToLower(rawErr), "running") {
+		t.Errorf("stderr = %q, want a warning that Fake is currently running", rawErr)
+	}
+}
+
+// TestRunUninstallNonInteractive_TargetNotRunning_NoWarning is the negative
+// case: TargetIsRunning is still called (via the fake), but a false answer
+// must not print anything.
+func TestRunUninstallNonInteractive_TargetNotRunning_NoWarning(t *testing.T) {
+	registry, f := newFakeUninstallFixture(t, nil)
+
+	stopOut := captureStdout(t)
+	stopErr := captureStderr(t)
+	err := runUninstallNonInteractive(context.Background(), registry, f, "safe", true, "json")
+	_ = stopOut()
+	rawErr := stopErr()
+
+	if err != nil {
+		t.Fatalf("runUninstallNonInteractive() error: %v", err)
+	}
+	if strings.TrimSpace(rawErr) != "" {
+		t.Errorf("stderr = %q, want no warning when the target is not running", rawErr)
+	}
+}
+
+// TestRunUninstallNonInteractive_TargetRunningCheckFails_WarnsNotFatal pins
+// the "fail open to a warning, not a fatal error" decision documented on
+// warnIfTargetRunning: a failed running-process check is informational only
+// at this point in the pipeline (Clean makes the real, fail-closed decision
+// under --execute), so the run must still complete normally.
+func TestRunUninstallNonInteractive_TargetRunningCheckFails_WarnsNotFatal(t *testing.T) {
+	registry, f := newFakeUninstallFixture(t, func(f *fakeUninstallCleaner) {
+		f.runningErr = errors.New("ps: no such process table")
+	})
+
+	stopOut := captureStdout(t)
+	stopErr := captureStderr(t)
+	err := runUninstallNonInteractive(context.Background(), registry, f, "safe", true, "json")
+	_ = stopOut()
+	rawErr := stopErr()
+
+	if err != nil {
+		t.Fatalf("runUninstallNonInteractive() error: %v, want nil (a failed check must not be fatal)", err)
+	}
+	if !strings.Contains(rawErr, "could not determine") {
+		t.Errorf("stderr = %q, want a warning about the failed check", rawErr)
 	}
 }

@@ -77,6 +77,56 @@ func filterEntriesByConfidence(explainer cleaner.CandidateExplainer, entries []c
 	return filtered
 }
 
+// uninstallRunningChecker is the subset of *cleaner.AppUninstaller that
+// runUninstallNonInteractive (and uninstallScanAndFilter, which it calls)
+// need: the confidence explainer used to filter the preview, the target's own
+// identity (for the warning message below), and TargetIsRunning -- the
+// running-process side channel documented on AppUninstaller as something the
+// CLI is supposed to call up front, before the confirmation/--execute step,
+// rather than leaving the user to discover a refusal only after asking for
+// the real deletion. Defined as an interface here, rather than depending on
+// *cleaner.AppUninstaller directly, so tests in this package can inject a
+// fake without reaching into internal/cleaner.
+type uninstallRunningChecker interface {
+	cleaner.CandidateExplainer
+	Target() cleaner.AppTarget
+	TargetIsRunning(ctx context.Context) (bool, error)
+}
+
+// uninstallTargetLabel is the human-readable name used in the running-app
+// warning below, mirroring AppUninstaller's own (unexported) targetLabel.
+func uninstallTargetLabel(target cleaner.AppTarget) string {
+	if target.Name == "" {
+		return "the application"
+	}
+	return target.Name
+}
+
+// warnIfTargetRunning calls TargetIsRunning up front -- before the scan
+// preview is even built -- and writes a warning to stderr if the target
+// application is (or might be) running, so a dry-run reader is not surprised
+// later that --execute silently refuses to remove anything (see
+// CleanCategoryResult.Skipped and the exit-status check in
+// runUninstallNonInteractive below).
+//
+// This is deliberately just an early, informational echo of the check
+// AppUninstaller.Clean performs for real right before deleting: it does not
+// replace that check, and does not gate whether this function runs the
+// scan/clean pipeline at all. A failed check (err != nil, e.g. `ps` could not
+// be consulted) is reported the same way, as a warning rather than a fatal
+// error -- "I could not check" is not a reason to refuse a dry-run preview,
+// and Clean will make its own (fail-closed) decision if --execute is used.
+func warnIfTargetRunning(ctx context.Context, target uninstallRunningChecker) {
+	label := uninstallTargetLabel(target.Target())
+	running, err := target.TargetIsRunning(ctx)
+	switch {
+	case err != nil:
+		fmt.Fprintf(os.Stderr, "warning: could not determine whether %s is currently running: %v\n", label, err)
+	case running:
+		fmt.Fprintf(os.Stderr, "warning: %s is currently running; --execute will refuse to remove its files until it is quit\n", label)
+	}
+}
+
 // uninstallScanAndFilter runs a fresh scan against the throwaway registry
 // built for one AppTarget, filters its entries by --min-confidence, and
 // returns the result reshaped as if it were a --from-file scan restricted to
@@ -121,8 +171,10 @@ func uninstallScanAndFilter(ctx context.Context, registry *cleaner.Registry, exp
 // runUninstallNonInteractive is the --output json entry point: scan, filter
 // by confidence, prepare, and (when --execute is set) clean -- entirely
 // non-interactive, mirroring runCleanNonInteractive's shape in cmd/clean.go.
-func runUninstallNonInteractive(ctx context.Context, registry *cleaner.Registry, explainer cleaner.CandidateExplainer, minConfidence string, detailed bool, output string) error {
-	filtered, err := uninstallScanAndFilter(ctx, registry, explainer, minConfidence)
+func runUninstallNonInteractive(ctx context.Context, registry *cleaner.Registry, target uninstallRunningChecker, minConfidence string, detailed bool, output string) error {
+	warnIfTargetRunning(ctx, target)
+
+	filtered, err := uninstallScanAndFilter(ctx, registry, target, minConfidence)
 	if err != nil {
 		return err
 	}
@@ -160,10 +212,35 @@ func runUninstallNonInteractive(ctx context.Context, registry *cleaner.Registry,
 	if err != nil {
 		return err
 	}
+	// A skip (the cleaner deliberately refusing the whole batch -- e.g. the
+	// target app is running) is already visible in the JSON just written, via
+	// CleanCategoryResult.Skipped/SkipReason. Without also failing here, an
+	// `--execute` run that skipped everything would still exit 0 with
+	// deleted_files: 0 and has_errors: false -- indistinguishable from a
+	// genuine success. Only fail on it under --execute: a dry-run preview
+	// never fails on its own (matching runCleanNonInteractive's convention),
+	// and in practice a dry run never sets Skipped in the first place --
+	// AppUninstaller.Clean's running-process check only runs when !dryRun.
+	if !dryRun {
+		if reason, skipped := uninstallFirstSkipReason(result); skipped {
+			return fmt.Errorf("uninstall was skipped: %s", reason)
+		}
+	}
 	if result.HasErrors {
 		return fmt.Errorf("uninstall completed with errors")
 	}
 	return nil
+}
+
+// uninstallFirstSkipReason returns the SkipReason of the first category the
+// cleaner reported as Skipped, if any.
+func uninstallFirstSkipReason(result commands.CleanResult) (string, bool) {
+	for _, cat := range result.Categories {
+		if cat.Skipped {
+			return cat.SkipReason, true
+		}
+	}
+	return "", false
 }
 
 // uninstallAppListEntry is the --list --output json shape for one discovered

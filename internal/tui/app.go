@@ -31,6 +31,7 @@ const (
 	screenReview
 	screenCleaning
 	screenSummary
+	screenAppPicker
 )
 
 type scanCompleteMsg struct {
@@ -109,6 +110,21 @@ type App struct {
 	summaryScr  screens.SummaryModel
 	reviewScr   screens.ReviewModel
 	reviewBuilt bool // true once review is built for the current scan; prevents state reset on esc+enter
+
+	// appPickerScr is only populated/used by the Smart Uninstall flow (see
+	// NewUninstallApp): the single-select list of discovered third-party
+	// applications the user chooses one target from.
+	appPickerScr screens.AppPickerModel
+
+	// uninstallFlow is true for an App built via NewUninstallApp, false for
+	// the ordinary multi-category NewApp flow. It exists because the two
+	// flows share every screen from screenScanning onward but disagree on
+	// what "back to the start" means: screenDashboard for the ordinary flow,
+	// screenAppPicker (there is no dashboard in this flow) for Smart
+	// Uninstall. See updateScanning's Back case and updateSummary's Confirm
+	// case, the two places that would otherwise route back to a
+	// screenDashboard this flow never initializes.
+	uninstallFlow bool
 
 	// reviewScanResults is the exact scan snapshot the review screen was
 	// built from. Cleaning (and, through it, the elevate.Plan sent to root)
@@ -213,21 +229,107 @@ func NewApp(parent context.Context, execute bool, cfg *config.Config) App {
 	}
 }
 
+// NewUninstallApp initializes the TUI application for the Smart Uninstall
+// flow (`tidymymac uninstall` with no --output, i.e. interactive). It mirrors
+// NewApp's construction pattern but roots the session on a single
+// cleaner.AppTarget instead of cfg's whole DefaultRegistry.
+//
+// Third-party applications are always discovered up front (regardless of
+// target), so screenAppPicker has something to show if the user backs out of
+// screenScanning or comes back around through screenSummary -- see
+// uninstallFlow's own doc comment. target == nil opens straight on
+// screenAppPicker so the user can choose one; target != nil skips the picker
+// and opens directly on screenScanning for that one target, exactly as if it
+// had just been selected from the picker (see startUninstallScan). Discovery
+// errors (e.g. a permission-denied subtree) are not fatal here, matching
+// `uninstall --list`'s own handling -- whatever apps were found before the
+// error is still a usable, if possibly incomplete, list.
+//
+// parent must be cmd.Context(), not context.Background(), for the same
+// reason documented on NewApp.
+func NewUninstallApp(parent context.Context, execute bool, cfg *config.Config, target *cleaner.AppTarget) App {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+
+	ctx, cancel := context.WithCancel(parent)
+
+	apps, _ := cleaner.DiscoverInstalledApps(ctx, nil, nil)
+
+	a := App{
+		currentScreen: screenAppPicker,
+		executeMode:   execute,
+		appPickerScr:  screens.NewAppPicker(apps),
+		uninstallFlow: true,
+		registry:      cleaner.NewRegistry(),
+		scanResults:   make(map[cleaner.Category]*cleaner.ScanResult),
+		spinner:       s,
+		isElevated:    os.Geteuid() == 0,
+		ctx:           ctx,
+		cancel:        cancel,
+		cfg:           cfg,
+	}
+
+	if target != nil {
+		a.startUninstallScan(*target)
+	}
+
+	return a
+}
+
+// startUninstallScan builds a throwaway registry holding a single
+// AppUninstaller for target -- mirroring the exact pattern
+// cmd/uninstall.go's non-interactive path already uses -- and transitions to
+// screenScanning, reusing the same ScanningModel/scanCategoryCmd machinery
+// the ordinary dashboard-to-scanning transition uses (see updateDashboard).
+// Called both from NewUninstallApp (target supplied on the command line) and
+// from updateAppPicker (target chosen interactively from the picker list).
+func (a *App) startUninstallScan(target cleaner.AppTarget) {
+	registry := cleaner.NewRegistry()
+	registry.Register(cleaner.NewAppUninstaller(target))
+	a.registry = registry
+
+	a.scanningScr = screens.NewScanning([]string{string(cleaner.CategoryAppUninstall)}, registry)
+	a.scanningScr.SetSize(a.width, a.height)
+	a.reviewBuilt = false // a fresh target invalidates any previous review state
+	a.currentScreen = screenScanning
+}
+
 // Init is the initial command that runs when the TUI starts. It can be used to kick off any setup tasks or initial scans.
+//
+// screenScanning here means NewUninstallApp was given a target directly (see
+// startUninstallScan): the scan for that one throwaway-registry category
+// must be dispatched the same way Init would for any other flow, since
+// nothing else kicks it off. screenAppPicker needs no scan dispatch at all --
+// discovery already ran synchronously in NewUninstallApp -- so only the
+// spinner needs ticking. Every other starting screen falls through to the
+// ordinary dashboard-scan-everything behavior unchanged.
 func (a App) Init() tea.Cmd {
-	cmds := []tea.Cmd{
-		a.spinner.Tick,
-		gatherHealthInfoCmd(a.ctx),
+	switch a.currentScreen {
+	case screenScanning:
+		cmds := []tea.Cmd{a.spinner.Tick, a.scanningScr.Spinner.Tick}
+		for _, c := range a.registry.All() {
+			cmds = append(cmds, scanCategoryCmd(a.ctx, c))
+		}
+		return tea.Batch(cmds...)
+
+	case screenAppPicker:
+		return a.spinner.Tick
+
+	default:
+		cmds := []tea.Cmd{
+			a.spinner.Tick,
+			gatherHealthInfoCmd(a.ctx),
+		}
+
+		for _, c := range a.registry.All() {
+			a.dashboard.SetCategoryScanning(string(c.Category()))
+			cmds = append(cmds, scanCategoryCmd(a.ctx, c))
+		}
+
+		a.scanning = true
+
+		return tea.Batch(cmds...)
 	}
-
-	for _, c := range a.registry.All() {
-		a.dashboard.SetCategoryScanning(string(c.Category()))
-		cmds = append(cmds, scanCategoryCmd(a.ctx, c))
-	}
-
-	a.scanning = true
-
-	return tea.Batch(cmds...)
 }
 
 func scanCategoryCmd(ctx context.Context, c cleaner.Cleaner) tea.Cmd {
@@ -257,6 +359,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.reviewScr.SetSize(msg.Width, msg.Height)
 		a.cleaningScr.SetSize(msg.Width, msg.Height)
 		a.summaryScr.SetSize(msg.Width, msg.Height)
+		a.appPickerScr.SetSize(msg.Width, msg.Height)
 		return a, nil
 
 	case spinner.TickMsg:
@@ -318,6 +421,8 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a.updateCleaning(msg)
 		case screenSummary:
 			return a.updateSummary(msg)
+		case screenAppPicker:
+			return a.updateAppPicker(msg)
 
 		}
 	}
@@ -887,8 +992,43 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if key.Matches(msg, keys.Back) {
+		if a.uninstallFlow {
+			// There is no dashboard in this flow (see uninstallFlow's doc
+			// comment) -- screenAppPicker is its equivalent starting point.
+			a.currentScreen = screenAppPicker
+			return a, nil
+		}
 		a.currentScreen = screenDashboard
 		return a, nil
+	}
+
+	return a, nil
+}
+
+// updateAppPicker handles key presses on screenAppPicker (Smart Uninstall's
+// single-select app list, see screens.AppPickerModel). Confirming a
+// selection hands the chosen target to startUninstallScan and dispatches its
+// scan exactly as updateDashboard does for an ordinary category selection --
+// there is no cached-result reuse here (unlike updateDashboard's
+// a.scanResults check) because a fresh AppUninstaller scan is cheap and the
+// throwaway registry it targets is rebuilt from scratch every time anyway.
+func (a App) updateAppPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, keys.Up):
+		a.appPickerScr.ScrollUp()
+	case key.Matches(msg, keys.Down):
+		a.appPickerScr.ScrollDown()
+	case key.Matches(msg, keys.Confirm):
+		target, ok := a.appPickerScr.Selected()
+		if !ok {
+			return a, nil
+		}
+		a.startUninstallScan(target)
+		c, ok := a.registry.Get(cleaner.CategoryAppUninstall)
+		if !ok {
+			return a, nil
+		}
+		return a, tea.Batch(a.scanningScr.Spinner.Tick, scanCategoryCmd(a.ctx, c))
 	}
 
 	return a, nil
@@ -1313,6 +1453,20 @@ func (a App) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if key.Matches(msg, keys.Confirm) {
+		if a.uninstallFlow {
+			// This flow's "back to the start" is screenAppPicker, not
+			// screenDashboard (see uninstallFlow's doc comment) -- rebuilt
+			// with a fresh discovery pass so an app that was just fully
+			// uninstalled no longer shows up in the list.
+			apps, _ := cleaner.DiscoverInstalledApps(a.ctx, nil, nil)
+			a.appPickerScr = screens.NewAppPicker(apps)
+			a.appPickerScr.SetSize(a.width, a.height)
+			a.registry = cleaner.NewRegistry()
+			a.scanResults = make(map[cleaner.Category]*cleaner.ScanResult)
+			a.currentScreen = screenAppPicker
+			return a, nil
+		}
+
 		// Reset and return to dashboard for re-run
 		a.scanResults = make(map[cleaner.Category]*cleaner.ScanResult)
 		a.dashboard = screens.NewDashboard()
@@ -1451,6 +1605,8 @@ func (a App) View() string {
 		content = a.cleaningScr.View()
 	case screenSummary:
 		content = a.summaryScr.View()
+	case screenAppPicker:
+		content = a.appPickerScr.View()
 	}
 
 	return header + banner + content

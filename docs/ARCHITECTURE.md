@@ -21,6 +21,7 @@ This document describes the internal architecture of TidyMyMac: how the packages
   - [internal/commands/](#internalcommands)
   - [internal/config/](#internalconfig)
   - [internal/elevate/](#internalelevate)
+  - [internal/safety/](#internalsafety)
   - [internal/celebration/](#internalcelebration)
   - [internal/tui/](#internaltui)
   - [internal/history/](#internalhistory)
@@ -296,7 +297,7 @@ Adding a new cleaner is purely additive — implement the interface, add a categ
 
 One category is deliberately **not** in `DefaultRegistry()`: `CategoryAppUninstall` (`app-uninstall`, display name "Uninstall App"). `AppUninstaller` (`app_uninstaller.go`, discovery in `app_uninstaller_discovery.go`) targets one specific application chosen by the user — `AppTarget{BundlePath, BundleID, Name}` — so it is built on demand with `NewAppUninstaller(target)` and registered into a throwaway `NewRegistry()`, then orchestrated by the same `commands.PrepareScanResultForClean` / `commands.RunCleanWithPreparedScanResult` pair as any other cleaner. It would make no sense in a whole-system scan, which is why it stays out of the default registry.
 
-Its `Scan` is read-only like every other cleaner: `findLeftoverCandidates` walks `appUninstallLibraryDirs` (the `app-orphans` roots plus the user's `LaunchAgents` and `Group Containers`) under `~/Library` and links each item to the target through exactly one evidence source — `exact_bundle_id`, `known_app_path`, `vendor_identifier` or `name_heuristic`, strongest first. Items under `Group Containers` are additionally flagged as shared, because that data may belong to more than one app. `DiscoverInstalledApps` lists the third-party bundles available as targets. Running-process safety is a separate, later concern and is not part of discovery.
+Its `Scan` is read-only like every other cleaner: `findLeftoverCandidates` walks `appUninstallLibraryDirs` (the `app-orphans` roots plus the user's `LaunchAgents` and `Group Containers`) under `~/Library` and links each item to the target through exactly one evidence source — `exact_bundle_id`, `known_app_path`, `vendor_identifier` or `name_heuristic`, strongest first. Items under `Group Containers` are additionally flagged as shared, because that data may belong to more than one app. `DiscoverInstalledApps` lists the third-party bundles available as targets. Running-process safety is enforced at `Clean` time, not during discovery (see below).
 
 That evidence is then scored by the **confidence engine** (`confidence.go` for the generic types, `app_uninstaller_confidence.go` for the uninstall-specific weights). Each `MatchReason{Source, Weight, Detail}` carries the score its source is worth — `exact_bundle_id` 100, `known_app_path` 95, `vendor_identifier` 80, `name_heuristic` 60 — and `scoreCandidate` takes the **strongest single reason**, not their sum: two weak hints about the same path do not add up to a strong one. `bandForScore` then maps the score to a `ConfidenceBand`: `>= 90` is `ConfidenceSafe`, `> 60` is `ConfidenceReview`, anything else is `ConfidenceCaution`. The Review bound is deliberately exclusive so that a lone `name_heuristic`, worth exactly 60, lands in Caution — a name match alone never implies an item belongs to the app. One hard rule overrides the score entirely: a `shared` item (anything under `Group Containers`) is always `ConfidenceCaution`, even with a perfect 100, because deleting it would take data from an application the user never asked to touch.
 
@@ -309,6 +310,19 @@ type CandidateExplainer interface {
 ```
 
 It lets a caller surface per-item confidence and evidence instead of the aggregate, category-level review every other cleaner gets. The index is rebuilt from scratch on each `Scan`, so stale scores never outlive the entries they described, and an entry that did not come out of that same `Scan` returns `ok == false` — "unexplained", which callers must not conflate with low confidence.
+
+#### Running-process safety (`internal/safety`)
+
+Deleting the files of a running application corrupts its state, so a real (non dry-run) `AppUninstaller.Clean` first asks `safety.ProcessChecker.IsRunning(ctx, safety.ProcessTarget{BundleID, BundlePath})` and only then removes anything. `internal/safety` is deliberately a leaf package: it answers that one question and **must never import `internal/config`**, which would close the cycle `cleaner → safety → config → cleaner`. Protected paths stay where they already are, in the `internal/commands` pipeline.
+
+The default checker shells out to `ps -axo pid=,comm=` (on macOS `comm` is the executable's full path) through an injectable `processLister`, and considers the app running when some process executes a binary under `<BundlePath>/Contents/MacOS/`. Matching on the bundle path rather than the process name is what keeps two similarly named apps from different vendors apart. An empty `BundlePath` means "nothing to check" and returns `false, nil`; a failing `ps` is returned as a real error, because "the check failed" is not "the app is not running".
+
+`Clean` reacts to that in two ways, both reusing the existing `CleanResult.Skipped`/`SkipReason` fields (no new result fields):
+
+- **Running** — nothing is deleted at all, `Skipped = true` and `SkipReason` tells the user to quit the app first.
+- **Check failed** — it fails closed: nothing is deleted, the error is accumulated in `Errors`, and the result is also marked `Skipped` so the "nothing happened" outcome stays visible to callers that only read the skip fields.
+
+A dry run never consults the checker: it removes nothing by definition. To warn the user *before* the confirmation screen, the CLI and the TUI call the side-channel `(*AppUninstaller).TargetIsRunning(ctx) (bool, error)` — deliberately outside the `Cleaner` interface, in the same spirit as the sudo warning in the review screen.
 
 ### Results and Progress Types
 
@@ -421,6 +435,10 @@ The privilege boundary. It lets categories that genuinely need root (`temp`, `lo
 `HelperCommandName` (`internal-elevated-clean`) is exported only so `cmd/elevated_clean.go` can register the hidden command under exactly the name `Invoke` passes to `sudo`.
 
 `tidymymac execute` (the TUI) calls `Invoke` from `internal/tui/app.go`'s `startElevation`/`handleElevateComplete`: the review screen's sudo dialog lets the user Authenticate or Skip, and on Authenticate the terminal is handed to `sudo`'s native password prompt via bubbletea's `tea.Exec` (the same mechanism used to shell out to an external editor) before `Invoke` runs. The interactive `clean --execute` (table output) calls it too, transparently, via `cmd/clean.go`'s `resolveSudoElevation`, before any bubbletea `Program` starts — one password authenticates every sudo category in the run. `clean --execute --output json` is the automation surface and has the opposite default: it first prepares and privilege-splits the approved entries without deleting anything. If the resulting plan contains privileged entries, the run is refused unless invoked as `clean --execute --output json --prompt-sudo` with a controlling terminal and terminal stderr. Stdin is deliberately not required to be a terminal, so `--from-file -` remains compatible. That preflight refusal is the only case that aborts before anything runs; once elevation is actually attempted, an authentication or helper failure is mapped to a per-category error via the honest-outcome contract (see below) rather than discarding the run -- each category's own direct entries and the ordinary (non-sudo) categories still complete, exactly as they do for the interactive CLI. A non-interactive process therefore never hangs on a password prompt it cannot answer, but a failed authentication for one category never costs an unrelated category its result.
+
+### `internal/safety/`
+
+A deliberately tiny leaf package holding the pre-deletion guards for cleaners that remove user-visible applications. Today it answers exactly one question — "is this app running right now?" — through `ProcessChecker.IsRunning(ctx, ProcessTarget{BundleID, BundlePath})`, backed by `ps -axo pid=,comm=` with an injectable process lister for tests. It **must not import `internal/config`**: that would close the import cycle `cleaner → safety → config → cleaner`, and protected paths are already handled by the `internal/commands` pipeline. See [Running-process safety](#running-process-safety-internalsafety) for how `AppUninstaller.Clean` consumes it.
 
 ### `internal/celebration/`
 

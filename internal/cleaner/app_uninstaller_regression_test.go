@@ -156,7 +156,11 @@ func TestRegression_SimilarAppNames_NeverSafe(t *testing.T) {
 	t.Run("target's own data still scores normally", func(t *testing.T) {
 		assertVerdict(t, verdicts, bundle, matchSourceAppBundleItself, weightAppBundleItself, ConfidenceSafe)
 		assertVerdict(t, verdicts, ownSupport, matchSourceExactBundleID, weightExactBundleID, ConfidenceSafe)
-		assertVerdict(t, verdicts, ownNamed, matchSourceKnownAppPath, weightKnownAppPath, ConfidenceSafe)
+		// Only identifier-grade evidence reaches Safe. A directory merely
+		// *named* after the app is Review: the same match would fire on
+		// ~/Library/Application Support/Steam, so a human sees it first.
+		assertVerdict(t, verdicts, ownNamed, matchSourceKnownAppPath, weightKnownAppPath, ConfidenceReview)
+		assertNeverSafe(t, verdicts, ownNamed)
 	})
 
 	t.Run("similar-named neighbour is not claimed at all", func(t *testing.T) {

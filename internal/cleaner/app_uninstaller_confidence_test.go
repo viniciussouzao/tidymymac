@@ -25,7 +25,11 @@ func TestEvidenceSourceBandMatrix(t *testing.T) {
 	}{
 		{matchSourceAppBundleItself, 100, ConfidenceSafe},
 		{matchSourceExactBundleID, 100, ConfidenceSafe},
-		{matchSourceKnownAppPath, 95, ConfidenceSafe},
+		// A directory whose name simply equals the app's display name is
+		// circumstantial evidence, not an identifier: it stays below the Safe
+		// threshold so a collision (~/Library/Application Support/Steam, a
+		// whole game library) is always shown to the user first.
+		{matchSourceKnownAppPath, 85, ConfidenceReview},
 		{matchSourceVendorIdentifier, 80, ConfidenceReview},
 		{matchSourceNameHeuristic, 60, ConfidenceCaution},
 		{"something_nobody_defined", 0, ConfidenceCaution},
@@ -344,7 +348,7 @@ func TestScanPopulatesConfidenceIndex(t *testing.T) {
 		shared bool
 	}{
 		exact:       {ConfidenceSafe, matchSourceExactBundleID, false},
-		knownPath:   {ConfidenceSafe, matchSourceKnownAppPath, false},
+		knownPath:   {ConfidenceReview, matchSourceKnownAppPath, false},
 		vendor:      {ConfidenceReview, matchSourceVendorIdentifier, false},
 		nameOnly:    {ConfidenceCaution, matchSourceNameHeuristic, false},
 		sharedGroup: {ConfidenceCaution, matchSourceExactBundleID, true},

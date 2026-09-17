@@ -14,17 +14,29 @@ const (
 	matchSourceNameHeuristic    = "name_heuristic"
 )
 
-// Evidence weights. Only the top two clear confidenceSafeThreshold: a vendor
-// prefix shared with sibling apps ("com.acme.editor" vs "com.acme.launcher")
-// and a normalized name match are both circumstantial, and a name match alone
-// is intentionally the weakest signal we have.
-// The bundle itself ties with an exact bundle-id match at the top of the
-// table: both identify the target without ambiguity, and nothing can be more
-// certain than "this is the very bundle we resolved".
+// Evidence weights. Only the top two clear confidenceSafeThreshold, and both
+// are identifier-based: the bundle itself ties with an exact bundle-id match
+// at the top of the table, because both identify the target without ambiguity
+// and nothing can be more certain than "this is the very bundle we resolved".
+//
+// Everything below them is circumstantial and deliberately lands in Review,
+// never Safe:
+//   - known_app_path is only "this directory's name equals the app's display
+//     name" (see the discovery pass that emits matchSourceKnownAppPath). A
+//     name collision with an unrelated, precious directory is entirely
+//     plausible -- ~/Library/Application Support/Steam is the game library,
+//     not a leftover -- so a name-of-directory match alone must never
+//     authorise a permanent delete without the user seeing it. It still
+//     outranks a vendor prefix: an exact path match is stronger evidence,
+//     just not conclusive.
+//   - vendor_identifier is a prefix shared with sibling apps
+//     ("com.acme.editor" vs "com.acme.launcher").
+//   - name_heuristic (a normalized name match) is intentionally the weakest
+//     signal we have.
 const (
 	weightAppBundleItself  = 100
 	weightExactBundleID    = 100
-	weightKnownAppPath     = 95
+	weightKnownAppPath     = 85
 	weightVendorIdentifier = 80
 	weightNameHeuristic    = 60
 )

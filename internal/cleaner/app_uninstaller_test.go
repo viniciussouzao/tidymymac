@@ -652,6 +652,96 @@ func TestCleanReportsPermissionErrorForAppBundleWithoutBlockingLeftovers(t *test
 	}
 }
 
+// TestAppUninstallerImplementsSizeGrowthGuard pins the opt-in itself: the
+// review screen only re-measures for cleaners that implement the interface.
+func TestAppUninstallerImplementsSizeGrowthGuard(t *testing.T) {
+	var c any = NewAppUninstaller(AppTarget{Name: "Slack"})
+	if _, ok := c.(SizeGrowthGuard); !ok {
+		t.Fatal("AppUninstaller must implement SizeGrowthGuard")
+	}
+	if got := NewAppUninstaller(AppTarget{}).ReconfirmGrowthThreshold(); got != 100*1024*1024 {
+		t.Errorf("threshold = %d, want 100 MiB", got)
+	}
+}
+
+func TestAppUninstallerRevalidateEntrySize(t *testing.T) {
+	dir := t.TempDir()
+	filePath := createSparseFile(t, dir, "com.acme.editor.plist", 4096)
+	dirPath := createDir(t, dir, "Application Support", "Acme Editor")
+	createAllocatedFile(t, dirPath, "payload.bin", 8192)
+
+	// The real fetcher, so the directory branch matches Scan's own du-based
+	// measurement rather than a stub's idea of it.
+	c := NewAppUninstaller(AppTarget{Name: "Acme Editor"})
+
+	fileSize, err := c.RevalidateEntrySize(t.Context(), FileEntry{Path: filePath})
+	if err != nil {
+		t.Fatalf("file RevalidateEntrySize() error: %v", err)
+	}
+	if fileSize != 4096 {
+		t.Errorf("file size = %d, want 4096", fileSize)
+	}
+
+	dirSize, err := c.RevalidateEntrySize(t.Context(), FileEntry{Path: dirPath, IsDir: true})
+	if err != nil {
+		t.Fatalf("directory RevalidateEntrySize() error: %v", err)
+	}
+	if dirSize < 8192 {
+		t.Errorf("directory size = %d, want at least 8192", dirSize)
+	}
+}
+
+// TestAppUninstallerRevalidateEntrySizeDetectsGrowth is the reason the guard
+// exists: a still-running target can write gigabytes into its own support
+// folder while the user sits on the review screen, and the re-measurement must
+// report the new size so the caller can compare it against the threshold and
+// ask again.
+func TestAppUninstallerRevalidateEntrySizeDetectsGrowth(t *testing.T) {
+	const scanned = int64(16 * 1024)
+
+	// Scripted fetcher instead of writing 100+ MiB to disk: the first call is
+	// what Scan saw, the second is the app-grew-since-then measurement.
+	var calls int
+	grown := scanned + sensitiveSizeGrowthThreshold + 1
+	c := NewAppUninstaller(AppTarget{Name: "Acme Editor"})
+	c.pathSizeFetcher = func(context.Context, string) (int64, error) {
+		calls++
+		if calls == 1 {
+			return scanned, nil
+		}
+		return grown, nil
+	}
+
+	entry := FileEntry{Path: filepath.Join(t.TempDir(), "Acme Editor"), IsDir: true}
+
+	first, err := c.RevalidateEntrySize(t.Context(), entry)
+	if err != nil {
+		t.Fatalf("first RevalidateEntrySize() error: %v", err)
+	}
+	if first != scanned {
+		t.Fatalf("first size = %d, want %d", first, scanned)
+	}
+
+	second, err := c.RevalidateEntrySize(t.Context(), entry)
+	if err != nil {
+		t.Fatalf("second RevalidateEntrySize() error: %v", err)
+	}
+	if growth := second - first; growth < c.ReconfirmGrowthThreshold() {
+		t.Errorf("growth = %d, want at least the reconfirmation threshold %d",
+			growth, c.ReconfirmGrowthThreshold())
+	}
+}
+
+func TestAppUninstallerRevalidateEntrySizeHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := NewAppUninstaller(AppTarget{}).RevalidateEntrySize(ctx, FileEntry{Path: t.TempDir(), IsDir: true})
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+}
+
 func entryPaths(entries []FileEntry) []string {
 	paths := make([]string, 0, len(entries))
 	for _, entry := range entries {

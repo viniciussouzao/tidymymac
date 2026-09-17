@@ -117,6 +117,46 @@ func (c *AppUninstaller) DeletesWholeDomain() bool { return false }
 // always honored.
 func (c *AppUninstaller) SupportsItemSelection() bool { return true }
 
+// ReconfirmGrowthThreshold implements cleaner.SizeGrowthGuard with the shared
+// product threshold used by the other sensitive categories.
+func (c *AppUninstaller) ReconfirmGrowthThreshold() int64 {
+	return sensitiveSizeGrowthThreshold
+}
+
+// RevalidateEntrySize implements cleaner.SizeGrowthGuard, mirroring exactly the
+// measurement Scan used: a directory (the .app bundle, a container, an
+// Application Support folder) is re-measured recursively through the same size
+// fetcher, while a plain file uses its Lstat size.
+//
+// This matters more here than for any other cleaner: the review screen puts an
+// arbitrarily long human pause between the size preview and the confirmation,
+// and the target application may still be running and actively writing into the
+// very directories queued for removal. Re-measuring lets the caller notice a
+// large jump and ask again instead of silently deleting much more than the user
+// was shown.
+//
+// The fetcher field is read, never assigned, so this stays safe to call while a
+// Scan is in flight (setDefaults writes those fields; a guard call must not).
+func (c *AppUninstaller) RevalidateEntrySize(ctx context.Context, entry FileEntry) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	if entry.IsDir {
+		fetcher := c.pathSizeFetcher
+		if fetcher == nil {
+			fetcher = getPathSize
+		}
+		return fetcher(ctx, entry.Path)
+	}
+
+	info, err := os.Lstat(entry.Path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
 func (c *AppUninstaller) setDefaults() {
 	if c.bundleIDReader == nil {
 		c.bundleIDReader = readAppBundleID

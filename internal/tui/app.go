@@ -54,6 +54,16 @@ type healthInfoMsg struct {
 	info sysinfo.Info
 }
 
+// targetRunningMsg carries the outcome of checkTargetRunningCmd, dispatched
+// once the Smart Uninstall review screen is built (see updateScanning). See
+// cleaner.AppUninstaller.TargetIsRunning's own doc comment for why this
+// side-channel exists, and warnIfTargetRunning in cmd/uninstall_output.go for
+// the CLI's equivalent, earlier check.
+type targetRunningMsg struct {
+	running bool
+	err     error
+}
+
 // elevateCompleteMsg carries the outcome of a single elevate.Invoke call
 // covering every sudo category the user chose to authenticate for. plan is
 // carried alongside the result (rather than re-derived from app state) so
@@ -349,6 +359,27 @@ func gatherHealthInfoCmd(ctx context.Context) tea.Cmd {
 	}
 }
 
+// targetRunningChecker is the subset of *cleaner.AppUninstaller that
+// checkTargetRunningCmd needs -- defined as an interface (mirroring
+// cmd/uninstall_output.go's uninstallRunningChecker) purely so tests in this
+// package can inject a fake without depending on the concrete type or
+// shelling out to the real `ps`-backed safety.ProcessChecker.
+type targetRunningChecker interface {
+	TargetIsRunning(ctx context.Context) (bool, error)
+}
+
+// checkTargetRunningCmd calls TargetIsRunning asynchronously. It shells out
+// to `ps` (via internal/safety), so running it inline inside Update would
+// block the whole event loop for however long that takes -- the same
+// reasoning scanCategoryCmd and every other tea.Cmd in this file already
+// follows.
+func checkTargetRunningCmd(ctx context.Context, checker targetRunningChecker) tea.Cmd {
+	return func() tea.Msg {
+		running, err := checker.TargetIsRunning(ctx)
+		return targetRunningMsg{running: running, err: err}
+	}
+}
+
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -375,6 +406,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case healthInfoMsg:
 		a.dashboard.SetHealthInfo(msg.info)
+		return a, nil
+
+	case targetRunningMsg:
+		// A stale result (e.g. the user backed out of screenReview and
+		// re-scanned a different target before this arrived) is harmless to
+		// apply here: it only ever sets an informational banner field on
+		// a.reviewScr, and a fresh NewReview call (see updateScanning)
+		// rebuilds reviewScr from scratch on the next confirm, discarding
+		// whatever this set. Nothing here gates Confirm or Clean either way.
+		a.reviewScr.TargetRunning = msg.running
+		a.reviewScr.TargetRunningCheckErr = msg.err
 		return a, nil
 
 	case cleanCompleteMsg:
@@ -973,6 +1015,7 @@ func (a App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.scanningScr.AllDone() {
 		if key.Matches(msg, keys.Confirm) {
+			var cmd tea.Cmd
 			if !a.reviewBuilt {
 				results := a.scanningScr.Results()
 				a.reviewScr = screens.NewReview(results, a.executeMode, a.registry, a.isElevated)
@@ -984,10 +1027,26 @@ func (a App) updateScanning(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				// own doc comment for why a.reviewBreakdown otherwise
 				// accumulates across rounds within the same session.
 				a.reviewBreakdown = nil
+
+				// Smart Uninstall only: warn on the review screen itself if
+				// the target application is currently running, mirroring the
+				// CLI's warnIfTargetRunning (cmd/uninstall_output.go) -- the
+				// user should see this before confirming, not discover it
+				// only after AppUninstaller.Clean refuses to delete anything.
+				// Dispatched as a tea.Cmd (see checkTargetRunningCmd) rather
+				// than called inline here: TargetIsRunning shells out to `ps`
+				// via internal/safety and must not block the event loop.
+				if a.uninstallFlow {
+					if c, ok := a.registry.Get(cleaner.CategoryAppUninstall); ok {
+						if checker, ok := c.(targetRunningChecker); ok {
+							cmd = checkTargetRunningCmd(a.ctx, checker)
+						}
+					}
+				}
 			}
 			a.reviewScr.SetSize(a.width, a.height)
 			a.currentScreen = screenReview
-			return a, nil
+			return a, cmd
 		}
 	}
 

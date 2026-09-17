@@ -164,6 +164,26 @@ type ReviewModel struct {
 	SudoCategories []cleaner.Category
 	ConfirmState   ConfirmState
 
+	// TargetRunning is true when a Smart Uninstall target's application was
+	// found running by the background check App dispatches right after this
+	// ReviewModel is built (see App.updateScanning's uninstallFlow branch and
+	// checkTargetRunningCmd in internal/tui/app.go). Always false outside the
+	// Smart Uninstall flow -- nothing ever sets it there -- and, even inside
+	// that flow, false until the async check's result arrives. Purely
+	// informational, in the same spirit as ShouldWarnAboutSudo: nothing here
+	// blocks Confirm. AppUninstaller.Clean is the real, authoritative check
+	// that refuses to delete a running app's files; this only lets the user
+	// find out before confirming instead of after.
+	TargetRunning bool
+
+	// TargetRunningCheckErr holds a non-nil error when the running-app check
+	// itself could not be completed (e.g. `ps` could not be consulted via
+	// internal/safety) -- rendered as a softer, distinct warning from
+	// TargetRunning itself, since "I could not check" is not the same claim
+	// as "it is running". Mirrors warnIfTargetRunning's own err handling in
+	// cmd/uninstall_output.go.
+	TargetRunningCheckErr error
+
 	// RevalidationDelta is set right before entering ConfirmRevalidated, and
 	// rendered by the ConfirmRevalidated case in View(). nil otherwise.
 	RevalidationDelta *RevalidationDelta
@@ -275,8 +295,13 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 			}
 			if explainer != nil {
 				// ok == false means this entry is unexplained (did not come
-				// out of this same Scan) -- leave HasConfidence false and
-				// Selected at its default rather than guessing.
+				// out of this same Scan). "No evidence" must fail closed to
+				// unselected -- NOT the fileSummary zero value's default
+				// Selected: true -- the same way a Caution/DoNotTouch verdict
+				// does below. An unexplained entry is not "trusted by
+				// default" just because nothing said otherwise; this mirrors
+				// the CLI's filterEntriesByConfidence (cmd/uninstall_output.go),
+				// which drops unexplained entries from the plan outright.
 				if conf, ok := explainer.ExplainCandidate(entry); ok {
 					fs.Confidence = conf
 					fs.HasConfidence = true
@@ -284,6 +309,8 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 					// (Band == "") must fail closed, and only ConfidenceSafe
 					// is pre-selected for deletion without a human look.
 					fs.Selected = conf.IsSafe()
+				} else {
+					fs.Selected = false
 				}
 			}
 			allFiles = append(allFiles, fs)
@@ -336,6 +363,14 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 
 func (m ReviewModel) ShouldWarnAboutSudo() bool {
 	return m.ExecuteMode && !m.IsElevated && len(m.SudoCategories) > 0
+}
+
+// ShouldWarnAboutTargetRunning reports whether the review screen should show
+// its "the application appears to be running" banner -- see TargetRunning's
+// own doc comment for what actually sets it and why this never gates
+// Confirm.
+func (m ReviewModel) ShouldWarnAboutTargetRunning() bool {
+	return m.TargetRunning
 }
 
 func (m ReviewModel) actionableTotals() (int64, int) {
@@ -994,6 +1029,15 @@ func (m ReviewModel) View() string {
 		b.WriteString(styles.Warning.Render("  Warning: " + warning))
 		b.WriteString("\n")
 		b.WriteString(styles.Help.Render("  Press enter to choose whether to authenticate with sudo or skip them."))
+		b.WriteString("\n\n")
+	}
+
+	switch {
+	case m.ShouldWarnAboutTargetRunning():
+		b.WriteString(styles.Warning.Render("  Warning: the application appears to be running -- deletion of its files will be refused until it is quit."))
+		b.WriteString("\n\n")
+	case m.TargetRunningCheckErr != nil:
+		b.WriteString(styles.Warning.Render("  Warning: could not determine whether the application is currently running."))
 		b.WriteString("\n\n")
 	}
 

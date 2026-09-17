@@ -111,6 +111,58 @@ func TestNewReview_ConfidenceDefaultSelection(t *testing.T) {
 	}
 }
 
+// TestNewReview_UnexplainedEntryDefaultsUnselected pins that an entry whose
+// category implements cleaner.CandidateExplainer but which ExplainCandidate
+// reports no evidence for (ok == false) is NOT pre-selected for deletion --
+// "no evidence" must fail closed to unselected, not fall through to the
+// fileSummary zero value's Selected: true default. Mirrors the CLI's
+// filterEntriesByConfidence (cmd/uninstall_output.go), which drops an
+// unexplained entry from the plan outright rather than trusting it.
+func TestNewReview_UnexplainedEntryDefaultsUnselected(t *testing.T) {
+	registry := cleaner.NewRegistry()
+	registry.Register(confidenceExplainerMockCleaner{
+		confidence: map[string]cleaner.Confidence{
+			"/a/safe": {Band: cleaner.ConfidenceSafe, Score: 100},
+			// "/a/unexplained" is deliberately absent from this map, so
+			// ExplainCandidate returns (Confidence{}, false) for it.
+		},
+	})
+
+	results := map[cleaner.Category]*cleaner.ScanResult{
+		mockConfidenceCategory: {
+			Category:   mockConfidenceCategory,
+			TotalSize:  50,
+			TotalFiles: 2,
+			Entries: []cleaner.FileEntry{
+				{Path: "/a/safe", Size: 30},
+				{Path: "/a/unexplained", Size: 20},
+			},
+		},
+	}
+
+	m := NewReview(results, false, registry, false)
+	if len(m.Categories) != 1 {
+		t.Fatalf("expected exactly 1 category, got %d", len(m.Categories))
+	}
+
+	var found bool
+	for _, f := range m.Categories[0].AllFiles {
+		if f.Path != "/a/unexplained" {
+			continue
+		}
+		found = true
+		if f.HasConfidence {
+			t.Errorf("unexplained entry: HasConfidence = true, want false")
+		}
+		if f.Selected {
+			t.Errorf("unexplained entry: Selected = true, want false (no evidence must fail closed)")
+		}
+	}
+	if !found {
+		t.Fatal("/a/unexplained not found in AllFiles")
+	}
+}
+
 // TestNewReview_ConfidenceBadgesInView pins that View() renders the correct
 // badge text for each band, using the review screen's existing safety-badge
 // styles rather than a fourth one.

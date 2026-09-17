@@ -2,12 +2,14 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/viniciussouzao/tidymymac/internal/cleaner"
 	"github.com/viniciussouzao/tidymymac/internal/config"
+	"github.com/viniciussouzao/tidymymac/internal/tui/screens"
 )
 
 // TestNewUninstallApp_NoTarget_OpensAppPicker covers the interactive entry
@@ -145,5 +147,147 @@ func TestUpdateScanning_Back_UninstallFlowReturnsToAppPicker(t *testing.T) {
 
 	if next.currentScreen != screenAppPicker {
 		t.Fatalf("currentScreen after esc = %v, want screenAppPicker", next.currentScreen)
+	}
+}
+
+// fakeRunningAppUninstaller is a minimal cleaner.Cleaner + targetRunningChecker
+// double for CategoryAppUninstall -- standing in for *cleaner.AppUninstaller
+// so checkTargetRunningCmd's outcome (see internal/tui/app.go) can be pinned
+// deterministically, without shelling out to the real `ps`-backed
+// safety.ProcessChecker. Mirrors cmd/uninstall_test.go's own
+// fakeUninstallCleaner, scoped down to only what the TUI side needs.
+type fakeRunningAppUninstaller struct {
+	entry cleaner.FileEntry
+
+	running    bool
+	runningErr error
+}
+
+func (f *fakeRunningAppUninstaller) Category() cleaner.Category { return cleaner.CategoryAppUninstall }
+func (f *fakeRunningAppUninstaller) Name() string               { return "fake uninstall" }
+func (f *fakeRunningAppUninstaller) Description() string        { return "fake uninstall cleaner for tests" }
+func (f *fakeRunningAppUninstaller) RequiresSudo() bool         { return false }
+func (f *fakeRunningAppUninstaller) DeletesWholeDomain() bool   { return false }
+
+func (f *fakeRunningAppUninstaller) Scan(ctx context.Context, progress func(cleaner.ScanProgress)) (*cleaner.ScanResult, error) {
+	return &cleaner.ScanResult{
+		Category:   cleaner.CategoryAppUninstall,
+		Entries:    []cleaner.FileEntry{f.entry},
+		TotalFiles: 1,
+		TotalSize:  f.entry.Size,
+	}, nil
+}
+
+func (f *fakeRunningAppUninstaller) Clean(ctx context.Context, entries []cleaner.FileEntry, dryRun bool, progress func(cleaner.CleanProgress)) (*cleaner.CleanResult, error) {
+	return &cleaner.CleanResult{Category: cleaner.CategoryAppUninstall, DryRun: dryRun, FilesDeleted: len(entries)}, nil
+}
+
+func (f *fakeRunningAppUninstaller) TargetIsRunning(ctx context.Context) (bool, error) {
+	return f.running, f.runningErr
+}
+
+// TestUpdateScanning_UninstallFlow_WarnsWhenTargetRunning covers Security
+// review Fase 7/7's TUI follow-up: confirming the scan in the Smart Uninstall
+// flow must dispatch a check for whether the target app is currently
+// running, and the result must end up visible on the review screen -- before
+// the user confirms, not only after AppUninstaller.Clean refuses to delete
+// anything (see cleaner.AppUninstaller.TargetIsRunning's own doc comment and
+// the CLI's equivalent, warnIfTargetRunning in cmd/uninstall_output.go).
+func TestUpdateScanning_UninstallFlow_WarnsWhenTargetRunning(t *testing.T) {
+	entry := cleaner.FileEntry{Path: "/Applications/Foo.app", Size: 100}
+	registry := cleaner.NewRegistry()
+	registry.Register(&fakeRunningAppUninstaller{entry: entry, running: true})
+
+	scanning := screens.NewScanning([]string{string(cleaner.CategoryAppUninstall)}, registry)
+	scanning.UpdateScanResult(cleaner.CategoryAppUninstall, &cleaner.ScanResult{
+		Category:   cleaner.CategoryAppUninstall,
+		Entries:    []cleaner.FileEntry{entry},
+		TotalFiles: 1,
+		TotalSize:  entry.Size,
+	}, nil)
+
+	a := App{
+		currentScreen: screenScanning,
+		uninstallFlow: true,
+		registry:      registry,
+		scanningScr:   scanning,
+		ctx:           context.Background(),
+	}
+
+	model, cmd := a.updateScanning(tea.KeyMsg{Type: tea.KeyEnter})
+	next := model.(App)
+	if next.currentScreen != screenReview {
+		t.Fatalf("currentScreen = %v, want screenReview", next.currentScreen)
+	}
+	if cmd == nil {
+		t.Fatal("expected a checkTargetRunningCmd to be dispatched on confirming the scan, got nil")
+	}
+	// The review screen must not claim the target is running before the
+	// async check's result has actually arrived.
+	if next.reviewScr.ShouldWarnAboutTargetRunning() {
+		t.Fatal("ShouldWarnAboutTargetRunning() = true before the check's result arrived, want false")
+	}
+
+	msg := cmd()
+	trMsg, ok := msg.(targetRunningMsg)
+	if !ok {
+		t.Fatalf("cmd() returned %T, want targetRunningMsg", msg)
+	}
+	if !trMsg.running {
+		t.Fatal("targetRunningMsg.running = false, want true (fake was configured running: true)")
+	}
+
+	model, _ = next.Update(trMsg)
+	final := model.(App)
+	if !final.reviewScr.ShouldWarnAboutTargetRunning() {
+		t.Fatal("ShouldWarnAboutTargetRunning() = false, want true after targetRunningMsg{running: true}")
+	}
+	if !strings.Contains(final.reviewScr.View(), "appears to be running") {
+		t.Fatalf("View() should surface the running-app warning:\n%s", final.reviewScr.View())
+	}
+}
+
+// TestUpdateScanning_UninstallFlow_TargetRunningCheckErrIsNonFatal covers the
+// "I could not check" case: a failed TargetIsRunning call must render a
+// softer, distinct warning rather than silently doing nothing or blocking
+// navigation.
+func TestUpdateScanning_UninstallFlow_TargetRunningCheckErrIsNonFatal(t *testing.T) {
+	entry := cleaner.FileEntry{Path: "/Applications/Foo.app", Size: 100}
+	registry := cleaner.NewRegistry()
+	registry.Register(&fakeRunningAppUninstaller{entry: entry, runningErr: context.DeadlineExceeded})
+
+	scanning := screens.NewScanning([]string{string(cleaner.CategoryAppUninstall)}, registry)
+	scanning.UpdateScanResult(cleaner.CategoryAppUninstall, &cleaner.ScanResult{
+		Category:   cleaner.CategoryAppUninstall,
+		Entries:    []cleaner.FileEntry{entry},
+		TotalFiles: 1,
+		TotalSize:  entry.Size,
+	}, nil)
+
+	a := App{
+		currentScreen: screenScanning,
+		uninstallFlow: true,
+		registry:      registry,
+		scanningScr:   scanning,
+		ctx:           context.Background(),
+	}
+
+	model, cmd := a.updateScanning(tea.KeyMsg{Type: tea.KeyEnter})
+	next := model.(App)
+	if cmd == nil {
+		t.Fatal("expected a checkTargetRunningCmd to be dispatched, got nil")
+	}
+
+	model, _ = next.Update(cmd())
+	final := model.(App)
+
+	if final.reviewScr.ShouldWarnAboutTargetRunning() {
+		t.Fatal("ShouldWarnAboutTargetRunning() = true on a check error, want false")
+	}
+	if final.reviewScr.TargetRunningCheckErr == nil {
+		t.Fatal("TargetRunningCheckErr = nil, want the propagated error")
+	}
+	if !strings.Contains(final.reviewScr.View(), "could not determine whether") {
+		t.Fatalf("View() should surface a softer warning on a check error:\n%s", final.reviewScr.View())
 	}
 }

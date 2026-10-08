@@ -76,6 +76,18 @@ type ItemSelectable interface {
 	SupportsItemSelection() bool
 }
 
+// CandidateExplainer is an optional interface for a cleaner whose entries
+// need a per-item confidence/evidence explanation surfaced to the user
+// (see the "Smart Uninstall" review flow) instead of the aggregate,
+// category-level review every other cleaner gets. ExplainCandidate reports
+// the evidence the cleaner's own Scan recorded for that entry, so callers
+// must only ask about entries that came out of that same Scan: an entry the
+// cleaner never scored returns ok == false and must be treated as
+// unexplained, never as low confidence.
+type CandidateExplainer interface {
+	ExplainCandidate(entry FileEntry) (Confidence, bool)
+}
+
 // PrivilegeSplitter is an optional interface for a RequiresSudo cleaner whose
 // domain spans locations at different privilege levels. Not every entry a
 // RequiresSudo cleaner scans actually needs root to delete -- some of it may

@@ -98,6 +98,18 @@ type fileSummary struct {
 	// to true for every entry (including in non-Selectable categories, where
 	// it is simply never toggled). See ReviewModel.ToggleSelected.
 	Selected bool
+
+	// Confidence is the Smart Uninstall confidence verdict for this entry,
+	// only populated when HasConfidence is true. Zero value otherwise --
+	// never trust Confidence without checking HasConfidence first, since a
+	// zero-value Confidence{} looks like (but is not) a real Caution verdict.
+	Confidence cleaner.Confidence
+	// HasConfidence is true when this entry's category cleaner implements
+	// cleaner.CandidateExplainer and reported a verdict for it (ok == true).
+	// A category that doesn't implement CandidateExplainer leaves every entry
+	// at the zero value, false -- the aggregate review these entries already
+	// got is unchanged.
+	HasConfidence bool
 }
 
 // ReviewCategory represents a category of files to review, with its total size, file count, and lists of files.
@@ -151,6 +163,26 @@ type ReviewModel struct {
 	UnknownCount   int
 	SudoCategories []cleaner.Category
 	ConfirmState   ConfirmState
+
+	// TargetRunning is true when a Smart Uninstall target's application was
+	// found running by the background check App dispatches right after this
+	// ReviewModel is built (see App.updateScanning's uninstallFlow branch and
+	// checkTargetRunningCmd in internal/tui/app.go). Always false outside the
+	// Smart Uninstall flow -- nothing ever sets it there -- and, even inside
+	// that flow, false until the async check's result arrives. Purely
+	// informational, in the same spirit as ShouldWarnAboutSudo: nothing here
+	// blocks Confirm. AppUninstaller.Clean is the real, authoritative check
+	// that refuses to delete a running app's files; this only lets the user
+	// find out before confirming instead of after.
+	TargetRunning bool
+
+	// TargetRunningCheckErr holds a non-nil error when the running-app check
+	// itself could not be completed (e.g. `ps` could not be consulted via
+	// internal/safety) -- rendered as a softer, distinct warning from
+	// TargetRunning itself, since "I could not check" is not the same claim
+	// as "it is running". Mirrors warnIfTargetRunning's own err handling in
+	// cmd/uninstall_output.go.
+	TargetRunningCheckErr error
 
 	// RevalidationDelta is set right before entering ConfirmRevalidated, and
 	// rendered by the ConfirmRevalidated case in View(). nil otherwise.
@@ -212,6 +244,7 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 		}
 
 		selectable := false
+		var explainer cleaner.CandidateExplainer
 		if registry != nil {
 			if c, ok := registry.Get(result.Category); ok {
 				if s, ok := c.(cleaner.ItemSelectable); ok {
@@ -225,6 +258,14 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 					// selection on one would be a lie: a deselected entry
 					// gets deleted anyway.
 					selectable = s.SupportsItemSelection() && !c.DeletesWholeDomain()
+				}
+				// Categories that don't implement CandidateExplainer (every
+				// category except Smart Uninstall today) leave explainer nil,
+				// so every entry below keeps HasConfidence false and the
+				// existing Selected: true default -- the aggregate review
+				// they already had is unchanged.
+				if e, ok := c.(cleaner.CandidateExplainer); ok {
+					explainer = e
 				}
 			}
 		}
@@ -245,13 +286,34 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 			//
 			// to-do: implement friendly name for docker
 			//
-			allFiles = append(allFiles, fileSummary{
+			fs := fileSummary{
 				Path:      path,
 				Size:      entry.Size,
 				IsDir:     entry.IsDir,
 				Protected: entry.Protected,
 				Selected:  true,
-			})
+			}
+			if explainer != nil {
+				// ok == false means this entry is unexplained (did not come
+				// out of this same Scan). "No evidence" must fail closed to
+				// unselected -- NOT the fileSummary zero value's default
+				// Selected: true -- the same way a Caution/DoNotTouch verdict
+				// does below. An unexplained entry is not "trusted by
+				// default" just because nothing said otherwise; this mirrors
+				// the CLI's filterEntriesByConfidence (cmd/uninstall_output.go),
+				// which drops unexplained entries from the plan outright.
+				if conf, ok := explainer.ExplainCandidate(entry); ok {
+					fs.Confidence = conf
+					fs.HasConfidence = true
+					// IsSafe(), never a bare Band comparison: the zero value
+					// (Band == "") must fail closed, and only ConfidenceSafe
+					// is pre-selected for deletion without a human look.
+					fs.Selected = conf.IsSafe()
+				} else {
+					fs.Selected = false
+				}
+			}
+			allFiles = append(allFiles, fs)
 		}
 
 		sort.Slice(allFiles, func(i, j int) bool {
@@ -301,6 +363,14 @@ func NewReview(results map[cleaner.Category]*cleaner.ScanResult, executeMode boo
 
 func (m ReviewModel) ShouldWarnAboutSudo() bool {
 	return m.ExecuteMode && !m.IsElevated && len(m.SudoCategories) > 0
+}
+
+// ShouldWarnAboutTargetRunning reports whether the review screen should show
+// its "the application appears to be running" banner -- see TargetRunning's
+// own doc comment for what actually sets it and why this never gates
+// Confirm.
+func (m ReviewModel) ShouldWarnAboutTargetRunning() bool {
+	return m.TargetRunning
 }
 
 func (m ReviewModel) actionableTotals() (int64, int) {
@@ -962,6 +1032,15 @@ func (m ReviewModel) View() string {
 		b.WriteString("\n\n")
 	}
 
+	switch {
+	case m.ShouldWarnAboutTargetRunning():
+		b.WriteString(styles.Warning.Render("  Warning: the application appears to be running -- deletion of its files will be refused until it is quit."))
+		b.WriteString("\n\n")
+	case m.TargetRunningCheckErr != nil:
+		b.WriteString(styles.Warning.Render("  Warning: could not determine whether the application is currently running."))
+		b.WriteString("\n\n")
+	}
+
 	if m.TotalFiles == 0 {
 		if m.RevalidationDelta != nil {
 			// This plan was not empty a moment ago -- it was approved,
@@ -1077,9 +1156,13 @@ func (m ReviewModel) View() string {
 					checkbox = "[x] "
 				}
 			}
-			line := fmt.Sprintf("    %s%s%s (%s)", lockedTag, checkbox, styles.Dim.Render(short), sizeText)
+			confidenceTag := ""
+			if f.HasConfidence {
+				confidenceTag = confidenceBadge(f.Confidence) + " "
+			}
+			line := fmt.Sprintf("    %s%s%s%s (%s)", lockedTag, checkbox, confidenceTag, styles.Dim.Render(short), sizeText)
 			if globalFileIdx == m.Cursor {
-				line = fmt.Sprintf("  > %s%s%s (%s)", lockedTag, checkbox, styles.Highlight.Render(short), sizeText)
+				line = fmt.Sprintf("  > %s%s%s%s (%s)", lockedTag, checkbox, confidenceTag, styles.Highlight.Render(short), sizeText)
 			}
 			lines = append(lines, line)
 			globalFileIdx++
@@ -1309,6 +1392,27 @@ func (m ReviewModel) View() string {
 	}
 
 	return b.String()
+}
+
+// confidenceBadge renders the per-item Smart Uninstall confidence verdict
+// using the review screen's existing safety-badge styles -- no fourth style
+// is added. REVIEW intentionally borrows the Caution (amber) style and
+// CAUTION the DoNotTouch (red) style, matching each band's real risk level;
+// this is a different label than LOCKED (Protected), which also renders in
+// the DoNotTouch style but means something else entirely -- "excluded from
+// this run altogether", not "low confidence". Any band other than the three
+// known constants (which should not happen for an entry with HasConfidence
+// true -- see ExplainCandidate's contract) falls back to CAUTION rather than
+// SAFE, the same fail-closed default IsSafe() uses.
+func confidenceBadge(c cleaner.Confidence) string {
+	switch c.Band {
+	case cleaner.ConfidenceSafe:
+		return styles.SafetyBadgeSafe.Render("SAFE")
+	case cleaner.ConfidenceReview:
+		return styles.SafetyBadgeCaution.Render("REVIEW")
+	default:
+		return styles.SafetyBadgeDoNotTouch.Render("CAUTION")
+	}
 }
 
 // displayPath formats a path for display, with special handling for caches.

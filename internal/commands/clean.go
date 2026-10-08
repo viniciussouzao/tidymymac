@@ -44,6 +44,16 @@ type CleanCategoryResult struct {
 	// PartialErrorsTruncated says when the bound was hit.
 	PartialErrorDetails    []ItemError `json:"partial_error_details,omitempty"`
 	PartialErrorsTruncated bool        `json:"partial_errors_truncated,omitempty"`
+	// Skipped reports that the cleaner deliberately refused the whole batch
+	// and touched nothing (cleaner.CleanResult.Skipped) -- e.g. the app
+	// uninstaller declining to delete the files of a running application.
+	// Without it the outcome is indistinguishable from success: zero deleted
+	// files, no error. It is NOT an error by itself; how a caller renders it
+	// or turns it into an exit status is the caller's decision.
+	Skipped bool `json:"skipped,omitempty"`
+	// SkipReason is the cleaner's user-facing explanation for Skipped, carried
+	// verbatim from cleaner.CleanResult.SkipReason.
+	SkipReason string `json:"skip_reason,omitempty"`
 }
 
 // ItemError is one non-fatal per-item failure inside a category. Path is
@@ -220,6 +230,11 @@ func runClean(ctx context.Context, registry *cleaner.Registry, selected []string
 				item.DeletedSize = cleanRunResult.BytesFreed
 				item.PartialErrors = len(cleanRunResult.Errors)
 				item.PartialErrorDetails, item.PartialErrorsTruncated = itemErrors(cleanRunResult.Errors)
+				// A cleaner that refused the batch outright must not read as a
+				// successful no-op downstream; carry its reason through to the
+				// output verbatim.
+				item.Skipped = cleanRunResult.Skipped
+				item.SkipReason = cleanRunResult.SkipReason
 			}
 
 			if scanErr != nil {

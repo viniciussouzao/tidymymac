@@ -47,9 +47,10 @@ func withExecuteFlag(t *testing.T, value bool) {
 // unprivileged case would start bubbletea.
 func TestExecuteEntryPointsRefuseRoot(t *testing.T) {
 	commands := map[string]func() error{
-		"clean --execute": func() error { return cleanCmd.RunE(cleanCmd, nil) },
-		"execute":         func() error { return executeCmd.RunE(executeCmd, nil) },
-		"root --execute":  func() error { return rootCmd.RunE(rootCmd, nil) },
+		"clean --execute":     func() error { return cleanCmd.RunE(cleanCmd, nil) },
+		"execute":             func() error { return executeCmd.RunE(executeCmd, nil) },
+		"root --execute":      func() error { return rootCmd.RunE(rootCmd, nil) },
+		"uninstall --execute": func() error { return uninstallCmd.RunE(uninstallCmd, nil) },
 	}
 
 	for name, run := range commands {

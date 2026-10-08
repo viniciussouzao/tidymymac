@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"strings"
 	"testing"
 	"time"
 
@@ -547,5 +549,89 @@ func TestRunClean_PartialErrorDetailsAreBounded(t *testing.T) {
 	}
 	if len(cat.PartialErrorDetails) != MaxPartialErrorDetails || !cat.PartialErrorsTruncated {
 		t.Fatalf("details/truncated = %d/%t, want %d/true", len(cat.PartialErrorDetails), cat.PartialErrorsTruncated, MaxPartialErrorDetails)
+	}
+}
+
+// TestRunClean_PropagatesSkippedResult pins the plumbing for a cleaner that
+// refuses its whole batch (the app uninstaller declining to delete the files of
+// a running application). Before this, Skipped/SkipReason were dropped here and
+// the run was reported as zero deleted files with no error -- indistinguishable
+// from a successful cleanup of an already-clean category.
+func TestRunClean_PropagatesSkippedResult(t *testing.T) {
+	const reason = "Slack is currently running; quit it before removing its files"
+
+	r := newMockCleanRegistry(&mockCleanRunner{
+		category: "app-uninstall",
+		entries:  []cleaner.FileEntry{{Path: "/tmp/a", Size: 10}},
+		cleanResult: &cleaner.CleanResult{
+			Category:   "app-uninstall",
+			Skipped:    true,
+			SkipReason: reason,
+		},
+	})
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if len(result.Categories) != 1 {
+		t.Fatalf("got %d categories, want 1", len(result.Categories))
+	}
+
+	cat := result.Categories[0]
+	if !cat.Skipped {
+		t.Error("Skipped = false, want true")
+	}
+	if cat.SkipReason != reason {
+		t.Errorf("SkipReason = %q, want %q", cat.SkipReason, reason)
+	}
+	if cat.DeletedFiles != 0 || cat.DeletedSize != 0 {
+		t.Errorf("deleted %d files / %d bytes, want nothing on a skipped category", cat.DeletedFiles, cat.DeletedSize)
+	}
+	// A skip is not an error: deciding what it means for the exit status is
+	// the caller's job, not this layer's.
+	if result.HasErrors {
+		t.Error("HasErrors = true, want false: a skip is not a failure here")
+	}
+
+	var buf bytes.Buffer
+	if err := WriteCleanOutput(&buf, CleanOutput{Result: result}, "json"); err != nil {
+		t.Fatalf("WriteCleanOutput() error: %v", err)
+	}
+
+	var wrapper struct {
+		Result CleanResult `json:"result"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &wrapper); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	decoded := wrapper.Result
+	if len(decoded.Categories) != 1 || !decoded.Categories[0].Skipped || decoded.Categories[0].SkipReason != reason {
+		t.Fatalf("skip did not survive JSON: %s", buf.String())
+	}
+}
+
+// TestRunClean_UnskippedCategoryOmitsSkipFields keeps the JSON contract quiet
+// for the ordinary case: no skipped/skip_reason keys at all.
+func TestRunClean_UnskippedCategoryOmitsSkipFields(t *testing.T) {
+	r := newMockCleanRegistry(&mockCleanRunner{
+		category: "cat_a",
+		entries:  []cleaner.FileEntry{{Path: "/tmp/a", Size: 10}},
+	})
+
+	result, err := RunClean(t.Context(), r, nil, CleanerOptions{}, nil)
+	if err != nil {
+		t.Fatalf("RunClean() error: %v", err)
+	}
+	if result.Categories[0].Skipped || result.Categories[0].SkipReason != "" {
+		t.Fatalf("unexpected skip on a normal category: %+v", result.Categories[0])
+	}
+
+	var buf bytes.Buffer
+	if err := WriteCleanOutput(&buf, CleanOutput{Result: result}, "json"); err != nil {
+		t.Fatalf("WriteCleanOutput() error: %v", err)
+	}
+	if strings.Contains(buf.String(), "skip") {
+		t.Errorf("JSON mentions a skip for a normal category: %s", buf.String())
 	}
 }

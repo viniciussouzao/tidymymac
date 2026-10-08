@@ -17,6 +17,7 @@ const (
 	CategoryTimeMachineSnapshots Category = "time-machine"
 	CategoryDownloads            Category = "downloads"
 	CategoryAppOrphans           Category = "app-orphans"
+	CategoryAppUninstall         Category = "app-uninstall"
 )
 
 func (c Category) DisplayName() string {
@@ -49,6 +50,8 @@ func (c Category) DisplayName() string {
 		return "Downloads"
 	case CategoryAppOrphans:
 		return "App Orphans"
+	case CategoryAppUninstall:
+		return "Uninstall App"
 	default:
 		return string(c)
 	}

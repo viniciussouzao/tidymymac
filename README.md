@@ -9,6 +9,10 @@
   Scan, review, and reclaim disk space — safely, transparently, and from the terminal.
 </p>
 
+<p align="center">
+  <a href="https://notacent.app/en/app/tidymymac"><img src="https://notacent.app/api/badge/tidymymac.svg?style=card&lang=en" alt="41 active days, verified by Not a Cent"/></a>
+</p>
+
 ## Features
 
 - Interactive TUI to browse and select what to clean
